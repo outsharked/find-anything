@@ -5,6 +5,18 @@ use tracing_subscriber::layer::Context;
 
 static IGNORE_PATTERNS: OnceLock<Vec<regex::Regex>> = OnceLock::new();
 
+/// Returns `true` if the given message matches any installed ignore pattern.
+///
+/// Used by `relay_subprocess_logs` to suppress matching lines before they
+/// are re-emitted as tracing events, ensuring the same patterns work for
+/// both in-process and subprocess log sources.
+pub fn is_ignored(msg: &str) -> bool {
+    let Some(patterns) = IGNORE_PATTERNS.get() else {
+        return false;
+    };
+    patterns.iter().any(|p| p.is_match(msg))
+}
+
 /// Compile and activate the log-ignore patterns from config.
 ///
 /// Should be called once, after the tracing subscriber is initialised but

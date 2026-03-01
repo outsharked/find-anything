@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, functions::FunctionFlags, params};
 
 use find_common::api::{ContextLine, DirEntry, FileRecord, IndexFile, IndexingError, IndexingFailure, KindStats, ScanHistoryPoint};
 
@@ -19,6 +19,7 @@ pub const SCHEMA_VERSION: i64 = 6;
 pub fn open(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path)
         .with_context(|| format!("opening {}", db_path.display()))?;
+    register_scalar_functions(&conn)?;
     check_schema_version(&conn, db_path)?;
     conn.execute_batch(include_str!("schema_v2.sql"))
         .context("initialising schema")?;
@@ -27,6 +28,30 @@ pub fn open(db_path: &Path) -> Result<Connection> {
     migrate_v5(&conn).context("v5 migration")?;
     migrate_v6(&conn).context("v6 migration")?;
     Ok(conn)
+}
+
+/// Register custom scalar functions that SQLite does not provide built-in.
+fn register_scalar_functions(conn: &Connection) -> Result<()> {
+    let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+
+    // file_basename("foo/bar/baz.txt") → "baz.txt"
+    conn.create_scalar_function("file_basename", 1, flags, |ctx| {
+        let path: String = ctx.get(0)?;
+        Ok(path.rsplit('/').next().unwrap_or(&path).to_string())
+    })?;
+
+    // file_ext("baz.txt") → "txt"   file_ext("baz") → ""
+    conn.create_scalar_function("file_ext", 1, flags, |ctx| {
+        let name: String = ctx.get(0)?;
+        if let Some(pos) = name.rfind('.') {
+            let ext = &name[pos + 1..];
+            Ok(ext.to_lowercase())
+        } else {
+            Ok(String::new())
+        }
+    })?;
+
+    Ok(())
 }
 
 /// Check that the database schema version is compatible before touching any tables.
@@ -1189,29 +1214,17 @@ pub fn get_stats(conn: &Connection) -> Result<(usize, i64, HashMap<String, KindS
 /// Returns file counts by extension for outer files (no archive members),
 /// sorted by count descending, limited to 100 rows.
 ///
-/// Extension is extracted from the filename component of the path: the part
-/// after the last `.` in the basename.  Files without an extension are omitted.
+/// Uses the `file_basename` and `file_ext` custom scalar functions registered
+/// in [`register_scalar_functions`].  Files without an extension are omitted.
 pub fn get_stats_by_ext(conn: &Connection) -> Result<Vec<find_common::api::ExtStat>> {
     let mut stmt = conn.prepare(
-        "WITH parts AS (
-             SELECT
-                 CASE WHEN INSTR(path, '/') > 0
-                      THEN SUBSTR(path, LENGTH(path) - INSTR(REVERSE(path), '/') + 2)
-                      ELSE path
-                 END AS basename,
-                 COALESCE(size, 0) AS size
-             FROM files
-             WHERE path NOT LIKE '%::%'
-         )
-         SELECT
-             LOWER(SUBSTR(basename,
-                          LENGTH(basename) - INSTR(REVERSE(basename), '.') + 2)) AS ext,
-             COUNT(*)               AS cnt,
-             COALESCE(SUM(size), 0) AS total_size
-         FROM parts
-         WHERE INSTR(basename, '.') > 0
-           AND LENGTH(LOWER(SUBSTR(basename,
-                                   LENGTH(basename) - INSTR(REVERSE(basename), '.') + 2))) > 0
+        "SELECT
+             file_ext(file_basename(path)) AS ext,
+             COUNT(*)                      AS cnt,
+             COALESCE(SUM(size), 0)        AS total_size
+         FROM files
+         WHERE path NOT LIKE '%::%'
+           AND file_ext(file_basename(path)) != ''
          GROUP BY ext
          ORDER BY cnt DESC
          LIMIT 100",

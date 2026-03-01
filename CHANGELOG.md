@@ -9,6 +9,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+- **Extension breakdown in stats panel** — the "By Kind" breakdown now has a Kind / Extension pill toggle; Extension mode shows file counts and sizes by file extension (top 20, with a "Show all N extensions" button); data is computed by new `get_stats_by_ext` SQL function using custom `file_basename` / `file_ext` SQLite scalar functions registered at connection open time (SQLite has no built-in equivalent)
+
+### Fixed
+- **Log ignore filters not suppressing subprocess messages** — `relay_subprocess_logs` now checks patterns via `logging::is_ignored()` before emitting each relayed line; previously the per-layer `event_enabled` hook was not reliably firing for relay events, so patterns like `pdf_extract: unknown glyph name` had no effect on subprocess output despite being configured
+- **Extension stats returning empty** — the SQL query used `REVERSE()` which is not a built-in SQLite function; the query silently failed and returned an empty vec; replaced with custom `file_basename` / `file_ext` Rust scalar functions registered on the connection
+- **`.ix` / `.ixd` / `.ixh` binary files indexed as text** — dtSearch index files start with a text-like ASCII header followed by binary control bytes, fooling the `content_inspector` sniff; added these extensions to the `is_binary_ext` list in the text extractor
+- **Zero search results for queries hitting files with aliases** — `fetch_aliases_for_canonical_ids` was calling `row.get(0)` on a query selecting `(canonical_file_id INTEGER, path TEXT)`, reading the integer column as a string; rusqlite returned a type error that was swallowed by the search handler, yielding empty results for any query that matched deduplicated files; fixed by using `row.get(1)`
+- **lopdf internal object-load errors logged as ERROR** — these are recoverable parse warnings emitted at ERROR level by lopdf's own tracing instrumentation; suppressed in the `find-extract-pdf` subprocess default filter (`lopdf=off`) since they are not actionable and clutter the output
+
 ## [0.4.0] - 2026-03-01
 
 ### Added

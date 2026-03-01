@@ -206,16 +206,26 @@ pub fn relay_subprocess_logs(stderr: &[u8]) {
         // Typical format: "WARN target: message" or "ERROR target: message".
         let rest = line.trim_start_matches(|c: char| !c.is_alphanumeric());
         if let Some(msg) = rest.strip_prefix("ERROR ") {
-            error!(target: "subprocess", "{msg}");
+            if !find_common::logging::is_ignored(msg) {
+                error!(target: "subprocess", "{msg}");
+            }
         } else if let Some(msg) = rest.strip_prefix("WARN ") {
-            warn!(target: "subprocess", "{msg}");
+            if !find_common::logging::is_ignored(msg) {
+                warn!(target: "subprocess", "{msg}");
+            }
         } else if let Some(msg) = rest.strip_prefix("INFO ") {
-            info!(target: "subprocess", "{msg}");
+            if !find_common::logging::is_ignored(msg) {
+                info!(target: "subprocess", "{msg}");
+            }
         } else if let Some(msg) = rest.strip_prefix("DEBUG ") {
-            debug!(target: "subprocess", "{msg}");
+            if !find_common::logging::is_ignored(msg) {
+                debug!(target: "subprocess", "{msg}");
+            }
         } else if let Some(msg) = rest.strip_prefix("TRACE ") {
-            debug!(target: "subprocess", "{msg}");
-        } else {
+            if !find_common::logging::is_ignored(msg) {
+                debug!(target: "subprocess", "{msg}");
+            }
+        } else if !find_common::logging::is_ignored(line) {
             // Unknown format — emit as warn so it's not silently dropped.
             warn!(target: "subprocess", "{line}");
         }
