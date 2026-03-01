@@ -868,7 +868,7 @@ pub fn fetch_aliases_for_canonical_ids(
     )?;
     for &cid in canonical_ids {
         let paths: Vec<String> = stmt
-            .query_map(params![cid], |row| row.get(0))?
+            .query_map(params![cid], |row| row.get(1))?
             .collect::<rusqlite::Result<_>>()?;
         if !paths.is_empty() {
             map.insert(cid, paths);

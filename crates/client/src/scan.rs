@@ -51,6 +51,28 @@ pub async fn run_scan(
     // Build global exclusion GlobSet for the walk phase.
     let excludes = build_globset(&scan.exclude)?;
 
+    // Warn if the server inbox is not empty — the file list will reflect only
+    // files the worker has already committed, so pending batches from a recent
+    // scan will appear "new" again on this run.
+    match api.inbox_status().await {
+        Ok(status) if !status.pending.is_empty() => {
+            warn!(
+                "server inbox has {} pending batch(es) not yet processed; \
+                 some files may appear as new even though they were recently indexed. \
+                 Consider waiting for the inbox to drain before re-scanning.",
+                status.pending.len()
+            );
+        }
+        Ok(status) if !status.failed.is_empty() => {
+            warn!(
+                "server inbox has {} failed batch(es); run `find-admin inbox retry` \
+                 or check /api/v1/admin/inbox for details.",
+                status.failed.len()
+            );
+        }
+        _ => {}
+    }
+
     // Fetch what the server already knows about this source.
     // Only consider outer files (no "::" in path) for deletion/mtime comparison;
     // inner archive members are managed server-side.

@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use find_common::api::{BulkRequest, WorkerStatus};
+use find_common::api::{BulkRequest, IndexFile, IndexLine, IndexingFailure, WorkerStatus};
 
 use crate::archive::{self, ArchiveManager, ChunkRef};
 use crate::db;
@@ -133,7 +133,11 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
         db::delete_files(&conn, &mut archive_mgr, &request.delete_paths)?;
     }
 
-    // 2. Upserts — update status per file so the UI shows what is being indexed
+    // 2. Upserts — update status per file so the UI shows what is being indexed.
+    //    Errors are recorded per-file and processing continues; a single bad file
+    //    must not prevent the rest of the batch from being indexed.
+    let mut server_side_failures: Vec<IndexingFailure> = Vec::new();
+    let mut successfully_indexed: Vec<String> = Vec::new();
     for file in &request.files {
         if let Ok(mut guard) = status.lock() {
             *guard = WorkerStatus::Processing {
@@ -142,7 +146,38 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
             };
         }
         let file_start = std::time::Instant::now();
-        process_file(&mut conn, &mut archive_mgr, file)?;
+        match process_file(&mut conn, &mut archive_mgr, file) {
+            Ok(()) => {
+                successfully_indexed.push(file.path.clone());
+            }
+            Err(e) => {
+                tracing::error!("Failed to index {}: {e:#}", file.path);
+                // For outer archive files (kind="archive", no "::" in path), skip the
+                // filename-only fallback entirely.  The is_outer_archive DELETE in
+                // process_file already ran outside the transaction, so inner members
+                // are gone.  Leaving the outer archive WITHOUT a DB record causes it to
+                // appear as "new" on the next scan, triggering a full re-extraction that
+                // restores all inner members.  A fallback record here would record the
+                // current mtime and suppress that re-indexing permanently.
+                let is_outer_archive = file.kind == "archive" && !file.path.contains("::");
+                if !is_outer_archive {
+                    // Insert a filename-only record so the file:
+                    //   1. appears in search by path name
+                    //   2. has an mtime in the DB so it's not re-submitted as "new" on
+                    //      every subsequent scan (it will be skipped unless mtime changes)
+                    let fallback = filename_only_file(file);
+                    if let Err(e2) = process_file(&mut conn, &mut archive_mgr, &fallback) {
+                        tracing::error!("Filename-only fallback also failed for {}: {e2:#}", file.path);
+                    }
+                }
+                // Do NOT add to successfully_indexed: the error should remain visible
+                // in the UI even though the fallback put a filename-only record in the DB.
+                server_side_failures.push(IndexingFailure {
+                    path: file.path.clone(),
+                    error: format!("{e:#}"),
+                });
+            }
+        }
         warn_slow(file_start, 30, "process_file", &file.path);
     }
 
@@ -153,15 +188,19 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
         .as_secs() as i64;
 
     // Clear errors for successfully (re-)indexed paths.
-    let upserted: Vec<String> = request.files.iter().map(|f| f.path.clone()).collect();
-    db::clear_errors_for_paths(&conn, &upserted)?;
+    db::clear_errors_for_paths(&conn, &successfully_indexed)?;
 
     // Clear errors for explicitly deleted paths.
     db::clear_errors_for_paths(&conn, &request.delete_paths)?;
 
-    // Store new extraction failures reported by the client.
+    // Store extraction failures reported by the client.
     if !request.indexing_failures.is_empty() {
         db::upsert_indexing_errors(&conn, &request.indexing_failures, now)?;
+    }
+
+    // Store server-side indexing failures encountered in this batch.
+    if !server_side_failures.is_empty() {
+        db::upsert_indexing_errors(&conn, &server_side_failures, now)?;
     }
 
     warn_slow(request_start, 120, "process_request", &request_path.display().to_string());
@@ -176,6 +215,27 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
     }
 
     Ok(())
+}
+
+/// Build a minimal IndexFile containing only the path line (line_number=0).
+/// Used as a fallback when full indexing fails: the file gets a DB record with
+/// its mtime so subsequent scans skip it rather than re-submitting it forever.
+fn filename_only_file(file: &IndexFile) -> IndexFile {
+    IndexFile {
+        path: file.path.clone(),
+        mtime: file.mtime,
+        size: file.size,
+        // Force a non-archive kind so process_file never triggers the
+        // is_outer_archive path (which deletes inner members outside the transaction).
+        kind: if file.kind == "archive" { "unknown".to_string() } else { file.kind.clone() },
+        lines: vec![IndexLine {
+            archive_path: None,
+            line_number: 0,
+            content: file.path.clone(),
+        }],
+        extract_ms: None,
+        content_hash: None,
+    }
 }
 
 fn process_file(

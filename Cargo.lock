@@ -3656,7 +3656,7 @@ dependencies = [
 [[package]]
 name = "pdf-extract"
 version = "0.11.0"
-source = "git+https://github.com/jamietre/pdf-extract?rev=4e8e145#4e8e1456cf758f6e45ea5a16b7ed30fb5d2a667d"
+source = "git+https://github.com/jamietre/pdf-extract?rev=7312171#7312171e6bb461d69ea46edf200af7af90380780"
 dependencies = [
  "adobe-cmap-parser",
  "cff-parser",
