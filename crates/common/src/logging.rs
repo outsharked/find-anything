@@ -5,6 +5,14 @@ use tracing_subscriber::layer::Context;
 
 static IGNORE_PATTERNS: OnceLock<Vec<regex::Regex>> = OnceLock::new();
 
+/// Returns `true` if `msg` matches any pattern in `patterns`.
+///
+/// This is the core matching logic, separated from the global `OnceLock` so
+/// it can be called directly in tests with an explicit pattern set.
+pub fn is_ignored_with(patterns: &[regex::Regex], msg: &str) -> bool {
+    patterns.iter().any(|p| p.is_match(msg))
+}
+
 /// Returns `true` if the given message matches any installed ignore pattern.
 ///
 /// Used by `relay_subprocess_logs` to suppress matching lines before they
@@ -14,7 +22,7 @@ pub fn is_ignored(msg: &str) -> bool {
     let Some(patterns) = IGNORE_PATTERNS.get() else {
         return false;
     };
-    patterns.iter().any(|p| p.is_match(msg))
+    is_ignored_with(patterns, msg)
 }
 
 /// Compile and activate the log-ignore patterns from config.
@@ -74,7 +82,7 @@ impl<S: Subscriber> tracing_subscriber::layer::Filter<S> for LogIgnoreFilter {
         // against the in-process log target (e.g. "pdf_extract: unknown glyph")
         // continue to work when the same message arrives via subprocess relay
         // (where the tracing target becomes "subprocess").
-        !patterns.iter().any(|p| p.is_match(&candidate) || p.is_match(&visitor.message))
+        !is_ignored_with(patterns, &candidate) && !is_ignored_with(patterns, &visitor.message)
     }
 }
 
@@ -102,5 +110,54 @@ impl Visit for MessageVisitor {
             "log.target" => self.log_target = Some(format!("{value:?}")),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ignored_with;
+
+    fn pats(patterns: &[&str]) -> Vec<regex::Regex> {
+        patterns.iter().map(|p| regex::Regex::new(p).unwrap()).collect()
+    }
+
+    #[test]
+    fn no_patterns_never_ignored() {
+        assert!(!is_ignored_with(&[], "anything goes here"));
+    }
+
+    #[test]
+    fn substring_pattern_matches() {
+        let p = pats(&["pdf_extract: unknown glyph"]);
+        assert!(is_ignored_with(&p, "pdf_extract: unknown glyph name 'box3' for font ArialMT"));
+    }
+
+    #[test]
+    fn non_matching_pattern_passes_through() {
+        let p = pats(&["lopdf::reader"]);
+        assert!(!is_ignored_with(&p, "pdf_extract: unknown glyph name 'box3' for font ArialMT"));
+    }
+
+    #[test]
+    fn regex_wildcard_pattern_matches() {
+        let p = pats(&["unknown glyph name '.*'"]);
+        assert!(is_ignored_with(&p, "pdf_extract: unknown glyph name 'box3' for font ArialMT"));
+    }
+
+    #[test]
+    fn multiple_patterns_any_match_is_ignored() {
+        let p = pats(&["no match here", "pdf_extract: unknown"]);
+        assert!(is_ignored_with(&p, "pdf_extract: unknown glyph foo"));
+    }
+
+    #[test]
+    fn multiple_patterns_no_match_passes_through() {
+        let p = pats(&["lopdf::reader", "sevenz_rust"]);
+        assert!(!is_ignored_with(&p, "pdf_extract: unknown glyph foo"));
+    }
+
+    #[test]
+    fn invalid_regex_does_not_compile() {
+        assert!(regex::Regex::new("[invalid").is_err());
     }
 }

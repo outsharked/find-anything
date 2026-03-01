@@ -159,8 +159,7 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
                 // appear as "new" on the next scan, triggering a full re-extraction that
                 // restores all inner members.  A fallback record here would record the
                 // current mtime and suppress that re-indexing permanently.
-                let is_outer_archive = file.kind == "archive" && !file.path.contains("::");
-                if !is_outer_archive {
+                if !is_outer_archive(&file.path, &file.kind) {
                     // Insert a filename-only record so the file:
                     //   1. appears in search by path name
                     //   2. has an mtime in the DB so it's not re-submitted as "new" on
@@ -220,6 +219,13 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
 /// Build a minimal IndexFile containing only the path line (line_number=0).
 /// Used as a fallback when full indexing fails: the file gets a DB record with
 /// its mtime so subsequent scans skip it rather than re-submitting it forever.
+/// Returns `true` if `file` is a top-level archive (kind="archive" with no
+/// "::" in the path).  These files require special handling: the inner-member
+/// DELETE runs outside the transaction, so the fallback must be skipped.
+pub(crate) fn is_outer_archive(path: &str, kind: &str) -> bool {
+    kind == "archive" && !path.contains("::")
+}
+
 fn filename_only_file(file: &IndexFile) -> IndexFile {
     IndexFile {
         path: file.path.clone(),
@@ -255,8 +261,7 @@ fn process_file(
     // If this is an outer archive file being re-indexed, delete stale inner members
     // first. They'll be re-submitted as separate IndexFile entries in the same batch.
     // We detect "outer archive" by kind == "archive" and no "::" in the path.
-    let is_outer_archive = file.kind == "archive" && !file.path.contains("::");
-    if is_outer_archive {
+    if is_outer_archive(&file.path, &file.kind) {
         // Collect and remove chunks for all old inner members.
         let like_pat = format!("{}::%", file.path);
         let inner_ids: Vec<i64> = {
@@ -466,5 +471,79 @@ async fn handle_failure(path: &Path, failed_dir: &Path, error: anyhow::Error) {
         );
     } else {
         tracing::warn!("Moved failed request to: {}", failed_path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use find_common::api::IndexLine;
+
+    fn make_file(path: &str, kind: &str) -> IndexFile {
+        IndexFile {
+            path: path.to_string(),
+            mtime: 1000,
+            size: 100,
+            kind: kind.to_string(),
+            lines: vec![IndexLine {
+                archive_path: None,
+                line_number: 0,
+                content: path.to_string(),
+            }],
+            extract_ms: None,
+            content_hash: None,
+        }
+    }
+
+    // ── is_outer_archive ─────────────────────────────────────────────────────
+
+    #[test]
+    fn outer_archive_detected() {
+        assert!(is_outer_archive("data.zip", "archive"));
+    }
+
+    #[test]
+    fn archive_member_not_outer() {
+        assert!(!is_outer_archive("data.zip::inner.txt", "archive"));
+    }
+
+    #[test]
+    fn non_archive_kind_not_outer() {
+        assert!(!is_outer_archive("data.zip", "text"));
+    }
+
+    // ── filename_only_file ───────────────────────────────────────────────────
+
+    #[test]
+    fn filename_only_converts_archive_kind_to_unknown() {
+        // Must not remain "archive" — would re-trigger the outer-archive DELETE
+        // path on next process_file call, permanently losing inner members.
+        let f = make_file("data.zip", "archive");
+        let fallback = filename_only_file(&f);
+        assert_eq!(fallback.kind, "unknown");
+    }
+
+    #[test]
+    fn filename_only_keeps_non_archive_kind() {
+        let f = make_file("notes.md", "text");
+        let fallback = filename_only_file(&f);
+        assert_eq!(fallback.kind, "text");
+    }
+
+    #[test]
+    fn filename_only_has_single_path_line() {
+        let f = make_file("docs/report.pdf", "pdf");
+        let fallback = filename_only_file(&f);
+        assert_eq!(fallback.lines.len(), 1);
+        assert_eq!(fallback.lines[0].line_number, 0);
+        assert_eq!(fallback.lines[0].content, "docs/report.pdf");
+    }
+
+    #[test]
+    fn filename_only_preserves_mtime_and_size() {
+        let f = make_file("file.txt", "text");
+        let fallback = filename_only_file(&f);
+        assert_eq!(fallback.mtime, f.mtime);
+        assert_eq!(fallback.size, f.size);
     }
 }

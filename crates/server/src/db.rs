@@ -560,7 +560,7 @@ pub struct CandidateRow {
 /// FTS5 trigram pre-filter.  Returns up to `limit` candidate rows.
 /// Build an FTS5 match expression from a raw query string.
 /// Returns None if the query produces no matchable terms.
-fn build_fts_query(query: &str, phrase: bool) -> Option<String> {
+pub(crate) fn build_fts_query(query: &str, phrase: bool) -> Option<String> {
     if phrase {
         if query.len() < 3 {
             return None;
@@ -1376,10 +1376,103 @@ pub fn get_indexing_error(conn: &Connection, path: &str) -> Result<Option<String
 }
 
 /// Produce the upper-bound key for a prefix range scan by incrementing the last byte.
-fn prefix_bump(prefix: &str) -> String {
+pub(crate) fn prefix_bump(prefix: &str) -> String {
     let mut bytes = prefix.as_bytes().to_vec();
     if let Some(last) = bytes.last_mut() {
         *last += 1;
     }
     String::from_utf8(bytes).unwrap_or_else(|_| "\u{FFFF}".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── split_composite_path ─────────────────────────────────────────────────
+
+    #[test]
+    fn split_no_separator() {
+        let (outer, inner) = split_composite_path("docs/report.pdf");
+        assert_eq!(outer, "docs/report.pdf");
+        assert!(inner.is_none());
+    }
+
+    #[test]
+    fn split_single_separator() {
+        let (outer, inner) = split_composite_path("archive.zip::member.txt");
+        assert_eq!(outer, "archive.zip");
+        assert_eq!(inner.as_deref(), Some("member.txt"));
+    }
+
+    #[test]
+    fn split_nested_separators_splits_at_first() {
+        let (outer, inner) = split_composite_path("a.zip::b.zip::c.txt");
+        assert_eq!(outer, "a.zip");
+        assert_eq!(inner.as_deref(), Some("b.zip::c.txt"));
+    }
+
+    #[test]
+    fn split_empty_string() {
+        let (outer, inner) = split_composite_path("");
+        assert_eq!(outer, "");
+        assert!(inner.is_none());
+    }
+
+    // ── prefix_bump ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn prefix_bump_increments_last_byte() {
+        assert_eq!(prefix_bump("foo/bar/"), "foo/bar0");
+    }
+
+    #[test]
+    fn prefix_bump_empty_string_returns_empty() {
+        assert_eq!(prefix_bump(""), "");
+    }
+
+    // ── build_fts_query ──────────────────────────────────────────────────────
+
+    #[test]
+    fn fts_phrase_wraps_in_quotes() {
+        assert_eq!(build_fts_query("hello world", true).as_deref(), Some("\"hello world\""));
+    }
+
+    #[test]
+    fn fts_phrase_too_short_returns_none() {
+        assert!(build_fts_query("ab", true).is_none());
+    }
+
+    #[test]
+    fn fts_phrase_exactly_3_chars_ok() {
+        assert!(build_fts_query("abc", true).is_some());
+    }
+
+    #[test]
+    fn fts_fuzzy_joins_terms_with_and() {
+        let q = build_fts_query("foo bar", false).unwrap();
+        assert!(q.contains("foo"));
+        assert!(q.contains("AND"));
+        assert!(q.contains("bar"));
+    }
+
+    #[test]
+    fn fts_fuzzy_filters_short_terms() {
+        // All terms < 3 chars → None
+        assert!(build_fts_query("to go", false).is_none());
+    }
+
+    #[test]
+    fn fts_fuzzy_mixed_length_keeps_long_terms() {
+        // "to" (2 chars) is filtered, "foo" (3 chars) is kept
+        let q = build_fts_query("to foo", false).unwrap();
+        assert!(q.contains("foo"));
+        assert!(!q.contains("to"));
+    }
+
+    #[test]
+    fn fts_fuzzy_strips_special_chars() {
+        let q = build_fts_query("test^query", false).unwrap();
+        assert!(!q.contains('^'));
+        assert!(q.contains("testquery") || q.contains("test"));
+    }
 }

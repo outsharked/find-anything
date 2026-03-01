@@ -188,6 +188,37 @@ pub fn start_archive_subprocess(
     (rx, handle)
 }
 
+/// Parses a single tracing-subscriber fmt stderr line and decides whether to
+/// relay it.  Returns `Some((level_tag, message))` if the line should be
+/// emitted, or `None` if it is empty or suppressed by an ignore pattern.
+///
+/// Separated from the tracing macro calls so it can be unit-tested without a
+/// live subscriber.
+pub(crate) fn parse_relay_line(
+    line: &str,
+    is_ignored: impl Fn(&str) -> bool,
+) -> Option<(&'static str, &str)> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    // Strip any leading non-alphanumeric chars (e.g. ANSI escape remnants).
+    let rest = line.trim_start_matches(|c: char| !c.is_alphanumeric());
+    for (prefix, tag) in [
+        ("ERROR ", "ERROR"),
+        ("WARN ",  "WARN"),
+        ("INFO ",  "INFO"),
+        ("DEBUG ", "DEBUG"),
+        ("TRACE ", "TRACE"),
+    ] {
+        if let Some(msg) = rest.strip_prefix(prefix) {
+            return if is_ignored(msg) { None } else { Some((tag, msg)) };
+        }
+    }
+    // Unknown format — emit as WARN unless ignored.
+    if is_ignored(line) { None } else { Some(("WARN", line)) }
+}
+
 /// Re-emit subprocess stderr lines through our tracing subscriber so they
 /// appear in the parent process output at the correct level and pass through
 /// the same log-ignore filters as in-process events.
@@ -198,37 +229,77 @@ pub fn start_archive_subprocess(
 pub fn relay_subprocess_logs(stderr: &[u8]) {
     let text = String::from_utf8_lossy(stderr);
     for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
+        let Some((tag, msg)) = parse_relay_line(line, find_common::logging::is_ignored) else {
             continue;
+        };
+        match tag {
+            "ERROR" => error!(target: "subprocess", "{msg}"),
+            "WARN"  => warn!(target: "subprocess", "{msg}"),
+            "INFO"  => info!(target: "subprocess", "{msg}"),
+            _       => debug!(target: "subprocess", "{msg}"),
         }
-        // Parse the level prefix emitted by tracing-subscriber fmt.
-        // Typical format: "WARN target: message" or "ERROR target: message".
-        let rest = line.trim_start_matches(|c: char| !c.is_alphanumeric());
-        if let Some(msg) = rest.strip_prefix("ERROR ") {
-            if !find_common::logging::is_ignored(msg) {
-                error!(target: "subprocess", "{msg}");
-            }
-        } else if let Some(msg) = rest.strip_prefix("WARN ") {
-            if !find_common::logging::is_ignored(msg) {
-                warn!(target: "subprocess", "{msg}");
-            }
-        } else if let Some(msg) = rest.strip_prefix("INFO ") {
-            if !find_common::logging::is_ignored(msg) {
-                info!(target: "subprocess", "{msg}");
-            }
-        } else if let Some(msg) = rest.strip_prefix("DEBUG ") {
-            if !find_common::logging::is_ignored(msg) {
-                debug!(target: "subprocess", "{msg}");
-            }
-        } else if let Some(msg) = rest.strip_prefix("TRACE ") {
-            if !find_common::logging::is_ignored(msg) {
-                debug!(target: "subprocess", "{msg}");
-            }
-        } else if !find_common::logging::is_ignored(line) {
-            // Unknown format — emit as warn so it's not silently dropped.
-            warn!(target: "subprocess", "{line}");
-        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_relay_line;
+
+    fn ignore_pdf(msg: &str) -> bool {
+        msg.contains("pdf_extract: unknown glyph")
+    }
+
+    fn no_ignore(_: &str) -> bool { false }
+
+    #[test]
+    fn suppresses_warn_matching_ignore_pattern() {
+        // Exact regression from a025efb/c029136: this line must be suppressed
+        let line = "WARN pdf_extract: unknown glyph name 'box3' for font ArialMT";
+        assert!(parse_relay_line(line, ignore_pdf).is_none());
+    }
+
+    #[test]
+    fn passes_warn_not_matching_pattern() {
+        let line = "WARN find_server::worker: slow step took 1200ms";
+        assert!(parse_relay_line(line, ignore_pdf).is_some());
+    }
+
+    #[test]
+    fn parses_error_prefix() {
+        let (tag, msg) = parse_relay_line("ERROR some::crate: bad thing", no_ignore).unwrap();
+        assert_eq!(tag, "ERROR");
+        assert_eq!(msg, "some::crate: bad thing");
+    }
+
+    #[test]
+    fn parses_warn_prefix() {
+        let (tag, msg) = parse_relay_line("WARN target: message", no_ignore).unwrap();
+        assert_eq!(tag, "WARN");
+        assert_eq!(msg, "target: message");
+    }
+
+    #[test]
+    fn parses_info_prefix() {
+        let (tag, _) = parse_relay_line("INFO some::crate: hello", no_ignore).unwrap();
+        assert_eq!(tag, "INFO");
+    }
+
+    #[test]
+    fn empty_line_returns_none() {
+        assert!(parse_relay_line("   ", no_ignore).is_none());
+    }
+
+    #[test]
+    fn unknown_format_emitted_as_warn() {
+        let (tag, msg) = parse_relay_line("bare message with no level", no_ignore).unwrap();
+        assert_eq!(tag, "WARN");
+        assert_eq!(msg, "bare message with no level");
+    }
+
+    #[test]
+    fn unknown_format_suppressed_if_ignored() {
+        let suppress_bare = |m: &str| m.contains("bare message");
+        assert!(parse_relay_line("bare message with no level", suppress_bare).is_none());
     }
 }
 
