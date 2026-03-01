@@ -58,7 +58,11 @@ impl<S: Subscriber> tracing_subscriber::layer::Filter<S> for LogIgnoreFilter {
         // name" work correctly against log records from external crates.
         let target = visitor.log_target.as_deref().unwrap_or_else(|| event.metadata().target());
         let candidate = format!("{target}: {}", visitor.message);
-        !patterns.iter().any(|p| p.is_match(&candidate))
+        // Also match against the message alone so that patterns written
+        // against the in-process log target (e.g. "pdf_extract: unknown glyph")
+        // continue to work when the same message arrives via subprocess relay
+        // (where the tracing target becomes "subprocess").
+        !patterns.iter().any(|p| p.is_match(&candidate) || p.is_match(&visitor.message))
     }
 }
 
