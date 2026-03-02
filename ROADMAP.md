@@ -163,7 +163,7 @@ RBAC is planned for a future release.
 
 - [x] Log (xxx indexed so far, yyy skipped) if files are skipped due to already being indexed — periodic progress log every 5 s during the indexing loop
 - [ ] Better identificaiton of non-text files
-- [ ] Show file count by file extension as an option
+- [x] Show file count by file extension as an option
 
 ### Logging improvements
 

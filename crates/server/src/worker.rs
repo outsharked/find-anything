@@ -146,28 +146,31 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
             };
         }
         let file_start = std::time::Instant::now();
-        match process_file(&mut conn, &mut archive_mgr, file) {
+        match process_file(&mut conn, &mut archive_mgr, file, false) {
             Ok(()) => {
                 successfully_indexed.push(file.path.clone());
             }
             Err(e) => {
                 tracing::error!("Failed to index {}: {e:#}", file.path);
-                // For outer archive files (kind="archive", no "::" in path), skip the
-                // filename-only fallback entirely.  The is_outer_archive DELETE in
-                // process_file already ran outside the transaction, so inner members
-                // are gone.  Leaving the outer archive WITHOUT a DB record causes it to
-                // appear as "new" on the next scan, triggering a full re-extraction that
-                // restores all inner members.  A fallback record here would record the
-                // current mtime and suppress that re-indexing permanently.
-                if !is_outer_archive(&file.path, &file.kind) {
-                    // Insert a filename-only record so the file:
-                    //   1. appears in search by path name
-                    //   2. has an mtime in the DB so it's not re-submitted as "new" on
-                    //      every subsequent scan (it will be skipped unless mtime changes)
-                    let fallback = filename_only_file(file);
-                    if let Err(e2) = process_file(&mut conn, &mut archive_mgr, &fallback) {
-                        tracing::error!("Filename-only fallback also failed for {}: {e2:#}", file.path);
-                    }
+                // Insert a fallback record so the file appears in search and tree:
+                //   1. appears in search by path name (line_number=0 entry)
+                //   2. appears in the directory tree
+                //
+                // For outer archive files (kind="archive", no "::" in path) we use a
+                // stub with mtime=0 so that re-indexing is triggered on the next scan
+                // (any real mtime > 0).  We skip the inner-member DELETE in process_file
+                // for the stub call to avoid disrupting inner members that may still be
+                // alive (if the original failure occurred before that DELETE ran).
+                //
+                // For all other files we use the real mtime so they are not re-submitted
+                // on every scan unless they actually change.
+                let (fallback, skip_inner) = if is_outer_archive(&file.path, &file.kind) {
+                    (outer_archive_stub(file), true)
+                } else {
+                    (filename_only_file(file), false)
+                };
+                if let Err(e2) = process_file(&mut conn, &mut archive_mgr, &fallback, skip_inner) {
+                    tracing::error!("Filename-only fallback also failed for {}: {e2:#}", file.path);
                 }
                 // Do NOT add to successfully_indexed: the error should remain visible
                 // in the UI even though the fallback put a filename-only record in the DB.
@@ -216,12 +219,10 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
     Ok(())
 }
 
-/// Build a minimal IndexFile containing only the path line (line_number=0).
-/// Used as a fallback when full indexing fails: the file gets a DB record with
-/// its mtime so subsequent scans skip it rather than re-submitting it forever.
 /// Returns `true` if `file` is a top-level archive (kind="archive" with no
-/// "::" in the path).  These files require special handling: the inner-member
-/// DELETE runs outside the transaction, so the fallback must be skipped.
+/// "::" in the path).  These files require special handling in the fallback
+/// path: see `outer_archive_stub` and the `skip_inner_delete` parameter of
+/// `process_file`.
 pub(crate) fn is_outer_archive(path: &str, kind: &str) -> bool {
     kind == "archive" && !path.contains("::")
 }
@@ -244,10 +245,36 @@ fn filename_only_file(file: &IndexFile) -> IndexFile {
     }
 }
 
+/// Build a minimal stub for an outer archive that failed extraction.
+///
+/// Unlike `filename_only_file`, this preserves `kind="archive"` so the file
+/// appears as an expandable entry in the directory tree.  It uses `mtime=0`
+/// so the scan client always sees a mtime mismatch and re-submits the file on
+/// the next scan, giving extraction another chance to succeed.
+///
+/// The caller must pass `skip_inner_delete=true` to `process_file` when using
+/// this stub so that any inner members still alive in the DB are not deleted.
+fn outer_archive_stub(file: &IndexFile) -> IndexFile {
+    IndexFile {
+        path: file.path.clone(),
+        mtime: 0, // force re-indexing on every subsequent scan
+        size: file.size,
+        kind: "archive".to_string(),
+        lines: vec![IndexLine {
+            archive_path: None,
+            line_number: 0,
+            content: file.path.clone(),
+        }],
+        extract_ms: None,
+        content_hash: None,
+    }
+}
+
 fn process_file(
     conn: &mut Connection,
     archive_mgr: &mut ArchiveManager,
     file: &find_common::api::IndexFile,
+    skip_inner_delete: bool,
 ) -> Result<()> {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -261,7 +288,10 @@ fn process_file(
     // If this is an outer archive file being re-indexed, delete stale inner members
     // first. They'll be re-submitted as separate IndexFile entries in the same batch.
     // We detect "outer archive" by kind == "archive" and no "::" in the path.
-    if is_outer_archive(&file.path, &file.kind) {
+    // skip_inner_delete is set for the stub fallback path (see process_request error
+    // handling) to avoid re-triggering this delete while the original failure is still
+    // unresolved and the inner members may still be alive.
+    if !skip_inner_delete && is_outer_archive(&file.path, &file.kind) {
         // Collect and remove chunks for all old inner members.
         let like_pat = format!("{}::%", file.path);
         let inner_ids: Vec<i64> = {
@@ -545,5 +575,31 @@ mod tests {
         let fallback = filename_only_file(&f);
         assert_eq!(fallback.mtime, f.mtime);
         assert_eq!(fallback.size, f.size);
+    }
+
+    // ── outer_archive_stub ────────────────────────────────────────────────────
+
+    #[test]
+    fn outer_archive_stub_preserves_archive_kind() {
+        let f = make_file("backup.7z", "archive");
+        let stub = outer_archive_stub(&f);
+        assert_eq!(stub.kind, "archive");
+    }
+
+    #[test]
+    fn outer_archive_stub_uses_zero_mtime() {
+        // mtime=0 ensures the scan client always re-submits the file.
+        let f = make_file("backup.7z", "archive");
+        let stub = outer_archive_stub(&f);
+        assert_eq!(stub.mtime, 0);
+    }
+
+    #[test]
+    fn outer_archive_stub_has_single_path_line() {
+        let f = make_file("backups/big.tar.gz", "archive");
+        let stub = outer_archive_stub(&f);
+        assert_eq!(stub.lines.len(), 1);
+        assert_eq!(stub.lines[0].line_number, 0);
+        assert_eq!(stub.lines[0].content, "backups/big.tar.gz");
     }
 }
