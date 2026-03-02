@@ -3,13 +3,11 @@
 	import { goto } from '$app/navigation';
 	import SearchBox from '$lib/SearchBox.svelte';
 	import SourceSelector from '$lib/SourceSelector.svelte';
-	import DirectoryTree from '$lib/DirectoryTree.svelte';
 	import PathBar from '$lib/PathBar.svelte';
 	import FileViewer from '$lib/FileViewer.svelte';
 	import DirListing from '$lib/DirListing.svelte';
 	import type { LineSelection } from '$lib/lineSelection';
 	import type { FilePath } from '$lib/filePath';
-	import { profile } from '$lib/profile';
 
 	export let fileSource: string;
 	export let currentFile: FilePath | null;
@@ -36,37 +34,8 @@
 	}>();
 
 	let isTyping = false;
-	let sidebarWidth: number = $profile.sidebarWidth ?? 240;
 
 	$: pathBarPath = panelMode === 'dir' ? currentDirPrefix : (currentFile?.full ?? '');
-
-	function onResizeStart(e: MouseEvent) {
-		const startX = e.clientX;
-		const startWidth = sidebarWidth;
-		function onMove(ev: MouseEvent) {
-			sidebarWidth = Math.min(600, Math.max(120, startWidth + ev.clientX - startX));
-		}
-		function onUp() {
-			document.removeEventListener('mousemove', onMove);
-			document.removeEventListener('mouseup', onUp);
-			profile.update((p) => ({ ...p, sidebarWidth }));
-		}
-		document.addEventListener('mousemove', onMove);
-		document.addEventListener('mouseup', onUp);
-	}
-
-	function onResizeKeydown(e: KeyboardEvent) {
-		const step = e.shiftKey ? 32 : 8;
-		if (e.key === 'ArrowRight') {
-			e.preventDefault();
-			sidebarWidth = Math.min(600, sidebarWidth + step);
-			profile.update((p) => ({ ...p, sidebarWidth }));
-		} else if (e.key === 'ArrowLeft') {
-			e.preventDefault();
-			sidebarWidth = Math.max(120, sidebarWidth - step);
-			profile.update((p) => ({ ...p, sidebarWidth }));
-		}
-	}
 </script>
 
 <div class="topbar">
@@ -96,50 +65,32 @@
 	<button class="gear-btn" title="Settings" on:click={() => goto('/settings')}>⚙</button>
 </div>
 
-<div class="content">
-	{#if showTree}
-		<div class="sidebar" style="width: {sidebarWidth}px">
-			<DirectoryTree
-				source={fileSource}
-				activePath={currentFile?.full ?? null}
-				on:open={(e) => dispatch('openFileFromTree', e.detail)}
-			/>
-		</div>
-		<button
-			class="resize-handle"
-			type="button"
-			aria-label="Resize sidebar"
-			on:mousedown={onResizeStart}
-			on:keydown={onResizeKeydown}
-		/>
-	{/if}
-	<div class="viewer-wrap">
-		<PathBar
+<div class="viewer-wrap">
+	<PathBar
+		source={fileSource}
+		path={pathBarPath}
+		archivePath={panelMode === 'file' ? currentFile?.inner ?? null : null}
+		{baseUrl}
+		on:back={() => dispatch('back')}
+	/>
+	{#if panelMode === 'dir'}
+		<DirListing
 			source={fileSource}
-			path={pathBarPath}
-			archivePath={panelMode === 'file' ? currentFile?.inner ?? null : null}
-			{baseUrl}
-			on:back={() => dispatch('back')}
+			prefix={currentDirPrefix}
+			on:openFile={(e) => dispatch('openDirFile', e.detail)}
+			on:openDir={(e) => dispatch('openDir', e.detail)}
 		/>
-		{#if panelMode === 'dir'}
-			<DirListing
+	{:else if currentFile}
+		{#key `${fileSource}:${currentFile.full}`}
+			<FileViewer
 				source={fileSource}
-				prefix={currentDirPrefix}
-				on:openFile={(e) => dispatch('openDirFile', e.detail)}
-				on:openDir={(e) => dispatch('openDir', e.detail)}
+				path={currentFile.outer}
+				archivePath={currentFile.inner}
+				selection={fileSelection}
+				on:lineselect={(e) => dispatch('lineselect', e.detail)}
 			/>
-		{:else if currentFile}
-			{#key `${fileSource}:${currentFile.full}`}
-				<FileViewer
-					source={fileSource}
-					path={currentFile.outer}
-					archivePath={currentFile.inner}
-					selection={fileSelection}
-					on:lineselect={(e) => dispatch('lineselect', e.detail)}
-				/>
-			{/key}
-		{/if}
-	</div>
+		{/key}
+	{/if}
 </div>
 
 <style>
@@ -203,40 +154,6 @@
 	.gear-btn:hover {
 		background: var(--bg-hover, rgba(255, 255, 255, 0.08));
 		color: var(--text);
-	}
-
-	.content {
-		flex: 1;
-		min-height: 0;
-		display: flex;
-		flex-direction: row;
-		overflow: hidden;
-	}
-
-	.sidebar {
-		flex-shrink: 0;
-		overflow: hidden;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.resize-handle {
-		width: 4px;
-		flex-shrink: 0;
-		cursor: col-resize;
-		background: var(--border);
-		border: none;
-		padding: 0;
-		transition: background 0.15s;
-	}
-
-	.resize-handle:focus-visible {
-		outline: 2px solid var(--accent, #58a6ff);
-		outline-offset: 0;
-	}
-
-	.resize-handle:hover {
-		background: var(--accent, #58a6ff);
 	}
 
 	.viewer-wrap {

@@ -6,6 +6,7 @@
 	import SearchView from '$lib/SearchView.svelte';
 	import FileView from '$lib/FileView.svelte';
 	import CommandPalette from '$lib/CommandPalette.svelte';
+	import MultiSourceTree from '$lib/MultiSourceTree.svelte';
 	import { search, listSources, getSettings, activateSession, AuthError } from '$lib/api';
 	import type { SearchResult, SourceInfo } from '$lib/api';
 	import { getToken, setToken } from '$lib/token';
@@ -45,6 +46,8 @@
 	let currentDirPrefix = '';
 	let showTree = false;
 	let showPalette = false;
+
+	let sidebarWidth: number = $profile.sidebarWidth ?? 240;
 
 	// ── Token setup ──────────────────────────────────────────────────────────────
 
@@ -335,6 +338,36 @@
 		pushState();
 	}
 
+	// ── Sidebar resize ───────────────────────────────────────────────────────────
+
+	function onResizeStart(e: MouseEvent) {
+		const startX = e.clientX;
+		const startWidth = sidebarWidth;
+		function onMove(ev: MouseEvent) {
+			sidebarWidth = Math.min(600, Math.max(120, startWidth + ev.clientX - startX));
+		}
+		function onUp() {
+			document.removeEventListener('mousemove', onMove);
+			document.removeEventListener('mouseup', onUp);
+			profile.update((p) => ({ ...p, sidebarWidth }));
+		}
+		document.addEventListener('mousemove', onMove);
+		document.addEventListener('mouseup', onUp);
+	}
+
+	function onResizeKeydown(e: KeyboardEvent) {
+		const step = e.shiftKey ? 32 : 8;
+		if (e.key === 'ArrowRight') {
+			e.preventDefault();
+			sidebarWidth = Math.min(600, sidebarWidth + step);
+			profile.update((p) => ({ ...p, sidebarWidth }));
+		} else if (e.key === 'ArrowLeft') {
+			e.preventDefault();
+			sidebarWidth = Math.max(120, sidebarWidth - step);
+			profile.update((p) => ({ ...p, sidebarWidth }));
+		}
+	}
+
 	// ── Derived ──────────────────────────────────────────────────────────────────
 
 	$: sourceNames = sources.map((s) => s.name);
@@ -343,58 +376,80 @@
 	$: fileBaseUrl = $profile.sourceBaseUrls?.[fileSource] ?? serverBaseUrls[fileSource] ?? null;
 </script>
 
-<div class="page" class:file-view={view === 'file'}>
-	{#if view === 'file'}
-		<FileView
-			{fileSource}
-			{currentFile}
-			{fileSelection}
-			{panelMode}
-			{currentDirPrefix}
-			{showTree}
-			baseUrl={fileBaseUrl}
-			{query}
-			{mode}
-			{searching}
-			sources={sourceNames}
-			{selectedSources}
-			on:back={handleBack}
-			on:search={handleSearch}
-			on:sourceChange={handleSourceChange}
-			on:treeToggle={handleTreeToggle}
-			on:openFileFromTree={handleOpenFileFromTree}
-			on:openDirFile={handleOpenDirFile}
-			on:openDir={handleOpenDir}
-			on:lineselect={handleLineSelect}
+<div class="page-layout" class:has-sidebar={showTree} class:file-view={view === 'file'}>
+	{#if showTree}
+		<aside class="global-sidebar" style="width: {sidebarWidth}px">
+			<MultiSourceTree
+				sources={sourceNames}
+				activeSource={view === 'file' ? fileSource : null}
+				activePath={view === 'file' ? (currentFile?.full ?? null) : null}
+				on:open={handleOpenFileFromTree}
+			/>
+		</aside>
+		<button
+			class="resize-handle"
+			type="button"
+			aria-label="Resize sidebar"
+			on:mousedown={onResizeStart}
+			on:keydown={onResizeKeydown}
 		/>
-	{:else}
-		<SearchView
-			{query}
-			{mode}
-			{searching}
-			sources={sourceNames}
-			{selectedSources}
-			{results}
-			{totalResults}
-			{searchError}
-			{searchId}
-			on:search={handleSearch}
-			on:sourceChange={handleSourceChange}
-			on:open={openFile}
-		/>
-		<div bind:this={sentinel}></div>
-		{#if loadingMore}
-			<div class="load-row">
-				<div class="spinner">
-					<svg viewBox="0 0 24 24" fill="none">
-						<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.25"/>
-						<path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
-					</svg>
-				</div>
-				<span>Loading more results…</span>
-			</div>
-		{/if}
 	{/if}
+
+	<div class="main-content">
+		{#if view === 'file'}
+			<FileView
+				{fileSource}
+				{currentFile}
+				{fileSelection}
+				{panelMode}
+				{currentDirPrefix}
+				{showTree}
+				baseUrl={fileBaseUrl}
+				{query}
+				{mode}
+				{searching}
+				sources={sourceNames}
+				{selectedSources}
+				on:back={handleBack}
+				on:search={handleSearch}
+				on:sourceChange={handleSourceChange}
+				on:treeToggle={handleTreeToggle}
+				on:openFileFromTree={handleOpenFileFromTree}
+				on:openDirFile={handleOpenDirFile}
+				on:openDir={handleOpenDir}
+				on:lineselect={handleLineSelect}
+			/>
+		{:else}
+			<SearchView
+				{query}
+				{mode}
+				{searching}
+				sources={sourceNames}
+				{selectedSources}
+				{results}
+				{totalResults}
+				{searchError}
+				{searchId}
+				{showTree}
+				on:search={handleSearch}
+				on:sourceChange={handleSourceChange}
+				on:open={openFile}
+				on:treeToggle={handleTreeToggle}
+			/>
+			<div bind:this={sentinel}></div>
+			{#if loadingMore}
+				<div class="load-row">
+					<div class="spinner">
+						<svg viewBox="0 0 24 24" fill="none">
+							<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.25"/>
+							<path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+						</svg>
+					</div>
+					<span>Loading more results…</span>
+				</div>
+			{/if}
+		{/if}
+	</div>
 </div>
 
 <CommandPalette
@@ -424,11 +479,65 @@
 {/if}
 
 <style>
-	.page.file-view {
+	.page-layout {
 		display: flex;
-		flex-direction: column;
+		flex-direction: row;
+	}
+
+	.page-layout.file-view {
 		height: 100vh;
 		overflow: hidden;
+	}
+
+	.global-sidebar {
+		flex-shrink: 0;
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
+	}
+
+	/* In file-view mode, sidebar fills full height */
+	.page-layout.file-view .global-sidebar {
+		height: 100vh;
+	}
+
+	/* In search mode, sidebar is sticky and full-height */
+	.page-layout:not(.file-view) .global-sidebar {
+		position: sticky;
+		top: 0;
+		height: 100vh;
+		align-self: flex-start;
+	}
+
+	.resize-handle {
+		width: 4px;
+		flex-shrink: 0;
+		cursor: col-resize;
+		background: var(--border);
+		border: none;
+		padding: 0;
+		transition: background 0.15s;
+	}
+
+	.resize-handle:focus-visible {
+		outline: 2px solid var(--accent, #58a6ff);
+		outline-offset: 0;
+	}
+
+	.resize-handle:hover {
+		background: var(--accent, #58a6ff);
+	}
+
+	.main-content {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.page-layout.file-view .main-content {
+		height: 100vh;
 	}
 
 	.load-row {

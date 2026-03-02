@@ -15,11 +15,13 @@
 	export let totalResults = 0;
 	export let searchError: string | null = null;
 	export let searchId = 0;
+	export let showTree = false;
 
 	const dispatch = createEventDispatcher<{
 		search: { query: string; mode: string };
 		sourceChange: string[];
 		open: SearchResult;
+		treeToggle: void;
 	}>();
 
 	let isTyping = false;
@@ -28,6 +30,12 @@
 
 <div class="topbar">
 	<span class="logo">find-anything</span>
+	<button
+		class="tree-toggle"
+		class:active={showTree}
+		title="Toggle file tree"
+		on:click={() => dispatch('treeToggle')}
+	>⊞</button>
 	<div class="search-wrap">
 		<SearchBox
 			{query}
@@ -91,6 +99,27 @@
 	.search-wrap {
 		min-width: 260px;
 		flex: 1;
+	}
+
+	.tree-toggle {
+		background: none;
+		border: none;
+		cursor: pointer;
+		color: var(--text-muted);
+		font-size: 16px;
+		padding: 2px 6px;
+		border-radius: 4px;
+		line-height: 1;
+		flex-shrink: 0;
+	}
+
+	.tree-toggle:hover {
+		background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+		color: var(--text);
+	}
+
+	.tree-toggle.active {
+		color: var(--accent, #58a6ff);
 	}
 
 	.gear-btn {

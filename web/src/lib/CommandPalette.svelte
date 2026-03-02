@@ -5,7 +5,7 @@
 
 	/** Set to true to show the palette. */
 	export let open = false;
-	/** Source(s) to search. First one wins; empty = no filter. */
+	/** Source(s) to search. Empty = no filter (all sources). */
 	export let sources: string[] = [];
 
 	const dispatch = createEventDispatcher<{
@@ -20,29 +20,33 @@
 	// Per-source file list cache.
 	const cache = new Map<string, FileRecord[]>();
 
-	$: activeSource = sources[0] ?? '';
-	let allFiles: FileRecord[] = [];
+	type SourcedFile = FileRecord & { source: string };
+
 	let loading = false;
 
-	// Fetch file list when palette opens or source changes.
-	$: if (open && activeSource) ensureLoaded(activeSource);
+	// Fetch all scoped sources in parallel when palette opens or sources change.
+	$: if (open && sources.length) loadAll(sources);
 
-	async function ensureLoaded(source: string) {
-		if (cache.has(source)) {
-			allFiles = cache.get(source)!;
-			return;
-		}
+	async function ensureLoaded(source: string): Promise<void> {
+		if (cache.has(source)) return;
+		const records = await listFiles(source);
+		cache.set(source, records);
+	}
+
+	async function loadAll(srcs: string[]) {
 		loading = true;
 		try {
-			const records = await listFiles(source);
-			cache.set(source, records);
-			allFiles = records;
+			await Promise.all(srcs.map(ensureLoaded));
 		} catch {
-			allFiles = [];
+			// partial failures are silently swallowed; missing sources yield no items
 		} finally {
 			loading = false;
 		}
 	}
+
+	$: allItems = sources.flatMap((s) =>
+		(cache.get(s) ?? []).map((f): SourcedFile => ({ ...f, source: s }))
+	);
 
 	// Simple character-subsequence fuzzy scorer with exact match boosting.
 	function fuzzyScore(q: string, path: string): number {
@@ -93,8 +97,8 @@
 	}
 
 	$: filtered = (() => {
-		if (!query) return allFiles.slice(0, 50).map((f) => ({ ...f, score: 0 }));
-		return allFiles
+		if (!query) return allItems.slice(0, 50).map((f) => ({ ...f, score: 0 }));
+		return allItems
 			.map((f) => ({ ...f, score: fuzzyScore(query, f.path) }))
 			.filter((f) => f.score >= 0)
 			.sort((a, b) => b.score - a.score)
@@ -112,11 +116,11 @@
 
 	function confirm() {
 		const item = filtered[selected];
-		if (item && activeSource) {
+		if (item) {
 			const i = item.path.indexOf('::');
 			const outerPath = i >= 0 ? item.path.slice(0, i) : item.path;
 			const archivePath = i >= 0 ? item.path.slice(i + 2) : null;
-			dispatch('select', { source: activeSource, path: outerPath, archivePath, kind: item.kind });
+			dispatch('select', { source: item.source, path: outerPath, archivePath, kind: item.kind });
 			close();
 		}
 	}
@@ -156,9 +160,6 @@
 					placeholder="Go to file…"
 					on:keydown={onKeydown}
 				/>
-				{#if activeSource}
-					<span class="cp-source">{activeSource}</span>
-				{/if}
 			</div>
 			<div class="cp-results">
 				{#if loading}
@@ -166,7 +167,7 @@
 				{:else if filtered.length === 0}
 					<div class="cp-status">No matches</div>
 				{:else}
-					{#each filtered as item, i (item.path)}
+					{#each filtered as item, i (`${item.source}:${item.path}`)}
 						<button
 							type="button"
 							class="cp-item"
@@ -175,6 +176,9 @@
 							on:mouseenter={() => (selected = i)}
 						>
 							<span class="cp-path">{displayPath(item.path)}</span>
+							{#if sources.length > 1}
+								<span class="cp-source">{item.source}</span>
+							{/if}
 						</button>
 					{/each}
 				{/if}
@@ -250,7 +254,9 @@
 	}
 
 	.cp-item {
-		display: block;
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		width: 100%;
 		background: none;
 		border: none;
@@ -262,7 +268,6 @@
 		color: var(--text-muted);
 		white-space: nowrap;
 		overflow: hidden;
-		text-overflow: ellipsis;
 	}
 
 	.cp-item:hover,
@@ -277,7 +282,7 @@
 	}
 
 	.cp-path {
-		display: block;
+		flex: 1;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
