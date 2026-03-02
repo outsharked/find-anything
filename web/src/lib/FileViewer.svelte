@@ -33,7 +33,9 @@
 
 	// Original file view
 	let showOriginal = false;
-	$: isArchiveMember = path.includes('::');
+	// archivePath is set when this file is a member of an archive.
+	// path is always the outer (real) file path — it never contains '::'.
+	$: isArchiveMember = archivePath !== null;
 	$: rawUrl = `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`;
 	// All images and PDFs can be shown inline (server converts non-native formats to PNG).
 	$: isInlineKind = fileKind === 'image' || fileKind === 'pdf';
@@ -158,15 +160,15 @@
 					📝 {markdownFormat ? 'Raw' : 'Format'}
 				</button>
 			{/if}
-			{#if !isArchiveMember}
-				{#if isInlineKind}
-					<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}
-							title="Toggle original file view">
-						{showOriginal ? 'View Extracted' : 'View Original'}
-					</button>
-				{/if}
-				<a href={rawUrl} download={fileName} class="toolbar-btn">Download Original</a>
+			{#if isInlineKind && !isArchiveMember}
+				<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}
+						title="Toggle original file view">
+					{showOriginal ? 'View Extracted' : 'View Original'}
+				</button>
 			{/if}
+			<a href={rawUrl} download={fileName} class="toolbar-btn">
+				{isArchiveMember ? 'Download Archive' : 'Download Original'}
+			</a>
 			<div class="metadata">
 				{#if fileKind}
 					<span class="meta-item kind-badge" title="File type">{fileKind}</span>
