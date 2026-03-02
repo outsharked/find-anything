@@ -26,7 +26,7 @@ serde           = { version = "1", features = ["derive"] }
 serde_json      = "1"
 serde_ignored   = "0.1"
 toml            = "0.8"
-tokio           = { version = "1", features = ["full"] }
+tokio           = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "io-util", "process", "sync"] }
 tracing         = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 regex           = "1"

@@ -36,4 +36,6 @@ flate2        = "1"
 uuid          = { version = "1", features = ["v4"] }
 chrono        = "0.4"
 tokio-util    = { version = "0.7", features = ["io"] }
-image         = "0.25"
+# Only tiff (decode) + png (encode) needed for the convert=png endpoint.
+# Default features include avif/rav1e (an AV1 encoder, ~90 transitive deps) — disable them.
+image         = { version = "0.25", default-features = false, features = ["tiff", "png"] }

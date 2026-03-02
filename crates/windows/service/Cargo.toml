@@ -13,5 +13,5 @@ windows-service = "0.8"
 winreg = "0.52"
 anyhow = { workspace = true }
 tokio = { workspace = true }
-toml = "0.8"
+toml = { workspace = true }
 tracing = { workspace = true }
