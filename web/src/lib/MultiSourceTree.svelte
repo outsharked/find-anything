@@ -91,10 +91,9 @@
 		font-size: 10px;
 	}
 
-	/* DirectoryTree inside an expanded source fills the available space */
+	/* DirectoryTree inside an expanded source: remove fixed height and border */
 	.source-root :global(.tree) {
 		border-right: none;
 		height: auto;
-		max-height: 60vh;
 	}
 </style>

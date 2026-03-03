@@ -473,23 +473,38 @@ pub fn get_base_url(conn: &Connection) -> Result<Option<String>> {
 
 // ── File lines ────────────────────────────────────────────────────────────────
 
+/// Resolve the effective file_id for a path, following canonical_file_id if the
+/// file is a dedup alias.  Returns None if the path is not in the files table.
+fn resolve_file_id(conn: &Connection, path: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT COALESCE(canonical_file_id, id) FROM files WHERE path = ?1",
+        params![path],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 /// Returns every indexed line for a file, ordered by line number.
 /// `path` may be a composite path ("archive.zip::member.txt") or a plain path.
+/// Follows canonical_file_id so dedup aliases show the same content as the canonical.
 pub fn get_file_lines(
     conn: &Connection,
     archive_mgr: &ArchiveManager,
     path: &str,
 ) -> Result<Vec<ContextLine>> {
+    let Some(file_id) = resolve_file_id(conn, path)? else {
+        return Ok(vec![]);
+    };
+
     let mut stmt = conn.prepare(
         "SELECT l.line_number, l.chunk_archive, l.chunk_name, l.line_offset_in_chunk
          FROM lines l
-         JOIN files f ON f.id = l.file_id
-         WHERE f.path = ?1
+         WHERE l.file_id = ?1
          ORDER BY l.line_number",
     )?;
 
     let rows: Vec<(usize, String, String, usize)> = stmt
-        .query_map(params![path], |row| {
+        .query_map(params![file_id], |row| {
             Ok((
                 row.get::<_, i64>(0)? as usize,
                 row.get(1)?,
@@ -533,17 +548,20 @@ fn get_metadata_context(
     archive_mgr: &ArchiveManager,
     file_path: &str,
 ) -> Result<Vec<ContextLine>> {
+    let Some(file_id) = resolve_file_id(conn, file_path)? else {
+        return Ok(vec![]);
+    };
+
     let mut stmt = conn.prepare(
         "SELECT l.line_number, l.chunk_archive, l.chunk_name, l.line_offset_in_chunk
          FROM lines l
-         JOIN files f ON f.id = l.file_id
-         WHERE f.path = ?1
+         WHERE l.file_id = ?1
            AND l.line_number = 0
          ORDER BY l.id",
     )?;
 
     let rows: Vec<(usize, String, String, usize)> = stmt
-        .query_map([file_path], |row| {
+        .query_map(params![file_id], |row| {
             Ok((
                 row.get::<_, i64>(0)? as usize,
                 row.get(1)?,
@@ -563,20 +581,23 @@ fn get_line_context(
     center: usize,
     window: usize,
 ) -> Result<Vec<ContextLine>> {
+    let Some(file_id) = resolve_file_id(conn, file_path)? else {
+        return Ok(vec![]);
+    };
+
     let lo = center.saturating_sub(window) as i64;
     let hi = (center + window) as i64;
 
     let mut stmt = conn.prepare(
         "SELECT l.line_number, l.chunk_archive, l.chunk_name, l.line_offset_in_chunk
          FROM lines l
-         JOIN files f ON f.id = l.file_id
-         WHERE f.path = ?1
+         WHERE l.file_id = ?1
            AND l.line_number BETWEEN ?2 AND ?3
          ORDER BY l.line_number",
     )?;
 
     let rows: Vec<(usize, String, String, usize)> = stmt
-        .query_map(params![file_path, lo, hi], |row| {
+        .query_map(params![file_id, lo, hi], |row| {
             Ok((
                 row.get::<_, i64>(0)? as usize,
                 row.get(1)?,

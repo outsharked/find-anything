@@ -35,7 +35,7 @@
 
 	let isTyping = false;
 
-	$: pathBarPath = panelMode === 'dir' ? currentDirPrefix : (currentFile?.full ?? '');
+	$: pathBarPath = panelMode === 'dir' ? currentDirPrefix : (currentFile?.outer ?? '');
 </script>
 
 <div class="topbar">

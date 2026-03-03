@@ -108,7 +108,10 @@ pub fn extract_from_bytes(bytes: &[u8], name: &str, _cfg: &ExtractorConfig) -> a
         let n = name.to_lowercase();
         n.ends_with(".md") || n.ends_with(".markdown")
     };
-    let content = String::from_utf8(bytes.to_vec())?;
+    // Use lossy conversion so Windows-1252 / Latin-1 encoded files (common in
+    // legacy code archives) produce content with replacement chars rather than
+    // silently returning empty lines.
+    let content = String::from_utf8_lossy(bytes).into_owned();
     if is_markdown {
         Ok(extract_markdown_with_frontmatter(&content))
     } else {
@@ -145,7 +148,7 @@ pub fn is_text_ext(ext: &str) -> bool {
         | "txt" | "log" | "diff" | "patch"
         | "lock"  // Cargo.lock, package-lock.json, etc.
         // Windows scripting / automation
-        | "cmd" | "bat" | "vbs" | "vba" | "ahk" | "au3" | "reg"
+        | "cmd" | "bat" | "vbs" | "vba" | "bas" | "cls" | "ahk" | "au3" | "reg"
         // Editor / IDE project files (text-based)
         | "workspace" | "code-workspace" | "sublime-project" | "sublime-workspace"
         | "editorconfig" | "gitignore" | "gitattributes" | "gitmodules"

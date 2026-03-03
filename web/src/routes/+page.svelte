@@ -480,6 +480,7 @@
 	.page-layout {
 		display: flex;
 		flex-direction: row;
+		min-height: 100vh;
 	}
 
 	.page-layout.file-view {
@@ -489,13 +490,9 @@
 
 	.global-sidebar {
 		flex-shrink: 0;
-		position: sticky;
-		top: 0;
-		height: 100vh;
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
-		align-self: flex-start;
 		background: var(--bg-secondary);
 		border-right: 1px solid var(--border);
 	}
@@ -503,10 +500,6 @@
 	.resize-handle {
 		width: 4px;
 		flex-shrink: 0;
-		position: sticky;
-		top: 0;
-		height: 100vh;
-		align-self: flex-start;
 		cursor: col-resize;
 		background: var(--border);
 		border: none;

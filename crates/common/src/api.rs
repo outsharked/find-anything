@@ -28,7 +28,7 @@ pub fn detect_kind_from_ext(ext: &str) -> &'static str {
         "rs" | "ts" | "js" | "mjs" | "cjs" | "jsx" | "tsx"
         | "py" | "rb" | "go" | "java" | "c" | "cpp" | "cc" | "cxx" | "h" | "hpp"
         | "cs" | "swift" | "kt" | "scala" | "r" | "m" | "pl"
-        | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd"
+        | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "vbs" | "vba" | "bas" | "cls"
         | "lua" | "el" | "clj" | "hs" | "ml" | "fs" | "ex" | "erl"
         | "dart" | "jl" | "nim" | "zig" | "s" | "asm"
         | "html" | "htm" | "xhtml" | "xml" | "svg" | "css" | "scss" | "sass" | "less"

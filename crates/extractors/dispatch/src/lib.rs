@@ -68,10 +68,19 @@ pub fn dispatch_from_bytes(bytes: &[u8], name: &str, cfg: &ExtractorConfig) -> V
 
     // ── Text (most permissive — accepts many files by extension or content sniff) ──
     if find_extract_text::accepts_bytes(member_path, bytes) {
+        tracing::debug!("text extraction for '{name}' ({} bytes)", bytes.len());
         match find_extract_text::extract_from_bytes(bytes, name, cfg) {
-            Ok(lines) => return lines,
-            Err(_) => return vec![],
+            Ok(lines) => {
+                tracing::debug!("text extraction yielded {} lines for '{name}'", lines.len());
+                return lines;
+            }
+            Err(e) => {
+                warn!("text extraction failed for '{name}': {e}");
+                return vec![];
+            }
         }
+    } else {
+        tracing::debug!("no text extractor matched '{name}' ({} bytes)", bytes.len());
     }
 
     // ── MIME fallback ─────────────────────────────────────────────────────────

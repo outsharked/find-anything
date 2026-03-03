@@ -339,6 +339,12 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                 error: "archive extraction subprocess failed".to_string(),
             });
         }
+
+        // Flush any remaining archive members (partial final batch).
+        if !ctx.batch.is_empty() {
+            info!("submitting batch — extracting {rel_path} ({} members, {members_submitted} total)", ctx.batch.len());
+            ctx.submit(vec![]).await?;
+        }
     } else {
         // ── Non-archive extraction ────────────────────────────────────────────
         // dispatch_from_path handles MIME detection internally: it emits a
