@@ -18,6 +18,7 @@
 
 	const dispatch = createEventDispatcher<{
 		lineselect: { selection: LineSelection };
+		open: { source: string; path: string; kind: string; archivePath?: string };
 	}>();
 
 	let loading = true;
@@ -32,19 +33,60 @@
 	let indexingError: string | null = null;
 	/** Metadata lines (line_number === 0, excluding the path line itself). */
 	let metaLines: { content: string }[] = [];
+	/** Paths of duplicate/canonical copies of this file (dedup aliases). */
+	let duplicatePaths: string[] = [];
 
 	// Original file view
 	let showOriginal = false;
+	// For images: false = split view (image + metadata side-by-side), true = full-width image
+	let imageFullWidth = false;
+	// Image load state — reset whenever the source URL changes
+	let imageLoaded = false;
+	let imageError = false;
+	$: {
+		rawInlineUrl;
+		imageLoaded = false;
+		imageError = false;
+	}
+	// Parse image dimensions from metadata lines for aspect-ratio placeholder.
+	// Handles both EXIF ([EXIF:ImageWidth]/[EXIF:ImageLength]) and basic extractor
+	// ([IMAGE:dimensions] WxH) formats.
+	let imgWidth: number | null = null;
+	let imgHeight: number | null = null;
+	$: {
+		imgWidth = null;
+		imgHeight = null;
+		for (const l of metaLines) {
+			const w = l.content.match(/^\[EXIF:ImageWidth\]\s+(\d+)/);
+			if (w) imgWidth = parseInt(w[1]);
+			const h = l.content.match(/^\[EXIF:ImageLength\]\s+(\d+)/);
+			if (h) imgHeight = parseInt(h[1]);
+			const dims = l.content.match(/^\[IMAGE:dimensions\]\s+(\d+)x(\d+)/);
+			if (dims) { imgWidth = parseInt(dims[1]); imgHeight = parseInt(dims[2]); }
+		}
+	}
+	$: placeholderStyle = (imgWidth && imgHeight)
+		? `width: min(${imgWidth}px, 100%); aspect-ratio: ${imgWidth} / ${imgHeight}; max-height: min(${imgHeight}px, 100%); min-height: 0;`
+		: '';
 	// archivePath is set when this file is a member of an archive.
 	// path is always the outer (real) file path — it never contains '::'.
 	$: isArchiveMember = archivePath !== null;
+	// Download/stream URL for the outer file (used for download link and PDF iframe).
 	$: rawUrl = `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`;
-	// All images and PDFs can be shown inline (server converts non-native formats to PNG).
-	$: isInlineKind = fileKind === 'image' || fileKind === 'pdf';
+	// For inline image display, use the composite path for archive members so the
+	// server extracts the member from the outer ZIP.
+	$: rawInlinePath = archivePath ? `${path}::${archivePath}` : path;
+	// Both images and PDFs can be shown inline, including archive members.
+	// The server extracts archive members from the outer ZIP via composite paths.
+	$: canViewInline = fileKind === 'image' || fileKind === 'pdf';
 	// For images the browser can't render natively, request server-side PNG conversion.
+	// Check the member's own extension for archive members.
 	const BROWSER_IMAGE_EXTS = new Set(['jpg','jpeg','png','gif','webp','svg','svgz','avif','bmp','ico']);
-	$: needsConversion = fileKind === 'image' && !BROWSER_IMAGE_EXTS.has((path.split('.').pop() ?? '').toLowerCase());
-	$: rawInlineUrl = needsConversion ? rawUrl + '&convert=png' : rawUrl;
+	$: imageExtPath = archivePath ?? path;
+	$: needsConversion = fileKind === 'image' && !BROWSER_IMAGE_EXTS.has((imageExtPath.split('.').pop() ?? '').toLowerCase());
+	$: rawInlineUrl = needsConversion
+		? `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}&convert=png`
+		: `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}`;
 	$: fileName = path.split('/').pop() ?? path;
 
 	// Detect if file is markdown
@@ -87,13 +129,23 @@
 		try {
 			const data = await getFile(source, path, archivePath ?? undefined);
 
-			// Separate line_number=0 entries (path + metadata) from numbered content.
-			// The first zero-line is the file's own path — already shown in the path bar,
-			// so we skip it. Any remaining zero-lines are metadata (EXIF, ID3, etc.).
+			// Separate line_number=0 entries into: current path (skip), metadata, duplicate paths.
+			// Metadata lines always start with '['. Path lines are bare file paths.
+			// A path line that doesn't match the current file is a duplicate (dedup alias).
+			const compositePath = archivePath ? `${path}::${archivePath}` : path;
 			const zeroLines = data.lines.filter((l) => l.line_number === 0);
 			const contentLines = data.lines.filter((l) => l.line_number > 0);
 
-			metaLines = zeroLines.slice(1).map((l) => ({ content: l.content }));
+			metaLines = [];
+			duplicatePaths = [];
+			for (const l of zeroLines) {
+				if (l.content === compositePath) continue; // current file's own path
+				if (l.content.startsWith('[')) {
+					metaLines.push({ content: l.content });
+				} else {
+					duplicatePaths.push(l.content);
+				}
+			}
 
 			const contents = contentLines.map((l) => l.content);
 			lineOffsets = contentLines.map((l) => l.line_number);
@@ -105,6 +157,7 @@
 			indexingError = data.indexing_error ?? null;
 			// Default to showing the original for images; extracted text for everything else.
 			showOriginal = fileKind === 'image';
+			imageFullWidth = false;
 		} catch (e) {
 			error = String(e);
 		} finally {
@@ -117,6 +170,13 @@
 			scrollToLine(ln);
 		}
 	});
+
+	function openDuplicate(dupPath: string) {
+		const i = dupPath.indexOf('::');
+		const outerPath = i >= 0 ? dupPath.slice(0, i) : dupPath;
+		const archivePath = i >= 0 ? dupPath.slice(i + 2) : undefined;
+		dispatch('open', { source, path: outerPath, kind: 'unknown', archivePath });
+	}
 
 	function scrollToLine(ln: number) {
 		const el = document.getElementById(`line-${ln}`);
@@ -162,11 +222,19 @@
 					📝 {markdownFormat ? 'Raw' : 'Format'}
 				</button>
 			{/if}
-			{#if isInlineKind && !isArchiveMember}
-				<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}
-						title="Toggle original file view">
-					{showOriginal ? 'View Extracted' : 'View Original'}
-				</button>
+			{#if canViewInline}
+				{#if fileKind === 'image'}
+					{#if imageFullWidth}
+						<button class="toolbar-btn" on:click={() => imageFullWidth = false}>View Split</button>
+					{:else}
+						<button class="toolbar-btn" on:click={() => imageFullWidth = true}>View Extracted</button>
+					{/if}
+				{:else}
+					<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}
+							title="Toggle original file view">
+						{showOriginal ? 'View Extracted' : 'View Original'}
+					</button>
+				{/if}
 			{/if}
 			<a href={rawUrl} download={fileName} class="toolbar-btn">
 				{isArchiveMember ? 'Download Archive' : 'Download Original'}
@@ -183,29 +251,79 @@
 				{/if}
 			</div>
 		</div>
-		{#if metaLines.length > 0 && !(showOriginal && isInlineKind && !isArchiveMember)}
-			<div class="meta-panel">
-				{#each metaLines as meta}
-					<div class="meta-row">{meta.content}</div>
-				{/each}
-			</div>
-		{/if}
-		{#if showOriginal && isInlineKind && !isArchiveMember}
-			<div class="original-panel">
-				{#if fileKind === 'image'}
-					<img src={rawInlineUrl} alt={path} class="original-image" />
+		{#if showOriginal && canViewInline}
+			{#if fileKind === 'image'}
+				{#if imageFullWidth}
+					<!-- Full-width scrollable image -->
+					<div class="image-full-panel">
+						{#if imageError}
+							<div class="img-placeholder img-placeholder--error" style={placeholderStyle}>Image unavailable</div>
+						{:else}
+							{#if !imageLoaded}<div class="img-placeholder img-placeholder--loading" style={placeholderStyle}></div>{/if}
+							<img src={rawInlineUrl} alt={path}
+								class="image-full" class:img-hidden={!imageLoaded}
+								on:load={() => imageLoaded = true}
+								on:error={() => imageError = true} />
+						{/if}
+					</div>
 				{:else}
-					<iframe src={rawUrl} title="Original file" class="original-iframe"></iframe>
+					<!-- Split view: image left, metadata right -->
+					<div class="image-split-panel">
+						<div class="image-split-left">
+							{#if imageError}
+								<div class="img-placeholder img-placeholder--error" style={placeholderStyle}>Image unavailable</div>
+							{:else}
+								{#if !imageLoaded}<div class="img-placeholder img-placeholder--loading" style={placeholderStyle}></div>{/if}
+								<img src={rawInlineUrl} alt={path}
+									class="image-split-img" class:img-hidden={!imageLoaded}
+									on:load={() => imageLoaded = true}
+									on:error={() => imageError = true} />
+							{/if}
+						</div>
+						<div class="image-split-right">
+							{#if metaLines.length > 0 || duplicatePaths.length > 0}
+								{#each duplicatePaths as dup}
+									<div class="meta-row duplicate-row">
+										<span class="duplicate-label">DUPLICATE:</span>
+										<button class="duplicate-link" on:click={() => openDuplicate(dup)}>{dup}</button>
+									</div>
+								{/each}
+								{#each metaLines as meta}
+									<div class="meta-row">{meta.content}</div>
+								{/each}
+							{:else}
+								<div class="no-content">No metadata available.</div>
+							{/if}
+						</div>
+					</div>
 				{/if}
-			</div>
-		{/if}
-		{#if !(showOriginal && isInlineKind && !isArchiveMember)}
+			{:else}
+				<!-- PDF / other inline kind -->
+				<div class="original-panel">
+					<iframe src={rawInlineUrl} title="Original file" class="original-iframe"></iframe>
+				</div>
+			{/if}
+		{:else}
+			<!-- Extracted text / code view -->
 			<div class="code-container">
+				{#if metaLines.length > 0 || duplicatePaths.length > 0}
+					<div class="meta-panel">
+						{#each duplicatePaths as dup}
+							<div class="meta-row duplicate-row">
+								<span class="duplicate-label">DUPLICATE:</span>
+								<button class="duplicate-link" on:click={() => openDuplicate(dup)}>{dup}</button>
+							</div>
+						{/each}
+						{#each metaLines as meta}
+							<div class="meta-row">{meta.content}</div>
+						{/each}
+					</div>
+				{/if}
 				{#if markdownFormat && isMarkdown}
 					<div class="markdown-content">
 						{@html renderedMarkdown}
 					</div>
-				{:else if codeLines.length === 0 && metaLines.length === 0}
+				{:else if codeLines.length === 0 && metaLines.length === 0 && duplicatePaths.length === 0}
 					<div class="no-content">No text content or metadata available for this file.</div>
 				{:else}
 					<table class="code-table" cellspacing="0" cellpadding="0">
@@ -377,12 +495,41 @@
 		font-family: var(--font-mono);
 		font-size: 12px;
 		color: var(--text-muted);
-		flex-shrink: 0;
 	}
 
 	.meta-row {
 		padding: 2px 0;
 		line-height: 1.6;
+	}
+
+	.duplicate-row {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+	}
+
+	.duplicate-label {
+		flex-shrink: 0;
+		color: var(--accent, #58a6ff);
+		font-weight: 600;
+	}
+
+	.duplicate-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font-family: inherit;
+		font-size: inherit;
+		color: var(--accent, #58a6ff);
+		cursor: pointer;
+		text-align: left;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.duplicate-link:hover {
+		text-decoration: underline;
 	}
 
 	.original-panel {
@@ -393,21 +540,93 @@
 		background: var(--bg);
 	}
 
-	.original-image {
-		max-width: 100%;
-		max-height: 100%;
-		object-fit: contain;
-		margin: auto;
-		display: block;
-		padding: 16px;
-	}
-
 	.original-iframe {
 		flex: 1;
 		width: 100%;
 		height: 100%;
 		border: none;
 		min-height: 400px;
+	}
+
+	/* Image split view */
+	.image-split-panel {
+		flex: 1;
+		display: flex;
+		flex-direction: row;
+		overflow: hidden;
+		min-height: 0;
+	}
+
+	.image-split-left {
+		flex: 1;
+		overflow: auto;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border-right: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+		padding: 16px;
+		min-width: 0;
+	}
+
+	.image-split-img {
+		max-width: 100%;
+		max-height: 100%;
+		object-fit: contain;
+	}
+
+	.image-split-right {
+		width: 300px;
+		flex-shrink: 0;
+		overflow-y: auto;
+		padding: 12px 16px;
+		font-family: var(--font-mono);
+		font-size: 12px;
+		color: var(--text-muted);
+		background: var(--bg-secondary);
+	}
+
+	/* Image full-width view */
+	.image-full-panel {
+		flex: 1;
+		overflow-y: auto;
+		background: var(--bg);
+	}
+
+	.image-full {
+		width: 100%;
+		height: auto;
+		display: block;
+	}
+
+	/* Image placeholder (loading / error) */
+	.img-placeholder {
+		width: 100%;
+		min-height: 200px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 4px;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
+
+	.img-placeholder--loading {
+		background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+		animation: img-pulse 1.4s ease-in-out infinite;
+	}
+
+	.img-placeholder--error {
+		background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+		color: var(--text-muted);
+	}
+
+	@keyframes img-pulse {
+		0%, 100% { opacity: 0.5; }
+		50%       { opacity: 1;   }
+	}
+
+	.img-hidden {
+		display: none;
 	}
 
 .indexing-error-banner {

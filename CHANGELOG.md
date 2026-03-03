@@ -9,6 +9,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+- **Image split view** — images now open in a split layout by default: image on the left, EXIF/metadata on the right; "View Extracted" button switches to a full-width scrollable image view; "View Split" returns to the split layout
+- **Duplicate file links in detail view** — when a file is a dedup alias, the canonical copy's path now appears in the metadata panel as `DUPLICATE: <clickable link>`; clicking navigates directly to that copy; handles both regular files and archive members
+- **Inline viewing of images and PDFs inside archives** — images and PDFs that are members of a ZIP archive can now be viewed inline; the raw endpoint extracts the member from the outer ZIP on the fly (seeking directly via the ZIP central directory, no full-archive scan); non-browser-native image formats (e.g. TIFF) are converted to PNG server-side; members larger than 64 MB are refused to prevent OOM
+- **Correctly-sized image loading placeholder** — the pulsing placeholder shown while an image loads is sized to the image's actual dimensions (parsed from EXIF `ImageWidth`/`ImageLength` or `[IMAGE:dimensions]` metadata); it fills the container when the image is larger than the viewport and shrinks to the image's natural size when it is smaller, matching the same `aspect-ratio` + `max-width` + `max-height` constraint the `<img>` element uses
+
+### Fixed
+- **Metadata shown as fixed header above content** — EXIF/tag metadata and duplicate-path banners were rendered in a `flex-shrink: 0` panel above the scrollable code area, potentially squeezing the content into a tiny window; they now render inside the scroll container so they consume no fixed space
+- **Archive member content not shown** — `get_file_lines`, `get_metadata_context`, and `get_line_context` queried lines via a path JOIN which returned nothing for alias files (lines are stored under the canonical `file_id`); all three now call `resolve_file_id` (`COALESCE(canonical_file_id, id)`) and query by `file_id` directly
+- **Duplicate alias paths shown as clickable links in search results** — the `+N duplicates` entries in search results were plain text; they now dispatch an `open` event identical to clicking the main result, navigating to that specific copy
+- **Tree sidebar scrolls to active item** — when a file is opened and the tree auto-expands to reveal it, the highlighted row now scrolls into view (centred) using `scrollIntoView` after a tick
+- **Image placeholder stuck loading forever** — `loading="lazy"` combined with `display: none` caused the browser to never fetch hidden images; removed `loading="lazy"` so images load immediately on render
+- **Path line appearing as metadata** — zero-lines in the DB have no guaranteed order; `zeroLines.slice(1)` was unreliable when EXIF lines were inserted before the path line; now filters by `content !== compositePath` instead of relying on position
+- **No metadata for JPEG images** — `extract_image_basic` only handled PNG/GIF/WebP/BMP; added JPEG SOF-marker scanning (reads up to 64 KB) to extract dimensions, bit depth, and colour mode; added `gif` and `bmp` to `is_image_ext` so those formats also run through the image extractor
+
 ## [0.5.0] - 2026-03-01
 
 ### Added

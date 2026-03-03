@@ -1,3 +1,4 @@
+use std::io::Read as _;
 use std::sync::Arc;
 
 use axum::{
@@ -37,9 +38,11 @@ pub async fn get_raw(
         return s.into_response();
     }
 
-    // Reject archive member paths.
-    if params.path.contains("::") {
-        return StatusCode::BAD_REQUEST.into_response();
+    // Archive member paths (contain "::") — extract from the outer ZIP.
+    if let Some((outer, member)) = params.path.split_once("::") {
+        return serve_archive_member(
+            &state, &params.source, outer, member, params.convert.as_deref(),
+        ).await;
     }
 
     // Reject paths that start with '/' or contain '..' components.
@@ -147,4 +150,126 @@ pub async fn get_raw(
         .header(header::CONTENT_DISPOSITION, disposition)
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Serve a member from a ZIP archive at `outer_path` within the source root.
+/// `outer_path` is the path of the outer ZIP file (no `::`, no leading `/`).
+/// `member_name` is the path of the member inside the ZIP (may be nested).
+/// Only ZIP archives are supported; other formats return 422.
+async fn serve_archive_member(
+    state: &AppState,
+    source: &str,
+    outer_path: &str,
+    member_name: &str,
+    convert: Option<&str>,
+) -> Response {
+    // Validate outer path: no leading slash, no `..`.
+    if outer_path.starts_with('/') || outer_path.starts_with('\\') {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    for component in std::path::Path::new(outer_path).components() {
+        if matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        ) {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    }
+
+    // nested archive members (outer::mid::inner) — only one level supported
+    if member_name.contains("::") {
+        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+    }
+
+    let source_root_str = match state.config.sources
+        .get(source)
+        .and_then(|sc| sc.path.as_deref())
+    {
+        Some(p) => p.to_owned(),
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    let outer_full = std::path::Path::new(&source_root_str).join(outer_path);
+    let canonical_root = match std::path::Path::new(&source_root_str).canonicalize() {
+        Ok(p) => p,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let canonical_outer = match outer_full.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if !canonical_outer.starts_with(&canonical_root) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let member_name = member_name.to_owned();
+    let convert = convert.map(|s| s.to_owned());
+
+    tokio::task::spawn_blocking(move || -> Response {
+        let file = match std::fs::File::open(&canonical_outer) {
+            Ok(f) => f,
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        };
+        let mut zip = match zip::ZipArchive::new(file) {
+            Ok(z) => z,
+            Err(_) => return StatusCode::UNPROCESSABLE_ENTITY.into_response(),
+        };
+        let mut entry = match zip.by_name(&member_name) {
+            Ok(e) => e,
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        };
+        // Refuse to buffer very large members (>64 MB) to avoid OOM.
+        const MAX_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
+        if entry.size() > MAX_MEMBER_BYTES {
+            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        if entry.read_to_end(&mut bytes).is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+
+        let filename = std::path::Path::new(&member_name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .replace('"', "");
+
+        if convert.as_deref() == Some("png") {
+            let png_name = std::path::Path::new(&member_name)
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .map(|s| format!("{s}.png"))
+                .unwrap_or_else(|| "file.png".to_string());
+            let png_name = png_name.replace('"', "");
+            let png_bytes = match (|| -> Result<Vec<u8>, ()> {
+                let img = image::load_from_memory(&bytes).map_err(|_| ())?;
+                let mut out = Vec::new();
+                img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                    .map_err(|_| ())?;
+                Ok(out)
+            })() {
+                Ok(b) => b,
+                Err(_) => return StatusCode::UNPROCESSABLE_ENTITY.into_response(),
+            };
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "image/png")
+                .header(header::CONTENT_DISPOSITION, format!("inline; filename=\"{png_name}\""))
+                .body(Body::from(png_bytes))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+
+        let mime = mime_guess::from_path(&member_name)
+            .first_or_octet_stream();
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, mime.essence_str())
+            .header(header::CONTENT_DISPOSITION, format!("inline; filename=\"{filename}\""))
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    })
+    .await
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }

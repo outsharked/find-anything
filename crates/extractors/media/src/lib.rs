@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use find_common::api::IndexLine;
@@ -114,6 +114,15 @@ fn extract_image_basic(path: &Path) -> Option<Vec<IndexLine>> {
     let mut f = File::open(path).ok()?;
     let mut buf = [0u8; 34];
     let n = f.read(&mut buf).ok()?;
+    if n < 2 {
+        return None;
+    }
+
+    // JPEG: FF D8 — scan for SOF marker to get dimensions
+    if buf[0] == 0xFF && buf[1] == 0xD8 {
+        return extract_jpeg_basic(&mut f);
+    }
+
     if n < 8 {
         return None;
     }
@@ -193,6 +202,61 @@ fn extract_image_basic(path: &Path) -> Option<Vec<IndexLine>> {
     None
 }
 
+/// Scan a JPEG file for the SOF (Start of Frame) marker and extract dimensions.
+/// Reads up to 64 KB, which is more than enough to find any JPEG SOF header.
+fn extract_jpeg_basic(f: &mut File) -> Option<Vec<IndexLine>> {
+    f.seek(SeekFrom::Start(0)).ok()?;
+    let mut data = vec![0u8; 65536];
+    let n = f.read(&mut data).ok()?;
+    data.truncate(n);
+
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return None;
+    }
+
+    let mut i = 2;
+    while i + 3 < data.len() {
+        if data[i] != 0xFF {
+            break;
+        }
+        let marker = data[i + 1];
+
+        // SOF markers: C0–C3, C5–C7, C9–CB, CD–CF (excluding C4=DHT, C8=JPG, CC=DAC)
+        if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
+            // SOF layout: FF Cx | length(2) | precision(1) | height(2) | width(2) | components(1)
+            if i + 9 < data.len() {
+                let precision  = data[i + 4];
+                let height     = u16::from_be_bytes([data[i + 5], data[i + 6]]);
+                let width      = u16::from_be_bytes([data[i + 7], data[i + 8]]);
+                let components = data[i + 9];
+                let color = match components {
+                    1 => "Grayscale",
+                    3 => "YCbCr",
+                    4 => "CMYK",
+                    _ => "Unknown",
+                };
+                return Some(vec![
+                    make_image_line("dimensions", &format!("{}x{}", width, height)),
+                    make_image_line("bit_depth",  &precision.to_string()),
+                    make_image_line("color",      color),
+                ]);
+            }
+        }
+
+        // Standalone markers have no length field
+        if matches!(marker, 0xD8 | 0xD9 | 0x01) || marker < 0x02 {
+            i += 2;
+        } else {
+            if i + 3 >= data.len() { break; }
+            let length = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+            if length < 2 { break; }
+            i += 2 + length;
+        }
+    }
+
+    None
+}
+
 fn make_image_line(key: &str, value: &str) -> IndexLine {
     IndexLine {
         archive_path: None,
@@ -205,7 +269,7 @@ pub fn is_image_ext(ext: &str) -> bool {
     matches!(
         ext,
         "jpg" | "jpeg" | "tiff" | "tif" | "heic" | "heif" | "webp"
-        | "png" | "cr2" | "cr3" | "nef" | "arw" | "orf" | "rw2"
+        | "png" | "gif" | "bmp" | "cr2" | "cr3" | "nef" | "arw" | "orf" | "rw2"
     )
 }
 

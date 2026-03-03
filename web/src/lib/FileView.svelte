@@ -88,6 +88,7 @@
 				archivePath={currentFile.inner}
 				selection={fileSelection}
 				on:lineselect={(e) => dispatch('lineselect', e.detail)}
+				on:open={(e) => dispatch('openDirFile', e.detail)}
 			/>
 		{/key}
 	{/if}

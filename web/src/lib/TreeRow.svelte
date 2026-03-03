@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
+	import { createEventDispatcher, tick } from 'svelte';
 	import { listDir, listArchiveMembers } from '$lib/api';
 	import type { DirEntry } from '$lib/api';
 	import { splitEntryPath, shouldExpandEntry } from '$lib/filePath';
@@ -17,6 +17,11 @@
 	let children: DirEntry[] = [];
 	let loaded = false;
 	let loadError = false;
+	let rowEl: HTMLElement | null = null;
+
+	$: if (entry.path === activePath && rowEl) {
+		tick().then(() => rowEl?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+	}
 
 	// An archive file (kind='archive') can be expanded like a directory.
 	$: isExpandable = entry.entry_type === 'dir' || entry.kind === 'archive';
@@ -77,7 +82,7 @@
 
 <li class="row-item">
 	{#if isExpandable}
-		<div class="row row--dir" class:active={entry.kind === 'archive' && entry.path === activePath} style="padding-left: {8 + depth * 16}px">
+		<div class="row row--dir" class:active={entry.kind === 'archive' && entry.path === activePath} style="padding-left: {8 + depth * 16}px" bind:this={rowEl}>
 			<button class="expand-arrow" on:click={toggleDir} title={expanded ? 'Collapse' : 'Expand'}>
 				<span class="icon">{expanded ? '▾' : '▸'}</span>
 			</button>
@@ -110,6 +115,7 @@
 			class:active={entry.path === activePath}
 			style="padding-left: {8 + depth * 16}px"
 			on:click={openFile}
+			bind:this={rowEl}
 		>
 			<span class="icon kind-icon" title={entry.kind}>·</span>
 			<span class="name">{entry.name}</span>

@@ -68,6 +68,15 @@
 		dispatch('open', result);
 	}
 
+	function openAlias(alias: string) {
+		const i = alias.indexOf('::');
+		dispatch('open', {
+			...result,
+			path: i >= 0 ? alias.slice(0, i) : alias,
+			archive_path: i >= 0 ? alias.slice(i + 2) : null,
+		});
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' || e.key === ' ') openFile();
 	}
@@ -106,7 +115,7 @@
 	{#if aliasesExpanded && result.aliases && result.aliases.length > 0}
 		<div class="aliases">
 			{#each result.aliases as alias}
-				<div class="alias-path">{alias}</div>
+				<button class="alias-path" on:click|stopPropagation={() => openAlias(alias)}>{alias}</button>
 			{/each}
 		</div>
 	{/if}
@@ -296,6 +305,12 @@
 	}
 
 	.alias-path {
+		display: block;
+		width: 100%;
+		background: none;
+		border: none;
+		text-align: left;
+		cursor: pointer;
 		font-family: var(--font-mono);
 		font-size: 11px;
 		color: var(--text-dim);
@@ -303,5 +318,10 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.alias-path:hover {
+		color: var(--accent);
+		text-decoration: underline;
 	}
 </style>
