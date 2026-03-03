@@ -82,12 +82,12 @@ run = [
 env = { GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}" }
 
 [tasks.build-all]
-description = "Build all release artifacts: x86_64 server, ARM7 NAS binaries, and Windows installer"
-depends = ["build-server", "build-arm", "build-windows"]
+description = "Build all Linux release artifacts: x86_64 server and ARM7 NAS binaries"
+depends = ["build-server", "build-arm"]
 
-[tasks.build-windows]
-description = "Cross-compile Windows binaries and build Inno Setup installer (.exe)"
-run = "bash config/build-windows.sh"
+[tasks.build-wsl-cross]
+description = "WSL only: cross-compile Windows binaries via Docker/mingw and package with Inno Setup"
+run = "bash install/build-wsl-cross.sh"
 env = { GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}" }
 
 # ── Checks ────────────────────────────────────────────────────────────────────
