@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# mise description="Bump version, update CHANGELOG, commit, tag, and publish a GitHub release"
+set -euo pipefail
+
+CRATES=(
+  crates/client/Cargo.toml
+  crates/common/Cargo.toml
+  crates/server/Cargo.toml
+  crates/extractors/archive/Cargo.toml
+  crates/extractors/dispatch/Cargo.toml
+  crates/extractors/epub/Cargo.toml
+  crates/extractors/html/Cargo.toml
+  crates/extractors/media/Cargo.toml
+  crates/extractors/office/Cargo.toml
+  crates/extractors/pdf/Cargo.toml
+  crates/extractors/pe/Cargo.toml
+  crates/extractors/text/Cargo.toml
+)
+
+# ── Current version ───────────────────────────────────────────────────────────
+
+CURRENT=$(grep '^version' crates/client/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+echo "Current version: $CURRENT"
+
+# ── New version ───────────────────────────────────────────────────────────────
+
+if [ -n "${1:-}" ]; then
+  NEW_VERSION="$1"
+else
+  IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+  SUGGESTED="$MAJOR.$MINOR.$((PATCH + 1))"
+  read -rp "New version [$SUGGESTED]: " NEW_VERSION
+  NEW_VERSION="${NEW_VERSION:-$SUGGESTED}"
+fi
+
+TODAY=$(date +%Y-%m-%d)
+echo "→ Releasing $CURRENT → $NEW_VERSION ($TODAY)"
+
+# ── Guard: clean working tree ─────────────────────────────────────────────────
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "ERROR: Working tree has uncommitted changes. Commit or stash first." >&2
+  exit 1
+fi
+
+# ── Guard: tag must not already exist ─────────────────────────────────────────
+
+if git rev-parse "v$NEW_VERSION" >/dev/null 2>&1; then
+  echo "ERROR: Tag v$NEW_VERSION already exists." >&2
+  exit 1
+fi
+
+# ── Bump Cargo.toml versions ──────────────────────────────────────────────────
+
+echo "→ Bumping version in Cargo.toml files..."
+for f in "${CRATES[@]}"; do
+  sed -i "s/^version = \"$CURRENT\"/version = \"$NEW_VERSION\"/" "$f"
+done
+
+# ── Update CHANGELOG.md ───────────────────────────────────────────────────────
+
+echo "→ Updating CHANGELOG.md..."
+python3 - "$NEW_VERSION" "$TODAY" <<'PYEOF'
+import sys, re
+
+new_ver, today = sys.argv[1], sys.argv[2]
+
+with open('CHANGELOG.md') as f:
+    content = f.read()
+
+# Match: [Unreleased] header, optional body, then the first --- separator
+m = re.search(r'(## \[Unreleased\]\n)(.*?)(\n---)', content, re.DOTALL)
+if not m:
+    print("ERROR: could not find [Unreleased] section in CHANGELOG.md", file=sys.stderr)
+    sys.exit(1)
+
+body = m.group(2).strip()
+if not body:
+    print("  (no [Unreleased] entries — new section will be empty)")
+    new_section = f'\n\n## [{new_ver}] - {today}\n\n---'
+else:
+    new_section = f'\n\n## [{new_ver}] - {today}\n\n{body}\n\n---'
+
+replacement = m.group(1) + m.group(3) + new_section
+suffix = '\n\n' + content[m.end():].lstrip('\n')
+content = content[:m.start()] + replacement + suffix
+
+with open('CHANGELOG.md', 'w') as f:
+    f.write(content)
+
+print(f"  [{new_ver}] section written")
+PYEOF
+
+# ── Compile check ─────────────────────────────────────────────────────────────
+
+echo "→ Checking workspace..."
+cargo check --workspace --quiet
+
+# ── Commit and tag ────────────────────────────────────────────────────────────
+
+echo "→ Committing..."
+git add "${CRATES[@]}" CHANGELOG.md Cargo.lock
+git commit -m "Release $NEW_VERSION"
+
+echo "→ Tagging v$NEW_VERSION..."
+git tag "v$NEW_VERSION"
+
+echo ""
+echo "✓ Local release complete: v$NEW_VERSION"
+echo ""
+
+# ── Push and publish ──────────────────────────────────────────────────────────
+
+read -rp "Push and create GitHub release? [Y/n] " PUSH
+PUSH="${PUSH:-Y}"
+if [[ ! "$PUSH" =~ ^[Yy]$ ]]; then
+  echo ""
+  echo "  git push origin master v$NEW_VERSION"
+  echo "  gh release create v$NEW_VERSION --title \"v$NEW_VERSION\" --notes \"...\""
+  exit 0
+fi
+
+echo "→ Pushing commits and tag..."
+git push origin master "v$NEW_VERSION"
+
+# Extract release notes for this version from CHANGELOG
+NOTES=$(python3 - "$NEW_VERSION" <<'PYEOF'
+import sys, re
+
+ver = sys.argv[1]
+with open('CHANGELOG.md') as f:
+    content = f.read()
+
+m = re.search(
+    rf'## \[{re.escape(ver)}\] - \d{{4}}-\d{{2}}-\d{{2}}\n(.*?)(?=\n---)',
+    content, re.DOTALL
+)
+print(m.group(1).strip() if m else '')
+PYEOF
+)
+
+echo "→ Creating GitHub release..."
+gh release create "v$NEW_VERSION" --title "v$NEW_VERSION" --notes "$NOTES"
+
+echo ""
+echo "✓ Published: $(gh release view "v$NEW_VERSION" --json url -q .url)"
