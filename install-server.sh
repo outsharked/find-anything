@@ -246,6 +246,16 @@ bind     = "$BIND_ESC"
 data_dir = "$DATA_DIR_ESC"
 token    = "$TOKEN_ESC"
 
+# ── Per-source filesystem paths ───────────────────────────────────────────────
+# When set, the server can serve files directly for inline viewing and download.
+# The source name must match the name used in the client's [[sources]] config.
+#
+# [sources.home]
+# path = "/home/myuser"
+#
+# [sources.work]
+# path = "/mnt/work"
+
 # [search]
 # default_limit       = 50      # Default number of results per search
 # max_limit           = 500     # Hard cap on results per search

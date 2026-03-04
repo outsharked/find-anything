@@ -47,6 +47,7 @@ pub async fn get_raw(
 
     // Reject paths that start with '/' or contain '..' components.
     if params.path.starts_with('/') || params.path.starts_with('\\') {
+        tracing::warn!(source = %params.source, path = %params.path, "raw: rejected path with leading slash");
         return StatusCode::BAD_REQUEST.into_response();
     }
     for component in std::path::Path::new(&params.path).components() {
@@ -56,6 +57,7 @@ pub async fn get_raw(
                 | std::path::Component::RootDir
                 | std::path::Component::Prefix(_)
         ) {
+            tracing::warn!(source = %params.source, path = %params.path, "raw: rejected path with illegal component");
             return StatusCode::BAD_REQUEST.into_response();
         }
     }
@@ -68,7 +70,10 @@ pub async fn get_raw(
         .and_then(|sc| sc.path.as_deref())
     {
         Some(p) => p.to_owned(),
-        None => return StatusCode::NOT_FOUND.into_response(),
+        None => {
+            tracing::warn!(source = %params.source, path = %params.path, "raw: source not configured or has no path");
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
 
     let source_root = std::path::Path::new(&source_root_str);
@@ -77,13 +82,20 @@ pub async fn get_raw(
     // Canonicalize both paths and confirm the file is still inside the root.
     let canonical_root = match source_root.canonicalize() {
         Ok(p) => p,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::warn!(source = %params.source, root = %source_root_str, error = %e, "raw: failed to canonicalize source root");
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
     let canonical_full = match full_path.canonicalize() {
         Ok(p) => p,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::warn!(source = %params.source, path = %params.path, error = %e, "raw: failed to canonicalize file path");
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
     if !canonical_full.starts_with(&canonical_root) {
+        tracing::warn!(source = %params.source, path = %params.path, "raw: path escapes source root");
         return StatusCode::BAD_REQUEST.into_response();
     }
 
@@ -190,17 +202,26 @@ async fn serve_archive_member(
         .and_then(|sc| sc.path.as_deref())
     {
         Some(p) => p.to_owned(),
-        None => return StatusCode::NOT_FOUND.into_response(),
+        None => {
+            tracing::warn!(source = %source, outer = %outer_path, "raw(archive): source not configured or has no path");
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
 
     let outer_full = std::path::Path::new(&source_root_str).join(outer_path);
     let canonical_root = match std::path::Path::new(&source_root_str).canonicalize() {
         Ok(p) => p,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::warn!(source = %source, root = %source_root_str, error = %e, "raw(archive): failed to canonicalize source root");
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
     let canonical_outer = match outer_full.canonicalize() {
         Ok(p) => p,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::warn!(source = %source, outer = %outer_path, error = %e, "raw(archive): failed to canonicalize outer path");
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
     if !canonical_outer.starts_with(&canonical_root) {
         return StatusCode::BAD_REQUEST.into_response();

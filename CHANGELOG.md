@@ -11,6 +11,22 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [0.5.5] - 2026-03-04
+
+### Added
+- **Browser tab title** — the web UI now shows "Find Anything" as the page title in browser tabs and bookmarks
+- **Raw endpoint logging** — all silent 404/400 failure paths in `GET /api/v1/raw` now emit `tracing::warn!` log lines indicating exactly why the request failed (source not configured, root path invalid, file not found, or illegal path component); aids diagnosing image/file loading issues
+
+### Fixed
+- **`install.sh` headless Linux service** — on Linux systems without an active systemd user session (e.g. SSH-only servers), the installer now automatically installs `find-watch` as a system service when running as root or with passwordless sudo, rather than silently skipping service setup
+- **`install-server.sh` missing `--config` flag** — the generated systemd unit `ExecStart` line now correctly passes `--config <path>` to `find-server` (the flag was omitted in the previous generated unit)
+- **`install-server.sh` server.toml example** — the generated `server.toml` now includes a commented-out `[sources.xxx]` / `path =` example showing how to configure filesystem paths for raw file serving
+
+### Changed
+- **Windows tray: stable notification-area GUID** — removed; `tray-icon` 0.21 does not expose `with_guid`; limitation documented in a code comment for a future upgrade
+
+---
+
 ## [0.5.4] - 2026-03-04
 
 ### Added
