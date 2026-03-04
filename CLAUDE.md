@@ -207,6 +207,16 @@ subdirectories on expand.
 
 ## Tooling
 
+**Always check `mise tasks` before doing things manually** — there are mise tasks for most common operations:
+
+| Task | Purpose |
+|------|---------|
+| `mise run release` | Bump version, update CHANGELOG, commit, tag, and publish a GitHub release |
+| `mise run clippy` | Run clippy lints (matches CI — fails on warnings) |
+| `mise run check` | Type-check all Rust crates and the web UI |
+| `mise run build-release` | Build web UI then compile find-server release binary |
+| `mise run dev` | Start Rust API + Vite dev server with live reload |
+
 - **Package manager:** `pnpm` (not npm). Use `pnpm` for all web commands in `web/`.
   - Type-check: `pnpm run check`
   - Dev server: `pnpm run dev`
