@@ -11,6 +11,23 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [0.5.3] - 2026-03-04
+
+### Added
+- **Date-range search filter** — the Advanced search panel now includes From / To date pickers that filter results by file modification time; archive members carry their own mtime extracted from ZIP extended timestamps (UTC unix i32) or DOS datetime fallback, TAR header mtime, or 7z `last_modified_date`; an `mtime` index is applied to existing databases on upgrade
+- **Advanced search Apply button** — filter changes are now staged locally inside the panel and committed only when Apply is clicked; the Apply button is highlighted blue when the draft differs from the currently-applied state, and dimmed otherwise; clicking Apply fires the search and closes the panel
+- **Calendar picker button** — a 📅 button on each date field calls `showPicker()` for reliable activation, replacing the browser's small native calendar icon (which is hidden)
+
+### Changed
+- **Date placeholder text dimmed** — the `mm/dd/yyyy` placeholder in empty date fields is rendered at 25 % opacity so it doesn't compete visually with entered values
+
+### Fixed
+- **Empty batch HTTP call skipped** — `submit_batch` now returns early when files, deletes, and failures are all empty, avoiding a pointless round-trip on the final flush
+- **Redundant stat syscall in inbox worker** — `tokio::fs::metadata(&path)` replaced with `entry.metadata().await` (reuses the already-opened `DirEntry`)
+- **Windows installer no longer blocks on initial scan** — removed the inline `find-scan --full` call during install; users run it manually after setup using the command printed in the install summary
+
+---
+
 ## [0.5.2] - 2026-03-03
 
 ### Added
