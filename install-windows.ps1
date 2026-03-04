@@ -104,14 +104,6 @@ if ($UserPath -notlike "*$InstallDir*") {
     Write-Host "Added $InstallDir to PATH."
 }
 
-# ── Run initial full scan ──────────────────────────────────────────────────────
-
-Write-Host ""
-Write-Host "Running initial scan (this may take a while)..." -ForegroundColor Yellow
-Write-Host "  Indexing: $WatchDir"
-Write-Host ""
-& "$InstallDir\find-scan.exe" --config $ClientConfig --full
-
 # ── Start the service ─────────────────────────────────────────────────────────
 
 Write-Host ""
