@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mise description="Bump version, update CHANGELOG, commit, tag, and publish a GitHub release"
+#MISE description="Bump version, update CHANGELOG, commit, tag, and publish a GitHub release"
 set -euo pipefail
 
 CRATES=(

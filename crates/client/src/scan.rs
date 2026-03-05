@@ -180,6 +180,14 @@ pub async fn run_scan(
         if !opts.dry_run {
             process_file(&mut ctx, rel_path, abs_path, mtime).await?;
         }
+        if last_log.elapsed() >= log_interval {
+            let total = indexed + skipped;
+            info!(
+                "processed {total} files ({skipped} unchanged, {new_files} new, {modified} modified) so far, {} in current batch...",
+                ctx.batch.len(),
+            );
+            last_log = std::time::Instant::now();
+        }
     }
 
     if opts.dry_run {

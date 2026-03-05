@@ -104,7 +104,20 @@ impl ArchiveManager {
             };
 
             if archive_path.exists() {
-                self.rewrite_archive(&archive_path, &chunks_to_remove)?;
+                // Guard against corrupt archives (e.g. truncated from a previous crash).
+                // A corrupt archive contains no valid chunks, so there is nothing to remove.
+                let valid = File::open(&archive_path)
+                    .ok()
+                    .and_then(|f| ZipArchive::new(f).ok())
+                    .is_some();
+                if valid {
+                    self.rewrite_archive(&archive_path, &chunks_to_remove)?;
+                } else {
+                    tracing::warn!(
+                        "skipping corrupt archive during chunk removal: {}",
+                        archive_path.display()
+                    );
+                }
             }
         }
 
