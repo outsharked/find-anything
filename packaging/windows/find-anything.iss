@@ -71,7 +71,7 @@ Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
 
 [Run]
 ; Register the Windows service (runs during install, before finish page)
-Filename: "{app}\find-watch.exe"; Parameters: "install --config ""{userhome}\.config\FindAnything\client.toml"""; \
+Filename: "{app}\find-watch.exe"; Parameters: "install --config ""{%USERPROFILE}\.config\FindAnything\client.toml"""; \
   StatusMsg: "Registering file watcher service..."; Flags: runhidden
 
 ; Start the tray icon immediately after install
@@ -324,7 +324,7 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    ConfigDir := ExpandConstant('{userhome}\.config\FindAnything');
+    ConfigDir := ExpandConstant('{%USERPROFILE}\.config\FindAnything');
     ForceDirectories(ConfigDir);
     ConfigPath := ConfigDir + '\client.toml';
     SaveStringToFile(ConfigPath, ConfigMemo.Text, False);
