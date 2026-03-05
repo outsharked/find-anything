@@ -118,6 +118,7 @@ jobs:
             "find-extract-html"
             "find-extract-office"
             "find-extract-epub"
+            "find-extract-dispatch"
           )
 
           mkdir -p "dist/${ARTIFACT}"
