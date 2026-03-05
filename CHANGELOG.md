@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.5.6] - 2026-03-05
+
 ### Added
 
 - **`find-admin delete`** - handle corrupted zip files
