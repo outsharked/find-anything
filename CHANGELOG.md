@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.6.0] - 2026-03-06
+
 ### Added
 
 - **`find-scan` directory argument** — `find-scan <dir>` rescans all files under a source subdirectory (full rescan, scoped deletions to that subtree only, no `scan_timestamp` update); previously only individual files were accepted
