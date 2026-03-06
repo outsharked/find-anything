@@ -17,6 +17,8 @@
 	import { buildUrl, restoreFromParams, serializeState, deserializeState } from '$lib/appState';
 	import type { AppState, SerializedAppState } from '$lib/appState';
 	import { profile } from '$lib/profile';
+	import { parseNlpQuery } from '$lib/nlpQuery';
+	import type { NlpResult } from '$lib/nlpQuery';
 
 	// SvelteKit passes params to every layout/page component. Declare it to avoid
 	// the runtime "unknown prop" warning. Assigned to _params to signal that it
@@ -38,6 +40,13 @@
 	// Unix timestamp equivalents sent to the API (undefined = no filter).
 	let dateFromTs: number | undefined;
 	let dateToTs: number | undefined;
+
+	// NLP-extracted date state.
+	let nlpResult: NlpResult | null = null;
+	let nlpSuppressed = false;
+	// Effective dates used in API calls (manual wins over NLP).
+	let effectiveDateFrom: number | undefined;
+	let effectiveDateTo: number | undefined;
 
 	let results: SearchResult[] = [];
 	let totalResults = 0;
@@ -194,7 +203,7 @@
 		if (loadingMore || noMoreResults || query.trim().length < 3) return;
 		loadingMore = true;
 		try {
-			const resp = await search({ q: query, mode, sources: selectedSources, limit: 50, offset: loadOffset, dateFrom: dateFromTs, dateTo: dateToTs });
+			const resp = await search({ q: nlpResult?.query ?? query, mode, sources: selectedSources, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo });
 			if (resp.results.length === 0) {
 				noMoreResults = true;
 			} else {
@@ -228,6 +237,14 @@
 			results = []; totalResults = 0; noMoreResults = false; loadOffset = 0; searchError = null;
 			return;
 		}
+
+		// NLP parse: extract dates + clean stop words. Skip if user dismissed.
+		nlpResult = nlpSuppressed ? null : parseNlpQuery(q, m);
+		// Manual date range always wins; NLP fills in when no manual range is set.
+		effectiveDateFrom = dateFromTs ?? nlpResult?.dateFrom;
+		effectiveDateTo = dateToTs ?? nlpResult?.dateTo;
+		const apiQuery = nlpResult?.query ?? q;
+
 		searching = true;
 		searchError = null;
 		searchId += 1;
@@ -238,7 +255,7 @@
 			window.scrollTo(0, 0);
 		}
 		try {
-			const resp = await search({ q, mode: m, sources: srcs, limit: 50, offset: 0, dateFrom: dateFromTs, dateTo: dateToTs });
+			const resp = await search({ q: apiQuery, mode: m, sources: srcs, limit: 50, offset: 0, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo });
 			results = resp.results;
 			totalResults = resp.total;
 			loadOffset = resp.results.length; // server cursor starts after page 0
@@ -259,8 +276,18 @@
 	// ── Search event handlers ────────────────────────────────────────────────────
 
 	function handleSearch(e: CustomEvent<{ query: string; mode: string }>) {
+		// New query text = fresh NLP parse (clear any prior suppression).
+		if (e.detail.query !== query) nlpSuppressed = false;
 		query = e.detail.query;
 		mode = e.detail.mode;
+		doSearch(query, mode, selectedSources);
+	}
+
+	function handleClearNlpDate() {
+		nlpSuppressed = true;
+		nlpResult = null;
+		effectiveDateFrom = dateFromTs;
+		effectiveDateTo = dateToTs;
 		doSearch(query, mode, selectedSources);
 	}
 
@@ -442,8 +469,14 @@
 				{searchError}
 				{searchId}
 				{showTree}
+				filterDateFrom={effectiveDateFrom}
+				filterDateTo={effectiveDateTo}
+				nlpDateLabel={nlpResult?.dateLabel}
+				nlpDetectedPhrase={nlpResult?.detectedPhrase}
+				nlpConflict={!!nlpResult?.dateLabel && (dateFromTs != null || dateToTs != null)}
 				on:search={handleSearch}
 				on:filterChange={handleFilterChange}
+				on:clearNlpDate={handleClearNlpDate}
 				on:open={openFile}
 				on:treeToggle={handleTreeToggle}
 			/>

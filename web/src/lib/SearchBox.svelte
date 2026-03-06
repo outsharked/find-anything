@@ -5,6 +5,7 @@
 	export let mode = 'fuzzy';
 	export let searching = false;
 	export let isTyping = false;
+	export let nlpHighlightSpan: [number, number] | undefined = undefined;
 
 	const dispatch = createEventDispatcher<{
 		change: { query: string; mode: string };
@@ -39,8 +40,22 @@
 	}
 
 	let inputEl: HTMLInputElement;
+	let backdropEl: HTMLDivElement;
 
 	$: showSpinner = isTyping || searching;
+
+	$: hlBefore = nlpHighlightSpan ? query.slice(0, nlpHighlightSpan[0]) : '';
+	$: hlMiddle = nlpHighlightSpan ? query.slice(nlpHighlightSpan[0], nlpHighlightSpan[1]) : '';
+	$: hlAfter  = nlpHighlightSpan ? query.slice(nlpHighlightSpan[1]) : '';
+
+	function syncScroll() {
+		if (backdropEl) backdropEl.scrollLeft = inputEl.scrollLeft;
+	}
+
+	// Sync backdrop scroll whenever the highlight span changes (e.g. after debounce).
+	$: if (nlpHighlightSpan && backdropEl && inputEl) {
+		backdropEl.scrollLeft = inputEl.scrollLeft;
+	}
 </script>
 
 <div class="search-box">
@@ -50,17 +65,24 @@
 		<option value="exact">Exact</option>
 		<option value="regex">Regex</option>
 	</select>
-	<input
-		bind:this={inputEl}
-		bind:value={query}
-		on:input={handleInput}
-		on:keydown={handleKeydown}
-		type="text"
-		placeholder="Search…"
-		autocomplete="off"
-		spellcheck="false"
-		class="search-input"
-	/>
+	<div class="input-wrap">
+		{#if nlpHighlightSpan}
+			<div class="backdrop" bind:this={backdropEl} aria-hidden="true">{hlBefore}<span class="date-hl">{hlMiddle}</span>{hlAfter}</div>
+		{/if}
+		<input
+			bind:this={inputEl}
+			bind:value={query}
+			on:input={handleInput}
+			on:keydown={handleKeydown}
+			on:scroll={syncScroll}
+			type="text"
+			placeholder="Search…"
+			autocomplete="off"
+			spellcheck="false"
+			class="search-input"
+			class:has-highlight={!!nlpHighlightSpan}
+		/>
+	</div>
 	{#if showSpinner}
 		<div class="spinner" title="Searching...">
 			<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -81,17 +103,53 @@
 		overflow: hidden;
 	}
 
-	.search-input {
+	.input-wrap {
 		flex: 1;
+		position: relative;
+		overflow: hidden;
+	}
+
+	.search-input {
+		width: 100%;
 		padding: 8px 12px;
 		background: transparent;
 		border: none;
 		color: var(--text);
 		outline: none;
+		font: inherit;
+		box-sizing: border-box;
+	}
+
+	.search-input.has-highlight {
+		color: transparent;
+		caret-color: var(--text);
 	}
 
 	.search-input::placeholder {
 		color: var(--text-dim);
+	}
+
+	.backdrop {
+		position: absolute;
+		inset: 0;
+		padding: 8px 12px;
+		font: inherit;
+		white-space: pre;
+		overflow: scroll;
+		scrollbar-width: none;
+		color: var(--text);
+		pointer-events: none;
+		box-sizing: border-box;
+		line-height: normal;
+	}
+
+	.backdrop::-webkit-scrollbar {
+		display: none;
+	}
+
+	.date-hl {
+		background: color-mix(in srgb, #3fb950 30%, transparent);
+		border-radius: 2px;
 	}
 
 	.mode-select {

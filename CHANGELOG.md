@@ -23,6 +23,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **Sidebar source header polish** — source names no longer show a chevron triangle; font size increased to 14 px (slightly larger than the 13 px tree rows); active source is bold (`font-weight: 700`) with a subtle `--bg-hover` background tint (lighter in dark mode, darker in light mode)
 - **PathBar copy icon fixes** — icon no longer clips at the bottom (`overflow-y: visible` on the path container); added 6 px left margin for breathing room between path and icon; vertical alignment corrected (`align-items: center` instead of `baseline`)
 
+- **NLP date search** — natural language date phrases embedded in search queries are parsed and converted to date range filters automatically; supports `last month`, `last year`, `last week`, `last weekend`, `yesterday`, `last Monday`, `in the last N days`, `since`, `before`, `after`, named months, and explicit ranges; the detected phrase is highlighted green in the search box and shown as a dismissible chip below the bar; calendar vs rolling semantics are distinguished by the presence of an "in the"/"within the" prefix
+- **Result count date context** — the result count line now includes the active date range: `390 results between 2/1/2026 and 2/28/2026`, `200 results after 9/1/2025`, etc.
+
 ### Changed
 
 - **`base_url` removed** — the `base_url` source config option and all related UI (PathBar external link, Preferences "Base URL overrides" panel, `sourceBaseUrls` profile field) have been removed; the feature was unused and the server URL is now the canonical access point for all files
