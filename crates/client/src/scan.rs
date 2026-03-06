@@ -574,33 +574,43 @@ fn build_globset(patterns: &[String]) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
-/// Given a list of include glob patterns, extract the set of directory paths
-/// that MUST be traversed to reach any matching file (i.e. the literal path
-/// prefixes up to the first wildcard character in each pattern).
+/// Given a list of include glob patterns, extract two sets of directory paths:
+///
+/// - **`ancestors`** — every intermediate directory that must be traversed to
+///   reach a matching file, including the deepest literal prefix itself.
+///   Used for exact membership checks (`ancestors.contains(dir)`).
+///
+/// - **`terminals`** — only the deepest literal prefix of each pattern (the
+///   directory where the `**` begins). Used to allow *descendants* of included
+///   directories (`dir.starts_with(terminal + "/")`).
 ///
 /// Returns `None` if any pattern could match from the root (starts with `**`
 /// or `*`), meaning no directory pruning is possible.
 ///
-/// For example, `["Users/alice/**", "data/**"]` → `Some({"Users", "Users/alice", "data"})`.
-fn include_dir_prefixes(patterns: &[String]) -> Option<std::collections::HashSet<String>> {
-    let mut dirs = std::collections::HashSet::new();
+/// Example: `["Users/alice/**", "data/**"]`
+///   → ancestors = `{"Users", "Users/alice", "data"}`
+///   → terminals = `{"Users/alice", "data"}`
+fn include_dir_prefixes(
+    patterns: &[String],
+) -> Option<(std::collections::HashSet<String>, std::collections::HashSet<String>)> {
+    let mut ancestors = std::collections::HashSet::new();
+    let mut terminals = std::collections::HashSet::new();
     for pat in patterns {
         let pat = pat.replace('\\', "/");
-        // Find the index of the first wildcard.
         let wildcard = pat.find(['*', '?', '[']);
         let literal = match wildcard {
             Some(0) => return None, // starts with wildcard — can't prune
             Some(i) => &pat[..i],
             None    => &pat,        // no wildcard — exact path
         };
-        // Add all ancestor directory components as allowed prefixes.
         let literal = literal.trim_end_matches('/');
         let parts: Vec<&str> = literal.split('/').collect();
         for i in 1..=parts.len() {
-            dirs.insert(parts[..i].join("/"));
+            ancestors.insert(parts[..i].join("/"));
         }
+        terminals.insert(literal.to_string());
     }
-    Some(dirs)
+    Some((ancestors, terminals))
 }
 
 /// Walk ancestor directories from `file_path` up to the nearest source root,
@@ -692,7 +702,7 @@ fn walk_paths(
     scan: &ScanConfig,
     excludes: &GlobSet,
     includes: &GlobSet,
-    include_dirs: Option<&std::collections::HashSet<String>>,
+    include_dirs: Option<&(std::collections::HashSet<String>, std::collections::HashSet<String>)>,
     subdir: Option<&str>,
 ) -> HashMap<String, PathBuf> {
     let mut map = HashMap::new();
@@ -736,14 +746,23 @@ fn walk_paths(
                     // If include patterns have extractable directory prefixes, prune
                     // directories that can't contain any matching files.
                     if e.depth() > 0 {
-                        if let Some(dir_set) = include_dirs {
+                        if let Some((ancestors, terminals)) = include_dirs {
                             if let Ok(rel) = e.path().strip_prefix(root) {
                                 let rel_str = normalise_path_sep(&rel.to_string_lossy());
-                                // Allow the directory if it is one of the literal prefix
-                                // ancestors (still descending toward the wildcard) OR if it
-                                // is inside one of those prefixes (inside the ** portion).
-                                let allowed = dir_set.contains(&rel_str)
-                                    || dir_set.iter().any(|d| rel_str.starts_with(&format!("{d}/")));
+                                // Allow the directory if:
+                                // 1. It is an ancestor of (or exactly) an include literal
+                                //    (still navigating toward the ** portion), OR
+                                // 2. It is a descendant of a terminal include literal
+                                //    (already inside the ** portion).
+                                //
+                                // Note: the descendant check uses `terminals` (the deepest
+                                // literal prefixes only), NOT `ancestors`. Using `ancestors`
+                                // here would incorrectly allow sibling directories — e.g.
+                                // `Users/Administrator` would pass because it starts with
+                                // the ancestor `Users/`, even though only
+                                // `Users/Administrators` is included.
+                                let allowed = ancestors.contains(&rel_str)
+                                    || terminals.iter().any(|t| rel_str.starts_with(&format!("{t}/")));
                                 if !allowed {
                                     return false;
                                 }
