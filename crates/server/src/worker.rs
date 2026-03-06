@@ -238,10 +238,6 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle, 
         db::update_last_scan(&conn, ts)?;
         db::append_scan_history(&conn, ts)?;
     }
-    if let Some(base_url) = &request.base_url {
-        db::update_base_url(&conn, Some(base_url))?;
-    }
-
     Ok(())
 }
 

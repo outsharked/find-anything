@@ -138,7 +138,6 @@ pub async fn index_upload(
             scanner_version: find_common::api::SCANNER_VERSION,
         }],
         delete_paths: vec![],
-        base_url: None,
         scan_timestamp: Some(now),
         indexing_failures: vec![],
     };

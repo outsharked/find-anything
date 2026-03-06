@@ -4,7 +4,6 @@ import { getToken } from './token';
 
 export interface SourceInfo {
 	name: string;
-	base_url: string | null;
 }
 
 export interface ContextLine {

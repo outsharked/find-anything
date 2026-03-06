@@ -506,34 +506,6 @@ pub fn get_last_scan(conn: &Connection) -> Result<Option<i64>> {
     }
 }
 
-// ── Base URL ──────────────────────────────────────────────────────────────────
-
-pub fn update_base_url(conn: &Connection, base_url: Option<&str>) -> Result<()> {
-    if let Some(url) = base_url {
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('base_url', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![url],
-        )?;
-    } else {
-        conn.execute("DELETE FROM meta WHERE key = 'base_url'", [])?;
-    }
-    Ok(())
-}
-
-pub fn get_base_url(conn: &Connection) -> Result<Option<String>> {
-    let result = conn.query_row(
-        "SELECT value FROM meta WHERE key = 'base_url'",
-        [],
-        |row| row.get(0),
-    );
-    match result {
-        Ok(s) => Ok(Some(s)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
 // ── File lines ────────────────────────────────────────────────────────────────
 
 /// Resolve the effective file_id for a path, following canonical_file_id if the

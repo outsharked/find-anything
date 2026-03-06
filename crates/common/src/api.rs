@@ -126,7 +126,6 @@ pub const SCANNER_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceInfo {
     pub name: String,
-    pub base_url: Option<String>,
 }
 
 /// A single extracted line sent from client → server.
@@ -187,8 +186,6 @@ pub struct BulkRequest {
     /// Paths to remove from the index.
     #[serde(default)]
     pub delete_paths: Vec<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
     /// If present, update the last_scan timestamp for this source.
     #[serde(default)]
     pub scan_timestamp: Option<i64>,
@@ -216,9 +213,6 @@ pub struct SearchResult {
     /// Populated when ?context=N is passed to the search endpoint.
     #[serde(default)]
     pub context_lines: Vec<ContextLine>,
-    /// Full URL to access the resource (if base_url configured for source).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource_url: Option<String>,
     /// Other paths with identical content (deduplication aliases).
     /// Empty when there are no duplicates; omitted from JSON.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

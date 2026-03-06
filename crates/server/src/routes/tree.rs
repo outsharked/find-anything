@@ -10,8 +10,9 @@ use serde::Deserialize;
 
 use find_common::api::{SourceInfo, TreeResponse};
 
-use crate::{db, AppState};
+use crate::AppState;
 
+use crate::db;
 use super::{check_auth, run_blocking, source_db_path};
 
 // ── GET /api/v1/sources ───────────────────────────────────────────────────────
@@ -36,13 +37,7 @@ pub async fn list_sources(
     };
     let mut infos: Vec<SourceInfo> = names
         .into_iter()
-        .map(|name| {
-            let db_path = sources_dir.join(format!("{}.db", name));
-            let base_url = db::open(&db_path).ok().and_then(|conn| {
-                db::get_base_url(&conn).ok().flatten()
-            });
-            SourceInfo { name, base_url }
-        })
+        .map(|name| SourceInfo { name })
         .collect();
     infos.sort_by(|a, b| a.name.cmp(&b.name));
     Json(infos).into_response()

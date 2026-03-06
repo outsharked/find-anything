@@ -59,7 +59,6 @@ pub struct ScanOptions {
 pub struct ScanSource<'a> {
     pub name: &'a str,
     pub paths: &'a [String],
-    pub base_url: Option<&'a str>,
     /// Glob patterns from `[sources.xxx] include = [...]`. Empty = include all.
     pub include: &'a [String],
     /// If set, restrict the scan to this subdirectory (relative path within the
@@ -75,7 +74,7 @@ pub async fn run_scan(
     scan: &ScanConfig,
     opts: &ScanOptions,
 ) -> Result<()> {
-    let (source_name, paths, base_url) = (source.name, source.paths, source.base_url);
+    let (source_name, paths) = (source.name, source.paths);
     // Build global exclusion GlobSet for the walk phase.
     let excludes = build_globset(&scan.exclude)?;
     // Build include GlobSet (empty = include everything).
@@ -148,7 +147,7 @@ pub async fn run_scan(
         local_files.len(),
     );
 
-    let mut ctx = ScanContext::new(api, source_name, paths, base_url, scan, opts.quiet, source.subdir.is_none());
+    let mut ctx = ScanContext::new(api, source_name, paths, scan, opts.quiet, source.subdir.is_none());
 
     // Submit deletions immediately so removed files are gone before new/modified
     // files are indexed.  This also ensures renames (delete + add) don't leave a
@@ -245,7 +244,6 @@ struct ScanContext<'a> {
     api: &'a ApiClient,
     source_name: &'a str,
     paths: &'a [String],
-    base_url: Option<&'a str>,
     quiet: bool,
     scan_start: i64,
     /// Whether to include `scan_timestamp` in submitted batches. False for
@@ -269,7 +267,6 @@ impl<'a> ScanContext<'a> {
         api: &'a ApiClient,
         source_name: &'a str,
         paths: &'a [String],
-        base_url: Option<&'a str>,
         scan: &ScanConfig,
         quiet: bool,
         emit_scan_timestamp: bool,
@@ -282,7 +279,6 @@ impl<'a> ScanContext<'a> {
             api,
             source_name,
             paths,
-            base_url,
             quiet,
             scan_start,
             emit_scan_timestamp,
@@ -309,7 +305,7 @@ impl<'a> ScanContext<'a> {
         }
         let scan_ts = self.emit_scan_timestamp.then_some(self.scan_start);
         submit_batch(
-            self.api, self.source_name, self.base_url,
+            self.api, self.source_name,
             &mut self.batch, &mut self.failures,
             delete_paths, scan_ts,
         ).await?;
@@ -554,7 +550,7 @@ pub async fn scan_single_file(
     opts: &ScanOptions,
 ) -> Result<()> {
     let mtime = mtime_of(abs_path).unwrap_or(0);
-    let mut ctx = ScanContext::new(api, source.name, source.paths, source.base_url, scan, opts.quiet, true);
+    let mut ctx = ScanContext::new(api, source.name, source.paths, scan, opts.quiet, true);
     process_file(&mut ctx, rel_path, abs_path, mtime).await?;
     ctx.submit(vec![]).await?;
     info!("done");

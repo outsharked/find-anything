@@ -136,8 +136,7 @@ async fn main() -> Result<()> {
                 println!("No sources indexed.");
             } else {
                 for (i, s) in sources.iter().enumerate() {
-                    let base = s.base_url.as_deref().unwrap_or("none");
-                    println!("  {}. {}  (base_url: {})", i + 1, s.name, base);
+                    println!("  {}. {}", i + 1, s.name);
                 }
             }
         }

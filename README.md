@@ -311,7 +311,6 @@ token = "your-token"
 [[sources]]
 name     = "home"
 paths    = ["/home/alice/documents", "/home/alice/projects"]
-base_url = "file:///home/alice"      # optional: makes results hyperlinkable
 
 [scan]
 exclude          = ["**/.git/**", "**/node_modules/**", "**/target/**"]

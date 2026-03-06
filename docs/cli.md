@@ -285,7 +285,6 @@ token = "change-me"                  # Bearer token (must match server config)
 [[sources]]
 name     = "code"
 paths    = ["/home/user/code", "/home/user/projects"]
-base_url = "file:///home/user/code"  # Optional: used to build clickable file links
 
 [[sources]]
 name  = "documents"

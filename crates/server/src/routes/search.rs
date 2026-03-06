@@ -106,18 +106,8 @@ fn regex_to_fts_terms(pattern: &str) -> String {
     terms.join(" ")
 }
 
-// Construct resource URL by joining base_url with path
-fn make_resource_url(base_url: &Option<String>, path: &str) -> Option<String> {
-    base_url.as_ref().map(|base| {
-        let base = base.trim_end_matches('/');
-        let path = path.trim_start_matches('/');
-        format!("{}/{}", base, path)
-    })
-}
-
 fn make_result(
     source: &str,
-    base_url: &Option<String>,
     c: &CandidateRow,
     score: u32,
     extra_matches: Vec<ContextLine>,
@@ -133,7 +123,6 @@ fn make_result(
         mtime: c.mtime,
         size: c.size,
         context_lines: vec![],
-        resource_url: make_resource_url(base_url, &c.file_path),
         aliases: vec![],
         extra_matches,
     }
@@ -192,7 +181,6 @@ pub async fn search(
                 if !db_path.exists() { return Ok((0, vec![])); }
                 let conn = db::open(&db_path)?;
                 let archive_mgr = ArchiveManager::new(data_dir);
-                let base_url = db::get_base_url(&conn)?;
 
                 // Document mode has its own query path (one result per file).
                 if mode == "document" {
@@ -206,7 +194,7 @@ pub async fn search(
                             let extra_matches = extras.into_iter()
                                 .map(|e| ContextLine { line_number: e.line_number, content: e.content })
                                 .collect();
-                            (make_result(&source_name, &base_url, &rep, score, extra_matches), file_id)
+                            (make_result(&source_name, &rep, score, extra_matches), file_id)
                         })
                         .collect();
                     let canonical_ids: Vec<i64> = result_pairs.iter().map(|(_, id)| *id).collect();
@@ -242,14 +230,14 @@ pub async fn search(
                     "exact" => {
                         // FTS5 trigram is already a substring match — candidates are the answer.
                         candidates.into_iter()
-                            .map(|c| (make_result(&source_name, &base_url, &c, 0, vec![]), c.file_id))
+                            .map(|c| (make_result(&source_name, &c, 0, vec![]), c.file_id))
                             .collect()
                     }
                     "regex" => {
                         let re = regex::RegexBuilder::new(&query).case_insensitive(true).build()?;
                         candidates.into_iter()
                             .filter(|c| re.is_match(&c.content))
-                            .map(|c| (make_result(&source_name, &base_url, &c, 0, vec![]), c.file_id))
+                            .map(|c| (make_result(&source_name, &c, 0, vec![]), c.file_id))
                             .collect()
                     }
                     _ /* "fuzzy" */ => {
@@ -257,7 +245,7 @@ pub async fn search(
                         candidates.into_iter()
                             .filter_map(|c| {
                                 scorer.score(&c.content)
-                                    .map(|score| (make_result(&source_name, &base_url, &c, score, vec![]), c.file_id))
+                                    .map(|score| (make_result(&source_name, &c, score, vec![]), c.file_id))
                             })
                             .collect()
                     }

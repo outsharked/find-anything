@@ -20,6 +20,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **`exclude_extra` in example config** — `examples/client.toml` now includes a commented `exclude_extra = []` field so users can discover the additive-patterns option without reading the docs
 - **PathBar clipboard fallback** — copy-path button now uses `document.execCommand` as a fallback when `navigator.clipboard` is unavailable (e.g. non-HTTPS contexts); "Copied" label replaces the icon briefly to confirm success
 
+### Changed
+
+- **`base_url` removed** — the `base_url` source config option and all related UI (PathBar external link, Preferences "Base URL overrides" panel, `sourceBaseUrls` profile field) have been removed; the feature was unused and the server URL is now the canonical access point for all files
+
 ### Fixed
 
 - **Archive member sizes** — `size` is now `null` for archive members rather than `0`; search results and file viewer no longer show "0 bytes" when the size of a member cannot be determined (schema v6→v7 migration makes the `size` column nullable)

@@ -6,14 +6,10 @@ token = "local-dev-token-abc123"
 [[sources]]
 name = "code"
 path = "/home/user/code"
-# Optional: base URL for constructing resource links in search results
-base_url = "file:///home/user/code"
 
 [[sources]]
 name = "data"
 path = "/home/user/data"
-# base_url can use any protocol: file://, http://, https://, smb://, etc.
-# base_url = "https://github.com/owner/repo/blob/main"
 # Optional: only index files matching these glob patterns (forward slashes).
 # include = ["reports/**", "exports/**"]
 

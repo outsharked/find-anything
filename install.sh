@@ -238,7 +238,6 @@ token = "$TOKEN_ESC"
 [[sources]]
 name = "$SOURCE_NAME_ESC"
 path = "$DIR_ESC"
-# base_url = ""   # Optional: public URL prefix for file links in search results
 # include  = []   # Glob patterns to limit indexing (e.g. ["docs/**", "src/**"])
 
 [scan]

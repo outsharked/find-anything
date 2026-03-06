@@ -381,9 +381,7 @@
 	// ── Derived ──────────────────────────────────────────────────────────────────
 
 	$: sourceNames = sources.map((s) => s.name);
-	$: serverBaseUrls = Object.fromEntries(sources.filter((s) => s.base_url != null).map((s) => [s.name, s.base_url as string]));
 	$: paletteSources = selectedSources.length ? selectedSources : fileSource ? [fileSource] : sourceNames;
-	$: fileBaseUrl = $profile.sourceBaseUrls?.[fileSource] ?? serverBaseUrls[fileSource] ?? null;
 </script>
 
 <div class="page-layout" class:has-sidebar={showTree} class:file-view={view === 'file'}>
@@ -414,7 +412,6 @@
 				{panelMode}
 				{currentDirPrefix}
 				{showTree}
-				baseUrl={fileBaseUrl}
 				{query}
 				{mode}
 				{searching}

@@ -4,9 +4,6 @@
 	export let source: string;
 	export let path: string;
 	export let archivePath: string | null = null;
-	/** Effective resolved base URL (server value overridden by user profile). */
-	export let baseUrl: string | null = null;
-
 	const dispatch = createEventDispatcher<{
 		back: void;
 		navigate: { type: 'dir'; prefix: string } | { type: 'file'; path: string; kind: string };
@@ -19,11 +16,6 @@
 	};
 
 	$: segments = computeSegments(path, archivePath);
-
-	$: externalHref = baseUrl
-		? baseUrl.replace(/\/+$/, '') + '/' +
-		  path.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')
-		: null;
 
 	function computeSegments(outerPath: string, innerPath: string | null): Segment[] {
 		const outerParts = outerPath.split('/');
@@ -119,9 +111,6 @@
 			{/if}
 		</button>
 	</span>
-	{#if externalHref}
-		<a class="external-link" href={externalHref} target="_blank" rel="noopener noreferrer" title="Open in file manager">↗</a>
-	{/if}
 </div>
 
 <style>
@@ -240,15 +229,4 @@
 		white-space: nowrap;
 	}
 
-	.external-link {
-		margin-left: 4px;
-		color: var(--text-dim);
-		text-decoration: none;
-		font-size: 11px;
-		flex-shrink: 0;
-	}
-
-	.external-link:hover {
-		color: var(--accent);
-	}
 </style>

@@ -15,7 +15,6 @@
 	export let panelMode: 'file' | 'dir';
 	export let currentDirPrefix: string;
 	export let showTree: boolean;
-	export let baseUrl: string | null;
 	export let query: string;
 	export let mode: string;
 	export let searching: boolean;
@@ -75,7 +74,6 @@
 		source={fileSource}
 		path={pathBarPath}
 		archivePath={panelMode === 'file' ? currentFile?.inner ?? null : null}
-		{baseUrl}
 		on:back={() => dispatch('back')}
 		on:navigate={(e) => {
 			if (e.detail.type === 'dir') {

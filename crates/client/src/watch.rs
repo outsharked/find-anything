@@ -132,9 +132,6 @@ pub async fn run_watch(config: &ClientConfig) -> Result<()> {
                 continue;
             }
 
-            let source_cfg = config.sources.iter().find(|s| s.name == source_name);
-            let base_url = source_cfg.and_then(|s| s.base_url.as_deref());
-
             match kind {
                 AccumulatedKind::Update => {
                     // Only process if it exists and is a regular file.
@@ -146,7 +143,6 @@ pub async fn run_watch(config: &ClientConfig) -> Result<()> {
                         &source_name,
                         &abs_path,
                         &rel_path,
-                        base_url,
                         &eff_scan,
                         &config.watch.extractor_dir,
                     )
@@ -156,7 +152,7 @@ pub async fn run_watch(config: &ClientConfig) -> Result<()> {
                     }
                 }
                 AccumulatedKind::Delete => {
-                    if let Err(e) = handle_delete(&api, &source_name, &rel_path, base_url).await {
+                    if let Err(e) = handle_delete(&api, &source_name, &rel_path).await {
                         warn!("delete {}: {e:#}", abs_path.display());
                     }
                 }
@@ -356,7 +352,6 @@ async fn handle_update(
     source_name: &str,
     abs_path: &Path,
     rel_path: &str,
-    base_url: Option<&str>,
     eff_scan: &ScanConfig,
     extractor_dir: &Option<String>,
 ) -> Result<()> {
@@ -381,7 +376,6 @@ async fn handle_update(
         source: source_name.to_string(),
         files: std::mem::take(&mut files),
         delete_paths: vec![],
-        base_url: base_url.map(|s| s.to_string()),
         scan_timestamp: None,
         indexing_failures: vec![],
     })
@@ -392,7 +386,6 @@ async fn handle_delete(
     api: &ApiClient,
     source_name: &str,
     rel_path: &str,
-    base_url: Option<&str>,
 ) -> Result<()> {
     info!("delete: {}", rel_path);
 
@@ -400,7 +393,6 @@ async fn handle_delete(
         source: source_name.to_string(),
         files: vec![],
         delete_paths: vec![rel_path.to_string()],
-        base_url: base_url.map(|s| s.to_string()),
         scan_timestamp: None,
         indexing_failures: vec![],
     })

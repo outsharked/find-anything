@@ -1,23 +1,13 @@
 <script lang="ts">
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { listSources } from '$lib/api';
-	import type { SourceInfo } from '$lib/api';
 	import Preferences from '$lib/Preferences.svelte';
 	import StatsPanel from '$lib/StatsPanel.svelte';
 	import ErrorsPanel from '$lib/ErrorsPanel.svelte';
 	import About from '$lib/About.svelte';
-	import { onMount } from 'svelte';
-
 	// Declare params prop to silence runtime "unknown prop" warning.
 	export let params: Record<string, string>;
 	const _params = params;
-
-	let sources: SourceInfo[] = [];
-
-	onMount(async () => {
-		try { sources = await listSources(); } catch { /* silent */ }
-	});
 
 	let activeSection = $page.url.searchParams.get('section') ?? 'preferences';
 
@@ -86,7 +76,7 @@
 		<main class="content">
 			{#if activeSection === 'preferences'}
 				<h2 class="content-title">Preferences</h2>
-				<Preferences {sources} />
+				<Preferences />
 			{:else if activeSection === 'stats'}
 				<h2 class="content-title">Index Statistics</h2>
 				<StatsPanel />
@@ -98,7 +88,7 @@
 				<About />
 			{:else}
 				<h2 class="content-title">Preferences</h2>
-				<Preferences {sources} />
+				<Preferences />
 			{/if}
 		</main>
 	</div>

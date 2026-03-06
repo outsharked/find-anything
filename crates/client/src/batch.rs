@@ -173,7 +173,6 @@ pub fn build_member_index_files(
 pub async fn submit_batch(
     api: &ApiClient,
     source_name: &str,
-    base_url: Option<&str>,
     batch: &mut Vec<IndexFile>,
     failures: &mut Vec<IndexingFailure>,
     delete_paths: Vec<String>,
@@ -188,7 +187,6 @@ pub async fn submit_batch(
         source: source_name.to_string(),
         files,
         delete_paths,
-        base_url: base_url.map(|s| s.to_string()),
         scan_timestamp,
         indexing_failures,
     })

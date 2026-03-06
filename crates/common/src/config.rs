@@ -122,9 +122,6 @@ pub struct SourceConfig {
     /// The server can map this to a filesystem path for raw file serving.
     pub path: String,
 
-    #[serde(default)]
-    pub base_url: Option<String>,
-
     /// Only index files whose relative path matches at least one of these glob
     /// patterns. Use forward slashes as separators (backslashes are normalised
     /// automatically). If empty, all files under the source root are indexed.

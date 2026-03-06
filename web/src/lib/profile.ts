@@ -2,7 +2,6 @@ import { writable } from 'svelte/store';
 
 export interface UserProfile {
 	sidebarWidth?: number;
-	sourceBaseUrls?: Record<string, string>;
 	wordWrap?: boolean;
 	markdownFormat?: boolean;
 	contextWindow?: number;

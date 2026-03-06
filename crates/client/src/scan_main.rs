@@ -123,7 +123,6 @@ async fn main() -> Result<()> {
             let scan_source = ScanSource {
                 name: &source.name,
                 paths: std::slice::from_ref(&source.path),
-                base_url: source.base_url.as_deref(),
                 include: &source.include,
                 subdir: None,
             };
@@ -140,7 +139,6 @@ async fn main() -> Result<()> {
             let scan_source = ScanSource {
                 name: &source.name,
                 paths: std::slice::from_ref(&source.path),
-                base_url: source.base_url.as_deref(),
                 include: &source.include,
                 subdir,
             };
@@ -155,7 +153,6 @@ async fn main() -> Result<()> {
         let scan_source = ScanSource {
             name: &source.name,
             paths: std::slice::from_ref(&source.path),
-            base_url: source.base_url.as_deref(),
             include: &source.include,
             subdir: None,
         };
