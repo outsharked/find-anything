@@ -237,7 +237,7 @@ export function parseNlpQuery(raw: string, mode: string): NlpResult {
 			const spanEnd = second.index + second.text.length;
 
 			dateFrom = toUnix(first.start.date());
-			dateTo = toUnix(upperBound(second, now));
+			dateTo = toUnix(upperBound(second, now, false));
 
 			detectedPhrase = unquoted.slice(spanStart, spanEnd).trim();
 			removeSpan = [spanStart, spanEnd];
