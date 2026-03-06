@@ -14,12 +14,19 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **`find-scan` directory argument** — `find-scan <dir>` rescans all files under a source subdirectory (full rescan, scoped deletions to that subtree only, no `scan_timestamp` update); previously only individual files were accepted
 - **Search result metadata** — mtime, file size, and kind are now shown right-aligned in the search result title bar; the duplicates bubble moves to immediately after the file path
 - **PDF original view from tree** — PDFs opened from the tree, directory listing, or command palette now default to the rendered (original) view; search-result opens continue to default to extracted text so match context is visible immediately
+- **Grouped search results** — multiple hits in the same file are now shown as a single result card with clickable line-number badges (`:123`, `:456`); clicking a badge updates the context snippet without opening the file; the active badge is highlighted
+- **Build kind in About screen** — the About panel now shows `(release)`, `(dev)`, or a short commit hash alongside the version; determined at build time from `GIT_TAG` and `GIT_DIRTY` env vars (no GitHub API call required); CI release workflow injects these automatically
+- **`log_batch_detail_limit` server config** — `[server] log_batch_detail_limit = 5` (default); for batches up to this size the worker logs each file path individually; for larger batches it logs only the count, preventing log floods on big scans
+- **`exclude_extra` in example config** — `examples/client.toml` now includes a commented `exclude_extra = []` field so users can discover the additive-patterns option without reading the docs
+- **PathBar clipboard fallback** — copy-path button now uses `document.execCommand` as a fallback when `navigator.clipboard` is unavailable (e.g. non-HTTPS contexts); "Copied" label replaces the icon briefly to confirm success
 
 ### Fixed
 
 - **Archive member sizes** — `size` is now `null` for archive members rather than `0`; search results and file viewer no longer show "0 bytes" when the size of a member cannot be determined (schema v6→v7 migration makes the `size` column nullable)
 - **`find-scan --upgrade`** — replaces `--full`; re-indexes only files whose stored `scanner_version` is older than the current client version, making post-release re-indexing fast and naturally resumable (interrupted runs skip files already upgraded); schema v7→v8 adds `scanner_version INTEGER DEFAULT 0` to the `files` table
 - **`find-admin show` timestamp** — `scan_ts` is now printed as a human-readable RFC2822 local time instead of a raw Unix epoch number
+- **Sticky search bar** — `overflow: hidden` on `.main-content` was suppressing `position: sticky` on the topbar in the results view; moved to the file-view-only selector so the search bar now remains fixed at the top while scrolling through results
+- **Search result filename never hidden** — file path in result cards is now `flex-shrink: 0` (max 60% width) and the line-ref badge list clips rather than wraps, so a long list of line-number badges can no longer push the filename off-screen
 
 ---
 
@@ -301,7 +308,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 - **`mise run clippy` task** — runs `cargo clippy --workspace -- -D warnings` matching the CI check; CLAUDE.md updated to require clippy passes before committing Rust changes
 - **`mise run build-arm` task** — cross-compiles all binaries for ARM7 (armv7-unknown-linux-gnueabihf) using `cross`, matching the CI release build and avoiding glibc version mismatches on NAS deployments
-- **`mise run build-server` task** — builds web UI then compiles all binaries for x86_64 release
+- **`mise run build-x64` task** — builds web UI then compiles all binaries for x86_64 release
 - **`DEVELOPMENT.md`** — new developer guide covering prerequisites, mise tasks, native and ARM7 build instructions (`cross` usage explained), linting, CI/release matrix, and project structure
 - **Expanded default excludes** — added OS/platform-specific patterns: Synology (`#recycle`, `@eaDir`, `#snapshot`), Windows (`$RECYCLE.BIN`, `System Volume Information`), macOS (`__MACOSX`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`), Linux (`lost+found`), and VCS (`svn`, `.hg`)
 - **Full paths in extraction error messages** — PDF and other extraction errors now log the full file path (e.g. `/data/archive.zip::Contract.pdf`) instead of just the filename, making it easier to locate the problematic file

@@ -123,9 +123,9 @@ pub fn register_scalar_functions(conn: &Connection) -> Result<()> {
 }
 
 
-/// Check all existing source databases in `sources_dir` for schema compatibility.
-/// Called at server startup so an incompatible DB causes an immediate fatal error
-/// rather than a runtime warning when the first request arrives.
+/// Open and migrate all existing source databases in `sources_dir` at startup.
+/// This ensures any pending schema migrations are applied eagerly rather than
+/// lazily on the first request, and catches truly incompatible databases early.
 pub fn check_all_sources(sources_dir: &Path) -> Result<()> {
     let read_dir = match std::fs::read_dir(sources_dir) {
         Ok(rd) => rd,
@@ -136,16 +136,8 @@ pub fn check_all_sources(sources_dir: &Path) -> Result<()> {
         if path.extension().and_then(|e| e.to_str()) != Some("db") {
             continue;
         }
-        let conn = Connection::open(&path)
-            .with_context(|| format!("opening {}", path.display()))?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != 0 && version != SCHEMA_VERSION {
-            anyhow::bail!(
-                "database schema is v{version} but this server requires v{SCHEMA_VERSION}. \
-                 Delete {} and re-run find-scan to rebuild.",
-                path.display()
-            );
-        }
+        // open() applies any pending migrations and errors on truly incompatible versions.
+        open(&path).with_context(|| format!("migrating {}", path.display()))?;
     }
     Ok(())
 }

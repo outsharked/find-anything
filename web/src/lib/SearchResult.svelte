@@ -5,10 +5,14 @@
 	import { highlightLine } from '$lib/highlight';
 	import { contextWindow } from '$lib/settingsStore';
 
-	export let result: SearchResult;
+	/** All hits for this file, ordered by relevance (first hit is primary). */
+	export let hits: SearchResult[];
+
+	$: result = hits[activeHitIndex] ?? hits[0];
 
 	const dispatch = createEventDispatcher<{ open: SearchResult }>();
 
+	let activeHitIndex = 0;
 	let contextStart = 0;
 	let contextMatchIndex: number | null = null;
 	let contextLines: string[] = [];
@@ -42,17 +46,18 @@
 	});
 
 	async function loadContext() {
-		if (result.line_number === 0) {
+		const hit = hits[activeHitIndex] ?? hits[0];
+		if (hit.line_number === 0) {
 			contextLoaded = true;
 			return;
 		}
 		try {
 			const resp = await fetchContext(
-				result.source,
-				result.path,
-				result.line_number,
+				hit.source,
+				hit.path,
+				hit.line_number,
 				$contextWindow,
-				result.archive_path ?? undefined
+				hit.archive_path ?? undefined
 			);
 			contextStart = resp.start;
 			contextMatchIndex = resp.match_index;
@@ -64,8 +69,18 @@
 		}
 	}
 
+	function switchToHit(i: number) {
+		if (i === activeHitIndex) return;
+		activeHitIndex = i;
+		contextLoaded = false;
+		contextLines = [];
+		contextStart = 0;
+		contextMatchIndex = null;
+		loadContext();
+	}
+
 	function openFile() {
-		dispatch('open', result);
+		dispatch('open', hits[activeHitIndex] ?? hits[0]);
 	}
 
 	function formatSize(bytes: number | null): string {
@@ -112,8 +127,22 @@
 	>
 		<span class="badge">{result.source}</span>
 		<span class="file-path">{displayPath(result)}</span>
-		{#if result.line_number > 0}
-			<span class="line-ref">:{result.line_number}</span>
+		{#if hits.length === 1 && hits[0].line_number > 0}
+			<span class="line-ref">:{hits[0].line_number}</span>
+		{:else if hits.length > 1}
+			<span class="line-refs">
+				{#each hits as hit, i}
+					{#if hit.line_number > 0}
+						<!-- svelte-ignore a11y-click-events-have-key-events -->
+						<span
+							class="line-ref-btn"
+							class:active={i === activeHitIndex}
+							title="Show context at line {hit.line_number}"
+							on:click|stopPropagation={() => switchToHit(i)}
+						>:{hit.line_number}</span>
+					{/if}
+				{/each}
+			</span>
 		{/if}
 		{#if result.aliases && result.aliases.length > 0}
 			<!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -220,6 +249,8 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		flex-shrink: 0;
+		max-width: 60%;
 	}
 
 	.line-ref {
@@ -227,6 +258,33 @@
 		font-family: var(--font-mono);
 		font-size: 12px;
 		flex-shrink: 0;
+	}
+
+	.line-refs {
+		display: flex;
+		flex-wrap: nowrap;
+		gap: 2px;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.line-ref-btn {
+		color: var(--text-dim);
+		font-family: var(--font-mono);
+		font-size: 12px;
+		cursor: pointer;
+		padding: 0 3px;
+		border-radius: 3px;
+		flex-shrink: 0;
+	}
+
+	.line-ref-btn:hover {
+		color: var(--accent);
+		background: var(--bg-hover);
+	}
+
+	.line-ref-btn.active {
+		color: var(--accent);
 	}
 
 	.context-lines {

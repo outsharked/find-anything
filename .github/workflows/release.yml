@@ -95,6 +95,13 @@ jobs:
         if: matrix.use_cross
         run: cargo install cross --locked
 
+      - name: Set build metadata
+        shell: bash
+        run: |
+          echo "GIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "GIT_TAG=$(git tag --points-at HEAD | head -1)" >> "$GITHUB_ENV"
+          echo "GIT_DIRTY=" >> "$GITHUB_ENV"
+
       - name: Build
         run: ${{ matrix.use_cross && 'cross' || 'cargo' }} build --release --workspace --target ${{ matrix.target }}
 

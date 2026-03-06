@@ -7,15 +7,32 @@
 	export let searching = false;
 
 	const dispatch = createEventDispatcher<{ open: SearchResult }>();
+
+	// Group results by file so multiple hits in the same file appear as one card.
+	type ResultGroup = { key: string; hits: SearchResult[] };
+
+	$: groups = (() => {
+		const map = new Map<string, ResultGroup>();
+		const order: string[] = [];
+		for (const r of results) {
+			const key = `${r.source}:${r.path}:${r.archive_path ?? ''}`;
+			if (!map.has(key)) {
+				map.set(key, { key, hits: [] });
+				order.push(key);
+			}
+			map.get(key)!.hits.push(r);
+		}
+		return order.map((k) => map.get(k)!);
+	})();
 </script>
 
 <div class="result-list" class:searching>
-	{#if results.length === 0 && !searching}
+	{#if groups.length === 0 && !searching}
 		<p class="empty">No results.</p>
 	{:else}
-		{#each results as result (`${result.source}:${result.path}:${result.archive_path ?? ''}:${result.line_number}`)}
+		{#each groups as group (group.key)}
 			<div class="result-pad">
-				<SearchResultItem {result} on:open={(e) => dispatch('open', e.detail)} />
+				<SearchResultItem hits={group.hits} on:open={(e) => dispatch('open', e.detail)} />
 			</div>
 		{/each}
 	{/if}

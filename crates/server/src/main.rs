@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
 
     // Fail fast if any existing source DB has an incompatible schema.
     db::check_all_sources(&data_dir.join("sources"))
-        .context("schema version check failed — delete the listed database(s) and re-run `find-scan --full`")?;
+        .context("schema version check failed — delete the listed database(s) and re-run `find-scan`")?;
 
     let bind = config.server.bind.clone();
     let worker_status = Arc::new(std::sync::Mutex::new(WorkerStatus::Idle));
@@ -125,8 +125,9 @@ async fn main() -> Result<()> {
 
     // Spawn the async inbox worker, sharing the status handle.
     let worker_data_dir = data_dir.clone();
+    let log_batch_detail_limit = state.config.server.log_batch_detail_limit;
     tokio::spawn(async move {
-        if let Err(e) = worker::start_inbox_worker(worker_data_dir, worker_status).await {
+        if let Err(e) = worker::start_inbox_worker(worker_data_dir, worker_status, log_batch_detail_limit).await {
             tracing::error!("Inbox worker failed: {e}");
         }
     });

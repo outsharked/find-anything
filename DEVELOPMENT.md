@@ -2,12 +2,12 @@
 
 ## Prerequisites
 
-| Tool | Purpose | Install |
-|------|---------|---------|
-| Rust (stable) | Build all Rust crates | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| Node.js 22+ | Build the web UI | via `mise` or [nodejs.org](https://nodejs.org) |
-| pnpm | Web package manager | `corepack enable` (after Node install) |
-| [mise](https://mise.jdx.dev) | Task runner | `curl https://mise.run \| sh` |
+| Tool                         | Purpose               | Install                                                           |
+| ---------------------------- | --------------------- | ----------------------------------------------------------------- |
+| Rust (stable)                | Build all Rust crates | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| Node.js 22+                  | Build the web UI      | via `mise` or [nodejs.org](https://nodejs.org)                    |
+| pnpm                         | Web package manager   | `corepack enable` (after Node install)                            |
+| [mise](https://mise.jdx.dev) | Task runner           | `curl https://mise.run \| sh`                                     |
 
 After installing mise, run `mise install` in the repo root to install Node and configure the environment.
 
@@ -17,19 +17,19 @@ After installing mise, run `mise install` in the repo root to install Node and c
 
 All common workflows are available as `mise run <task>`:
 
-| Task | Description |
-|------|-------------|
-| `mise run dev` | Start Rust API server + Vite dev server (live reload for both) |
-| `mise run server` | Start Rust API server only (with cargo-watch auto-rebuild) |
-| `mise run scan` | Incremental scan of configured sources |
-| `mise run scan-full` | Full (non-incremental) re-scan |
-| `mise run check` | Type-check Rust workspace + web UI |
-| `mise run clippy` | Run clippy lints (matches CI — fails on warnings) |
-| `mise run build-release` | Build web UI, then compile `find-server` with embedded assets |
-| `mise run build-server` | Build web UI, then compile all binaries for x86_64 |
-| `mise run build-arm` | Build all binaries for ARM7 NAS (see below) |
-| `mise run admin` | Show inbox status |
-| `mise run clean-db` | Delete local index data (requires re-scan) |
+| Task                     | Description                                                    |
+| ------------------------ | -------------------------------------------------------------- |
+| `mise run dev`           | Start Rust API server + Vite dev server (live reload for both) |
+| `mise run server`        | Start Rust API server only (with cargo-watch auto-rebuild)     |
+| `mise run scan`          | Incremental scan of configured sources                         |
+| `mise run scan-full`     | Full (non-incremental) re-scan                                 |
+| `mise run check`         | Type-check Rust workspace + web UI                             |
+| `mise run clippy`        | Run clippy lints (matches CI — fails on warnings)              |
+| `mise run build-release` | Build web UI, then compile `find-server` with embedded assets  |
+| `mise run build-x64`     | Build web UI, then compile all binaries for x86_64             |
+| `mise run build-arm`     | Build all binaries for ARM7 NAS (see below)                    |
+| `mise run admin`         | Show inbox status                                              |
+| `mise run clean-db`      | Delete local index data (requires re-scan)                     |
 
 ---
 
@@ -57,6 +57,7 @@ mise run dev
 ```
 
 This starts:
+
 - `cargo watch` on `crates/` — rebuilds and restarts `find-server` on Rust changes
 - `vite` on `web/` — serves the UI at `http://localhost:5173` with hot reload
 
@@ -72,7 +73,7 @@ the UI without rebuilding the Rust server for every frontend change.
 Builds the web UI first (so `find-server` embeds the production assets), then compiles all binaries:
 
 ```sh
-mise run build-server
+mise run build
 ```
 
 Output: `target/release/find-{server,scan,watch,...}`
@@ -126,19 +127,20 @@ mise run clippy
 ## CI / Release
 
 CI runs on every push (`ci.yml`):
+
 - `cargo test --workspace` + `cargo clippy -- -D warnings`
 - `pnpm run check` (TypeScript type-check)
 
 Releases are triggered by pushing a `v*.*.*` tag (`release.yml`). The build matrix produces:
 
-| Platform | Target |
-|----------|--------|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` |
-| Linux aarch64 | `aarch64-unknown-linux-gnu` |
-| Linux ARM7 | `armv7-unknown-linux-gnueabihf` (via `cross`) |
-| macOS arm64 | `aarch64-apple-darwin` |
-| macOS x86_64 | `x86_64-apple-darwin` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` |
+| Platform       | Target                                        |
+| -------------- | --------------------------------------------- |
+| Linux x86_64   | `x86_64-unknown-linux-gnu`                    |
+| Linux aarch64  | `aarch64-unknown-linux-gnu`                   |
+| Linux ARM7     | `armv7-unknown-linux-gnueabihf` (via `cross`) |
+| macOS arm64    | `aarch64-apple-darwin`                        |
+| macOS x86_64   | `x86_64-apple-darwin`                         |
+| Windows x86_64 | `x86_64-pc-windows-msvc`                      |
 
 Each platform produces a `.tar.gz` (or `.zip` on Windows) attached to the GitHub Release.
 

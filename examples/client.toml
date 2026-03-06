@@ -34,6 +34,9 @@ exclude = [
     "**/tmp/**",
     "**/temp/**",
 ]
+# Additional patterns appended to the built-in defaults (without replacing them).
+# Use this instead of `exclude` when you want to keep the defaults and just add more.
+exclude_extra = []
 max_file_size_mb = 10
 follow_symlinks = false
 include_hidden = false

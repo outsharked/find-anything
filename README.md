@@ -262,8 +262,8 @@ systemctl --user status find-server   # user install
 systemctl --user status find-watch
 systemctl --user restart find-watch
 
-# Re-run a full scan at any time
-find-scan --full
+# Run a full incremental scan at any time
+find-scan
 ```
 
 ---

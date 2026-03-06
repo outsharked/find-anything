@@ -71,10 +71,25 @@
 
 	let copied = false;
 	function copyPath() {
-		navigator.clipboard.writeText(fullPath).then(() => {
-			copied = true;
-			setTimeout(() => (copied = false), 1500);
-		});
+		const text = fullPath;
+		if (navigator.clipboard) {
+			navigator.clipboard.writeText(text).then(() => showCopied()).catch(() => fallbackCopy(text));
+		} else {
+			fallbackCopy(text);
+		}
+	}
+	function fallbackCopy(text: string) {
+		const ta = document.createElement('textarea');
+		ta.value = text;
+		ta.style.cssText = 'position:fixed;opacity:0';
+		document.body.appendChild(ta);
+		ta.focus();
+		ta.select();
+		try { document.execCommand('copy'); showCopied(); } finally { document.body.removeChild(ta); }
+	}
+	function showCopied() {
+		copied = true;
+		setTimeout(() => (copied = false), 2000);
 	}
 </script>
 
@@ -90,19 +105,20 @@
 				<button class="seg seg--link" on:click={() => handleSegmentClick(seg)}>{seg.label}</button>
 			{/if}
 		{/each}
+		<button class="copy-btn" class:copied on:click={copyPath} title={copied ? '' : 'Copy path'}>
+			{#if copied}
+				<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+					<polyline points="2,7 5,10 11,3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				<span class="copied-label">Copied</span>
+			{:else}
+				<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+					<rect x="4" y="1" width="8" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M2 4H1.5A1.5 1.5 0 0 0 0 5.5v6A1.5 1.5 0 0 0 1.5 13H8A1.5 1.5 0 0 0 9.5 11.5V11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+				</svg>
+			{/if}
+		</button>
 	</span>
-	<button class="copy-btn" class:copied on:click={copyPath} title="Copy path to clipboard">
-		{#if copied}
-			<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-				<polyline points="2,7 5,10 11,3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-			</svg>
-		{:else}
-			<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-				<rect x="4" y="1" width="8" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
-				<path d="M2 4H1.5A1.5 1.5 0 0 0 0 5.5v6A1.5 1.5 0 0 0 1.5 13H8A1.5 1.5 0 0 0 9.5 11.5V11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-			</svg>
-		{/if}
-	</button>
 	{#if externalHref}
 		<a class="external-link" href={externalHref} target="_blank" rel="noopener noreferrer" title="Open in file manager">↗</a>
 	{/if}
@@ -202,10 +218,12 @@
 		cursor: pointer;
 		color: var(--text-dim);
 		flex-shrink: 0;
-		display: flex;
+		display: inline-flex;
 		align-items: center;
+		gap: 4px;
 		border-radius: 3px;
 		transition: color 0.15s;
+		vertical-align: middle;
 	}
 
 	.copy-btn:hover {
@@ -214,6 +232,12 @@
 
 	.copy-btn.copied {
 		color: #3fb950;
+	}
+
+	.copied-label {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		white-space: nowrap;
 	}
 
 	.external-link {

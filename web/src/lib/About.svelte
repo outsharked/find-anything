@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 
 	let serverVersion = '';
+	let buildHash = '';
 	let latestVersion = '';
 	let checkState: 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'error' = 'idle';
 
@@ -10,6 +11,7 @@
 		try {
 			const settings = await getSettings();
 			serverVersion = settings.version;
+			buildHash = settings.git_hash;
 		} catch {
 			serverVersion = '(unavailable)';
 		}
@@ -32,7 +34,7 @@
 <div class="about">
 	<div class="row">
 		<span class="label">Server version</span>
-		<span class="value">{serverVersion || '…'}</span>
+		<span class="value">{serverVersion || '…'}{buildHash && buildHash !== 'unknown' ? ` (${buildHash})` : ''}</span>
 	</div>
 
 	<div class="update-row">

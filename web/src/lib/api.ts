@@ -243,6 +243,7 @@ export async function getContext(
 export interface AppSettings {
 	context_window: number;
 	version: string;
+	git_hash: string;
 }
 
 export async function getSettings(): Promise<AppSettings> {

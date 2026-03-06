@@ -211,10 +211,10 @@ is:
 1. Run `find-scan` once to build the initial index.
 2. Start `find-watch` to keep the index current as files change.
 
-To re-index everything (e.g. after an upgrade):
+To re-index everything with latest version of client (e.g. after an upgrade):
 
 ```sh
-find-scan --config ~/.config/find-anything/client.toml --full
+find-scan --config ~/.config/find-anything/client.toml --upgrade
 ```
 
 ---

@@ -31,7 +31,7 @@ type StatusHandle = std::sync::Arc<std::sync::Mutex<WorkerStatus>>;
 
 /// Start the inbox worker that processes index requests asynchronously.
 /// Polls the inbox directory every second for new `.gz` files.
-pub async fn start_inbox_worker(data_dir: PathBuf, status: StatusHandle) -> Result<()> {
+pub async fn start_inbox_worker(data_dir: PathBuf, status: StatusHandle, log_batch_detail_limit: usize) -> Result<()> {
     let inbox_dir = data_dir.join("inbox");
     tokio::fs::create_dir_all(&inbox_dir).await?;
 
@@ -72,7 +72,7 @@ pub async fn start_inbox_worker(data_dir: PathBuf, status: StatusHandle) -> Resu
         }
         gz_files.sort_unstable_by_key(|(mtime, _)| *mtime);
         for (_, path) in gz_files {
-            process_request_async(&data_dir, &path, &failed_dir, status.clone()).await;
+            process_request_async(&data_dir, &path, &failed_dir, status.clone(), log_batch_detail_limit).await;
         }
     }
 }
@@ -82,13 +82,14 @@ async fn process_request_async(
     request_path: &Path,
     failed_dir: &Path,
     status: StatusHandle,
+    log_batch_detail_limit: usize,
 ) {
     let status_reset = status.clone(); // held outside the closure to ensure Idle on any exit path
 
     let result = tokio::task::spawn_blocking({
         let data_dir = data_dir.to_path_buf();
         let request_path = request_path.to_path_buf();
-        move || process_request(&data_dir, &request_path, &status)
+        move || process_request(&data_dir, &request_path, &status, log_batch_detail_limit)
     })
     .await;
 
@@ -122,8 +123,7 @@ async fn process_request_async(
     }
 }
 
-fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) -> Result<()> {
-    tracing::info!("Processing request: {}", request_path.display());
+fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle, log_batch_detail_limit: usize) -> Result<()> {
     let request_start = std::time::Instant::now();
 
     // Decompress and parse request
@@ -134,6 +134,18 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle) 
 
     let request: BulkRequest = serde_json::from_str(&json)
         .context("parsing bulk request JSON")?;
+
+    // Log what is being processed. For small batches, emit each path so it's
+    // easy to see which files are being indexed. For large batches, log the
+    // count to avoid flooding the log.
+    let n = request.files.len();
+    if n <= log_batch_detail_limit {
+        for f in &request.files {
+            tracing::info!("Indexing [{}] {}", request.source, f.path);
+        }
+    } else {
+        tracing::info!("Indexing {} files [{}]", n, request.source);
+    }
 
     // Open source database
     let db_path = data_dir.join("sources").join(format!("{}.db", request.source));

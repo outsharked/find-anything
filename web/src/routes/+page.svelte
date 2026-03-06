@@ -535,13 +535,13 @@
 	.main-content {
 		flex: 1;
 		min-width: 0;
-		overflow: hidden;
 		display: flex;
 		flex-direction: column;
 	}
 
 	.page-layout.file-view .main-content {
 		height: 100vh;
+		overflow: hidden;
 	}
 
 	.load-row {

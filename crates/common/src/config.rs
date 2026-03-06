@@ -60,6 +60,7 @@ struct ServerDefaults {
 struct ServerSettingsDefaults {
     bind: String,
     download_zip_member_levels: usize,
+    log_batch_detail_limit: usize,
 }
 
 #[derive(Deserialize)]
@@ -496,10 +497,16 @@ pub struct ServerAppSettings {
     /// 2 = one level of nesting (outer.zip::inner.zip::file). Default: 2.
     #[serde(default = "default_download_zip_member_levels")]
     pub download_zip_member_levels: usize,
+    /// When the inbox worker processes a batch, log each file path individually
+    /// if the batch contains at most this many files. For larger batches, log
+    /// only the count. Default: 5.
+    #[serde(default = "default_log_batch_detail_limit")]
+    pub log_batch_detail_limit: usize,
 }
 
 fn default_bind() -> String { server_defaults().server.bind.clone() }
 fn default_download_zip_member_levels() -> usize { server_defaults().server.download_zip_member_levels }
+fn default_log_batch_detail_limit() -> usize     { server_defaults().server.log_batch_detail_limit }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchSettings {

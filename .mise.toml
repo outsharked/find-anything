@@ -8,7 +8,7 @@ node = "24"
 postinstall = "corepack enable"
 
 [settings]
-experimental = true  # Enables hook support
+experimental = true # Enables hook support
 
 [env]
 # Optional: Adds node_modules/.bin to PATH for easier command running
@@ -53,24 +53,25 @@ run = [
   "cargo run -p find-client --bin find-scan -- --config config/client.toml",
 ]
 
-[tasks.scan-full]
-description = "Full (non-incremental) scan of all configured sources"
+[tasks.scan-upgrade]
+description = "Upgrade scan of all configured sources (rescans anything scanned with older version of find-scan)"
 run = [
   "cargo build --workspace",
-  "cargo run -p find-client --bin find-scan -- --config config/client.toml --full",
+  "cargo run -p find-client --bin find-scan -- --config config/client.toml --upgrade",
 ]
 
-# ── Web UI ────────────────────────────────────────────────────────────────────
+[tasks.build]
+description = "Build all binaries for x86_64 Linux (server and client)"
+run = [
+  "rm -rf web/build",
+  "pnpm --dir web run build",
+  "cargo build --release --workspace",
+]
 
-[tasks.build-release]
-description = "Build web UI then compile find-server release binary with embedded assets"
-run = ["rm -rf web/build", "pnpm --dir web run build", "cargo build --release -p find-server"]
-env = { GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}" }
-
-[tasks.build-server]
-description = "Build all binaries for x86_64 (for update-server.sh)"
-run = ["rm -rf web/build", "pnpm --dir web run build", "cargo build --release --workspace"]
-env = { GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}" }
+[tasks.build.env]
+GIT_HASH  = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG   = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
 
 [tasks.build-arm]
 description = "Build all binaries for ARM7 NAS using cross (matches CI, avoids glibc version mismatch)"
@@ -79,25 +80,37 @@ run = [
   "pnpm --dir web run build",
   "cross build --release --target armv7-unknown-linux-gnueabihf",
 ]
-env = { GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}" }
 
-[tasks.build-all]
+[tasks.build-arm.env]
+GIT_HASH  = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG   = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
+
+[tasks.build-linux]
 description = "Build all Linux release artifacts: x86_64 server and ARM7 NAS binaries"
-depends = ["build-server", "build-arm"]
+depends = ["build", "build-arm"]
 
 [tasks.build-win]
-description = "WSL only: cross-compile Windows binaries only (no installer)"
+description = "Cross-compile Windows binaries only (no installer) - this is for development"
 run = [
   "rm -rf web/build",
   "pnpm --dir web run build",
   "cross build --release --target x86_64-pc-windows-gnu",
 ]
-env = { GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}" }
+
+[tasks.build-win.env]
+GIT_HASH  = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG   = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
 
 [tasks.build-wsl-cross]
-description = "WSL only: cross-compile Windows binaries via Docker/mingw and package with Inno Setup"
+description = "Cross-compile Windows binaries via Docker/mingw and package with Inno Setup"
 run = "bash install/build-wsl-cross.sh"
-env = { GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}" }
+
+[tasks.build-wsl-cross.env]
+GIT_HASH  = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG   = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
 
 # ── Checks ────────────────────────────────────────────────────────────────────
 

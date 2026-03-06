@@ -3,7 +3,7 @@ set CONFIG=%USERPROFILE%\.config\FindAnything\client.toml
 echo === find-anything: initial scan ===
 echo This will index all configured directories. Please wait...
 echo.
-"%~dp0find-scan.exe" --config "%CONFIG%" --full
+"%~dp0find-scan.exe" --config "%CONFIG%"
 echo.
 echo === Starting find-watch service ===
 sc start FindAnythingWatcher
