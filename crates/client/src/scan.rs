@@ -763,7 +763,26 @@ fn walk_paths(
         {
             let entry = match entry {
                 Ok(e) => e,
-                Err(e) => { warn!("walk error: {e:#}"); continue; }
+                Err(e) => {
+                    // Access-denied errors are expected on Windows for protected
+                    // directories (e.g. C:\Users\Administrator). Log at debug so
+                    // they don't spam the output; the same applies to paths that
+                    // match an exclude glob but whose OS error surfaced before
+                    // filter_entry could prevent the descent.
+                    let access_denied = e.io_error()
+                        .map(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+                        .unwrap_or(false);
+                    let excluded = e.path()
+                        .and_then(|p| p.strip_prefix(root).ok())
+                        .map(|rel| excludes.is_match(&*normalise_path_sep(&rel.to_string_lossy())))
+                        .unwrap_or(false);
+                    if access_denied || excluded {
+                        tracing::debug!("skipping inaccessible path: {e}");
+                    } else {
+                        warn!("walk error: {e:#}");
+                    }
+                    continue;
+                }
             };
             let name = entry.file_name().to_str().unwrap_or("");
 

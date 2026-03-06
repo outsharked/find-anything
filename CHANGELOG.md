@@ -14,6 +14,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **`--version` flag** — all binaries (`find-scan`, `find-watch`, `find-anything`, `find-admin`, `find-upload`, `find-server`) now support `--version` to print the build version
 - **Server minimum client version** — `GET /api/v1/settings` now returns `min_client_version`; all client binaries check this on startup and refuse to run with a clear error if they are too old; update `MIN_CLIENT_VERSION` in `crates/common/src/api.rs` whenever a breaking API change is made
 - **Project commit workflow** — `.claude/commands/commit.md` codifies the pre-commit checklist (clippy, `MIN_CLIENT_VERSION` check, CHANGELOG update)
+- **Suppress access-denied walk warnings on Windows** — "access denied" errors during directory traversal (e.g. `C:\Users\Administrator`) are now logged at `debug` level instead of `warn`; errors on paths that match an exclude glob are also suppressed since the exclusion should have prevented the descent
 - **Self-update** — About panel now checks for new releases via the server (`GET /api/v1/admin/update/check`) and can apply them in one click (`POST /api/v1/admin/update/apply`); the server downloads the matching binary from GitHub, replaces itself atomically, and exits cleanly so systemd restarts onto the new version; only available when running under systemd (`INVOCATION_ID` set); version check results are cached for one hour
 
 ---
