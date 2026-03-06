@@ -25,7 +25,7 @@ use find_common::config::{default_server_config_path, parse_server_config, Serve
 use find_common::logging::LogIgnoreFilter;
 
 #[derive(Parser)]
-#[command(name = "find-server", about = "find-anything index server")]
+#[command(name = "find-server", about = "find-anything index server", version)]
 struct Args {
     /// Path to server config file.
     /// Defaults to $XDG_CONFIG_HOME/find-anything/server.toml,

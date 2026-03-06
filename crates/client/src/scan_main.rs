@@ -17,7 +17,7 @@ use find_common::logging::LogIgnoreFilter;
 use scan::{ScanOptions, ScanSource};
 
 #[derive(Parser)]
-#[command(name = "find-scan", about = "Index files and submit to find-anything server")]
+#[command(name = "find-scan", about = "Index files and submit to find-anything server", version)]
 struct Args {
     /// Path to client config file (default: /etc/find-anything/client.toml as root, else ~/.config/find-anything/client.toml)
     #[arg(long)]
@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
     }
 
     let client = api::ApiClient::new(&config.server.url, &config.server.token);
+    client.check_server_version().await?;
 
     if config.sources.is_empty() {
         tracing::info!("No sources configured — nothing to scan.");

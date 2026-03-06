@@ -8,7 +8,7 @@ use find_common::config::{default_config_path, parse_client_config};
 mod api;
 
 #[derive(Parser)]
-#[command(name = "find-admin", about = "Administrative utilities for find-anything")]
+#[command(name = "find-admin", about = "Administrative utilities for find-anything", version)]
 struct Args {
     /// Path to client config file (default: /etc/find-anything/client.toml as root, else ~/.config/find-anything/client.toml)
     #[arg(long, global = true)]
@@ -78,6 +78,12 @@ async fn main() -> Result<()> {
     let config_str = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading config: {config_path}"))?;
     let config = parse_client_config(&config_str)?;
+
+    // Check version compatibility for all commands that talk to the server.
+    if !matches!(args.command, Command::Config) {
+        let client = api::ApiClient::new(&config.server.url, &config.server.token);
+        client.check_server_version().await?;
+    }
 
     match args.command {
         Command::Config => {

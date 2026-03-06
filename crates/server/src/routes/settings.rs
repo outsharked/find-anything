@@ -39,6 +39,7 @@ pub async fn get_settings(
         version: version.to_string(),
         schema_version: db::SCHEMA_VERSION,
         git_hash,
+        min_client_version: find_common::api::MIN_CLIENT_VERSION.to_string(),
     })
     .into_response()
 }

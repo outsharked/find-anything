@@ -11,7 +11,8 @@ use find_common::config::{default_config_path, parse_client_config};
 #[derive(Parser)]
 #[command(
     name = "find-upload",
-    about = "Upload a file to the find-anything server for server-side indexing"
+    about = "Upload a file to the find-anything server for server-side indexing",
+    version
 )]
 struct Args {
     /// Path to client config file (default: /etc/find-anything/client.toml as root, else ~/.config/find-anything/client.toml)
@@ -64,6 +65,7 @@ async fn main() -> Result<()> {
     });
 
     let client = api::ApiClient::new(&config.server.url, &config.server.token);
+    client.check_server_version().await?;
 
     eprintln!("Uploading {} as {rel_path} into source '{}'", abs_path.display(), args.source);
 

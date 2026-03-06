@@ -9,6 +9,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **`--version` flag** — all binaries (`find-scan`, `find-watch`, `find-anything`, `find-admin`, `find-upload`, `find-server`) now support `--version` to print the build version
+- **Server minimum client version** — `GET /api/v1/settings` now returns `min_client_version`; all client binaries check this on startup and refuse to run with a clear error if they are too old; update `MIN_CLIENT_VERSION` in `crates/common/src/api.rs` whenever a breaking API change is made
+- **Project commit workflow** — `.claude/commands/commit.md` codifies the pre-commit checklist (clippy, `MIN_CLIENT_VERSION` check, CHANGELOG update)
+
 ---
 
 ## [0.6.0] - 2026-03-06

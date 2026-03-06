@@ -252,13 +252,28 @@ call chain.
 
 **Do not automatically commit changes.** Always wait for explicit user instruction before running `git commit`. Complete the implementation and verify it works first; the user will ask to commit when ready.
 
-**Before pushing or committing Rust changes, run clippy:**
+**Pre-commit checklist** (enforced by `.claude/commands/commit.md`):
 
-```sh
-mise run clippy
+1. **Clippy** — run `mise run clippy` and fix all warnings before committing Rust changes. This matches the CI check (`cargo clippy --workspace -- -D warnings`).
+2. **`MIN_CLIENT_VERSION`** — if any API changes are breaking (removed endpoints, changed required request/response fields, incompatible behaviour), update `MIN_CLIENT_VERSION` in `crates/common/src/api.rs` to the current package version before committing.
+3. **CHANGELOG** — add a summary of changes to the `[Unreleased]` section of `CHANGELOG.md`.
+
+---
+
+### `MIN_CLIENT_VERSION` — API compatibility enforcement
+
+`MIN_CLIENT_VERSION` is defined in `crates/common/src/api.rs` and included in every `GET /api/v1/settings` response. All client binaries (`find-scan`, `find-watch`, `find-anything`, `find-admin`, `find-upload`) check this on startup and refuse to run if their own version is older.
+
+**When to update it:** Any time a change to the HTTP API would cause an older client to misbehave — e.g. a required request field is added, a response field is removed, an endpoint is renamed or deleted, or semantics change in an incompatible way.
+
+**How to update it:** Set the string to the current package version (same value as in `Cargo.toml`):
+
+```rust
+// crates/common/src/api.rs
+pub const MIN_CLIENT_VERSION: &str = "0.7.0"; // ← bump to current version
 ```
 
-This matches the CI check (`cargo clippy --workspace -- -D warnings`). Fix all warnings before committing — clippy failures will fail the CI build.
+Backwards-compatible additions (new optional fields, new endpoints) do **not** require a bump.
 
 ---
 

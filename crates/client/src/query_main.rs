@@ -7,7 +7,7 @@ use colored::Colorize;
 use find_common::config::{default_config_path, parse_client_config};
 
 #[derive(Parser)]
-#[command(name = "find", about = "Search the find-anything index")]
+#[command(name = "find", about = "Search the find-anything index", version)]
 struct Args {
     /// Search pattern
     pattern: String,
@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
     let config = parse_client_config(&config_str)?;
 
     let client = api::ApiClient::new(&config.server.url, &config.server.token);
+    client.check_server_version().await?;
 
     let resp = client
         .search(

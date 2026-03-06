@@ -33,6 +33,16 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 Use a HEREDOC for the commit message to preserve formatting.
 
+**Step 2b — Check `MIN_CLIENT_VERSION` (API breaking changes only)**
+
+After running clippy (or if no `.rs` files were changed), inspect the diff for any breaking API changes:
+- Removed or renamed HTTP endpoints
+- New required fields in request/response bodies
+- Removed or renamed response fields
+- Changed endpoint semantics
+
+If any breaking changes are present, update `MIN_CLIENT_VERSION` in `crates/common/src/api.rs` to match the current package version (from any `Cargo.toml`). If no breaking changes, leave it unchanged.
+
 **Important rules:**
 - Never `git push` — only commit locally
 - Never use `--no-verify`

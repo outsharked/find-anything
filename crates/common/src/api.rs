@@ -122,6 +122,12 @@ mod tests {
 /// changes in a way that produces meaningfully different output.
 pub const SCANNER_VERSION: u32 = 1;
 
+/// Minimum client version the server will accept.
+/// Update this constant whenever a breaking API change is made (e.g. new
+/// required request fields, removed endpoints, changed response shapes).
+/// Clients older than this version will be refused with a clear error message.
+pub const MIN_CLIENT_VERSION: &str = "0.6.0";
+
 /// GET /api/v1/sources response entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceInfo {
@@ -349,6 +355,12 @@ pub struct AppSettingsResponse {
     pub schema_version: i64,
     /// Short git commit hash baked in at compile time.
     pub git_hash: String,
+    /// Minimum client version this server accepts.
+    /// Clients should compare their own version against this and refuse to
+    /// proceed if they are older. Defaults to empty string (no minimum) for
+    /// backwards compatibility with older servers that don't send this field.
+    #[serde(default)]
+    pub min_client_version: String,
 }
 
 // ── Stats types ───────────────────────────────────────────────────────────────

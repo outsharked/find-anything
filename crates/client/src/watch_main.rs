@@ -129,7 +129,7 @@ fn parse_config_from_args(args: &[std::ffi::OsString]) -> Option<std::path::Path
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "find-watch", about = "Watch filesystem and update index in real-time")]
+#[command(name = "find-watch", about = "Watch filesystem and update index in real-time", version)]
 struct Args {
     /// Path to the client config file.
     #[arg(long)]
@@ -197,6 +197,9 @@ async fn main() -> Result<()> {
     if let Err(e) = find_common::logging::set_ignore_patterns(&config.log.ignore) {
         tracing::warn!("invalid log ignore pattern: {e}");
     }
+
+    let client = api::ApiClient::new(&config.server.url, &config.server.token);
+    client.check_server_version().await?;
 
     watch::run_watch(&config).await
 }

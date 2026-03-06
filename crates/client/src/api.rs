@@ -307,6 +307,24 @@ impl ApiClient {
             .context("parsing upload status response")
     }
 
+    /// Check that this client meets the server's minimum version requirement.
+    /// Returns an error with a human-readable message if the client is too old.
+    /// Silently succeeds if the server does not advertise a minimum version or
+    /// if the version strings cannot be parsed (fail-open).
+    pub async fn check_server_version(&self) -> Result<()> {
+        let settings = self.get_settings().await
+            .context("fetching server settings for version check")?;
+        let client_ver = env!("CARGO_PKG_VERSION");
+        let min_ver = &settings.min_client_version;
+        if !version_meets_minimum(client_ver, min_ver) {
+            anyhow::bail!(
+                "client version {client_ver} is too old — server requires >= {min_ver}.\n\
+                 Please upgrade find-anything."
+            );
+        }
+        Ok(())
+    }
+
     /// GET /api/v1/search
     pub async fn search(
         &self,
@@ -337,5 +355,21 @@ impl ApiClient {
             .json::<SearchResponse>()
             .await
             .context("parsing search response")
+    }
+}
+
+/// Returns true if `client_ver` satisfies `>= min_ver` using semver ordering.
+/// Fails open (returns true) if either string cannot be parsed.
+fn version_meets_minimum(client_ver: &str, min_ver: &str) -> bool {
+    fn parse(v: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = v.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        Some((major, minor, patch))
+    }
+    match (parse(client_ver), parse(min_ver)) {
+        (Some(c), Some(m)) => c >= m,
+        _ => true,
     }
 }
