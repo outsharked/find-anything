@@ -5,6 +5,7 @@ export interface UserProfile {
 	wordWrap?: boolean;
 	markdownFormat?: boolean;
 	contextWindow?: number;
+	theme?: 'dark' | 'light' | 'system';
 }
 
 const STORAGE_KEY = 'find-anything.profile';

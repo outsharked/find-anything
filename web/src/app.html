@@ -6,6 +6,16 @@
 		<link rel="icon" type="image/png" sizes="32x32" href="%sveltekit.assets%/favicon.png" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>Find Anything</title>
+		<script>
+			(function() {
+				try {
+					var p = JSON.parse(localStorage.getItem('find-anything.profile') || '{}');
+					var t = p.theme || 'dark';
+					if (t === 'system') t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+					document.documentElement.setAttribute('data-theme', t);
+				} catch(e) {}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

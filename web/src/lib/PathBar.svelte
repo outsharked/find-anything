@@ -160,13 +160,14 @@
 	.path-plain {
 		font-family: var(--font-mono);
 		font-size: 12px;
-		overflow: hidden;
+		overflow-x: hidden;
+		overflow-y: visible;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		flex: 1;
 		min-width: 0;
 		display: flex;
-		align-items: baseline;
+		align-items: center;
 		gap: 0;
 		color: var(--accent);
 	}
@@ -204,6 +205,7 @@
 		background: none;
 		border: none;
 		padding: 2px 4px;
+		margin-left: 6px;
 		cursor: pointer;
 		color: var(--text-dim);
 		flex-shrink: 0;
@@ -212,7 +214,6 @@
 		gap: 4px;
 		border-radius: 3px;
 		transition: color 0.15s;
-		vertical-align: middle;
 	}
 
 	.copy-btn:hover {

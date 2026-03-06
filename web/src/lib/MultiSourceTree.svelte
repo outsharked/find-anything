@@ -22,7 +22,6 @@
 				class:active={source === activeSource}
 				on:click={() => (expanded[source] = !expanded[source])}
 			>
-				<span class="chevron">{expanded[source] ? '▾' : '▸'}</span>
 				{source}
 			</button>
 			{#if expanded[source]}
@@ -60,13 +59,12 @@
 	.source-header {
 		display: flex;
 		align-items: center;
-		gap: 6px;
 		padding: 6px 10px;
 		background: none;
 		border: none;
 		cursor: pointer;
-		font-size: 12px;
-		font-weight: 600;
+		font-size: 14px;
+		font-weight: 500;
 		color: var(--text-muted);
 		text-align: left;
 		width: 100%;
@@ -83,12 +81,9 @@
 
 	.source-header.active {
 		color: var(--text);
+		font-weight: 700;
+		background: var(--bg-hover);
 		border-left-color: var(--accent, #58a6ff);
-	}
-
-	.chevron {
-		flex-shrink: 0;
-		font-size: 10px;
 	}
 
 	/* DirectoryTree inside an expanded source: remove fixed height and border */

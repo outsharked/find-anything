@@ -2,13 +2,34 @@
 	import { profile } from '$lib/profile';
 	import { contextWindow } from '$lib/settingsStore';
 
+	function setTheme(value: string) {
+		profile.update((p) => ({ ...p, theme: value as 'dark' | 'light' | 'system' }));
+	}
+
 	function setContextWindow(value: number) {
 		profile.update((p) => ({ ...p, contextWindow: value }));
 		contextWindow.set(value);
 	}
 </script>
 
-<div class="section-title">Search results</div>
+<div class="section-title">Appearance</div>
+<div class="pref-row">
+	<label class="pref-label" for="theme">Theme</label>
+	<div class="pref-control">
+		<select
+			id="theme"
+			class="select"
+			value={$profile.theme ?? 'dark'}
+			on:change={(e) => setTheme(e.currentTarget.value)}
+		>
+			<option value="dark">Dark</option>
+			<option value="light">Light</option>
+			<option value="system">Inherit from browser</option>
+		</select>
+	</div>
+</div>
+
+<div class="section-title" style="margin-top: 24px;">Search results</div>
 <div class="pref-row">
 	<label class="pref-label" for="ctx-window">Lines of context</label>
 	<div class="pref-control">

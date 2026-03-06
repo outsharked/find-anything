@@ -19,6 +19,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **`log_batch_detail_limit` server config** — `[server] log_batch_detail_limit = 5` (default); for batches up to this size the worker logs each file path individually; for larger batches it logs only the count, preventing log floods on big scans
 - **`exclude_extra` in example config** — `examples/client.toml` now includes a commented `exclude_extra = []` field so users can discover the additive-patterns option without reading the docs
 - **PathBar clipboard fallback** — copy-path button now uses `document.execCommand` as a fallback when `navigator.clipboard` is unavailable (e.g. non-HTTPS contexts); "Copied" label replaces the icon briefly to confirm success
+- **Light/dark/system theme** — Preferences panel now has an Appearance section with three options: Dark, Light, and "Inherit from browser"; choice is persisted in user profile; an inline script in `app.html` sets `data-theme` before first paint to prevent flash; `prefers-color-scheme` media query is tracked live for the system option; syntax highlighting (hljs) also switches to a GitHub Light palette in light mode
+- **Sidebar source header polish** — source names no longer show a chevron triangle; font size increased to 14 px (slightly larger than the 13 px tree rows); active source is bold (`font-weight: 700`) with a subtle `--bg-hover` background tint (lighter in dark mode, darker in light mode)
+- **PathBar copy icon fixes** — icon no longer clips at the bottom (`overflow-y: visible` on the path container); added 6 px left margin for breathing room between path and icon; vertical alignment corrected (`align-items: center` instead of `baseline`)
 
 ### Changed
 
