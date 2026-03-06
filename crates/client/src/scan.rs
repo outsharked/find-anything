@@ -577,15 +577,23 @@ fn build_globset(patterns: &[String]) -> Result<GlobSet> {
 /// Given a list of include glob patterns, extract two sets of directory paths:
 ///
 /// - **`ancestors`** — every intermediate directory that must be traversed to
-///   reach a matching file, including the deepest literal prefix itself.
+///   reach a matching file, including the deepest safe literal prefix itself.
 ///   Used for exact membership checks (`ancestors.contains(dir)`).
 ///
-/// - **`terminals`** — only the deepest literal prefix of each pattern (the
-///   directory where the `**` begins). Used to allow *descendants* of included
-///   directories (`dir.starts_with(terminal + "/")`).
+/// - **`terminals`** — the deepest safe literal *directory* prefix of each
+///   pattern (the last complete path component before any wildcard). Used to
+///   allow *descendants* of included directories via `starts_with(terminal + "/")`.
 ///
-/// Returns `None` if any pattern could match from the root (starts with `**`
-/// or `*`), meaning no directory pruning is possible.
+/// Returns `None` if no useful pruning can be determined (any pattern could
+/// match files starting from the root, e.g. `**/*.rs`).
+///
+/// The key correctness rule: the terminal for a pattern is taken from the last
+/// `/` **before** the first wildcard character (`*`, `?`, `[`, `{`). This
+/// ensures we never cut a directory name in half (e.g. `Users/Administrat?r/**`
+/// gives terminal `Users`, not `Users/Administrat`). Patterns starting with a
+/// wildcard, negations (`!`), or those whose wildcard falls in the first path
+/// component cause the whole function to return `None` (fail-open: traverse
+/// everything).
 ///
 /// Example: `["Users/alice/**", "data/**"]`
 ///   → ancestors = `{"Users", "Users/alice", "data"}`
@@ -597,13 +605,35 @@ fn include_dir_prefixes(
     let mut terminals = std::collections::HashSet::new();
     for pat in patterns {
         let pat = pat.replace('\\', "/");
-        let wildcard = pat.find(['*', '?', '[']);
-        let literal = match wildcard {
-            Some(0) => return None, // starts with wildcard — can't prune
-            Some(i) => &pat[..i],
-            None    => &pat,        // no wildcard — exact path
+
+        // Negation patterns (e.g. `!some/path/**`) — fall back to no pruning.
+        if pat.starts_with('!') {
+            return None;
+        }
+
+        // Find the first wildcard. Include `{` for alternations like {a,b}/**.
+        let wildcard_pos = pat.find(['*', '?', '[', '{']);
+
+        // Determine the safe literal directory prefix: everything before the
+        // last `/` that precedes the first wildcard. This prevents cutting a
+        // directory component in half (e.g. `Users/Administrat?r` → `Users`).
+        let literal = match wildcard_pos {
+            None => pat.as_str(),       // no wildcard — whole pattern is literal
+            Some(0) => return None,     // wildcard at root — can't prune anything
+            Some(i) => {
+                let before = &pat[..i]; // e.g. "Users/Administrat" or "Users/"
+                match before.rfind('/') {
+                    None => return None, // wildcard in the first component — can't prune
+                    Some(slash) => &pat[..slash], // safe: last complete dir before wildcard
+                }
+            }
         };
+
         let literal = literal.trim_end_matches('/');
+        if literal.is_empty() {
+            return None;
+        }
+
         let parts: Vec<&str> = literal.split('/').collect();
         for i in 1..=parts.len() {
             ancestors.insert(parts[..i].join("/"));
