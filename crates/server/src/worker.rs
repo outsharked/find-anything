@@ -449,7 +449,8 @@ fn process_file(
     let tx = conn.transaction()?;
 
     // Upsert file record as canonical (canonical_file_id = NULL).
-    // indexed_at is set on first insert and not overwritten on conflict.
+    // indexed_at is updated on every re-index so recent-files queries reflect
+    // when the file was actually processed, not just when it was first seen.
     tx.execute(
         "INSERT INTO files (path, mtime, size, kind, indexed_at, extract_ms, content_hash, canonical_file_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)
@@ -457,6 +458,7 @@ fn process_file(
            mtime             = excluded.mtime,
            size              = excluded.size,
            kind              = excluded.kind,
+           indexed_at        = excluded.indexed_at,
            extract_ms        = excluded.extract_ms,
            content_hash      = excluded.content_hash,
            canonical_file_id = NULL",

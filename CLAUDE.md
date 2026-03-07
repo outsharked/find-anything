@@ -248,6 +248,20 @@ call chain.
 
 ---
 
+### Default client.toml template — keep Linux and Windows in sync
+
+The default `client.toml` written during installation exists in two places:
+
+| File | Location of template |
+|------|----------------------|
+| Linux / macOS | `install.sh` — heredoc starting around `cat > "$CONFIG_FILE" <<EOF` |
+| Windows installer | `packaging/windows/find-anything.iss` — `BuildToml()` function in `[Code]` |
+
+Both must produce **identical** commented-out option blocks. When adding or
+removing a config option in one, update the other at the same time.
+
+---
+
 ### Commits
 
 **Do not automatically commit changes.** Always wait for explicit user instruction before running `git commit`. Complete the implementation and verify it works first; the user will ask to commit when ready.

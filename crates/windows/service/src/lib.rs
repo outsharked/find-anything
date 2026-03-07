@@ -27,7 +27,8 @@ use winreg::RegKey;
 pub const SERVICE_NAME: &str = "FindAnythingWatcher";
 const SERVICE_DISPLAY_NAME: &str = "Find Anything Watcher";
 const SERVICE_DESCRIPTION: &str =
-    "Find Anything file watcher \u{2014} keeps the index current";
+    "Find Anything file watcher \u{2014} keeps the index current. \
+     https://github.com/jamietre/find-anything";
 const REGISTRY_RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const REGISTRY_VALUE_NAME: &str = "FindAnythingTray";
 
@@ -64,6 +65,27 @@ pub fn install_service(config_path: &Path, service_name: &str) -> Result<()> {
         account_name: None,
         account_password: None,
     };
+
+    // If the service already exists (e.g. reinstall/upgrade), delete it first
+    // so we can recreate it with the latest configuration.
+    if let Ok(existing) = manager.open_service(
+        service_name,
+        ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
+    ) {
+        let status = existing.query_status().ok();
+        let is_running = status.map_or(false, |s| {
+            s.current_state != ServiceState::Stopped
+                && s.current_state != ServiceState::StopPending
+        });
+        if is_running {
+            let _ = existing.stop();
+            // Brief wait to let the SCM process the stop before deleting.
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let _ = existing.delete();
+        // Give the SCM a moment to complete the deletion.
+        std::thread::sleep(Duration::from_millis(500));
+    }
 
     let service = manager
         .create_service(&service_info, ServiceAccess::CHANGE_CONFIG)

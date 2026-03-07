@@ -172,6 +172,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/metrics",        get(routes::get_metrics))
         .route("/api/v1/stats",          get(routes::get_stats))
         .route("/api/v1/errors",         get(routes::get_errors))
+        .route("/api/v1/recent",         get(routes::get_recent))
         .route("/api/v1/tree",           get(routes::list_dir))
         .route("/api/v1/raw",            get(routes::get_raw))
         .route("/api/v1/auth/session",   post(routes::create_session).delete(routes::delete_session))

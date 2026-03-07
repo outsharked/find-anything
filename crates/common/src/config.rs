@@ -106,6 +106,8 @@ pub struct ClientConfig {
     pub watch: WatchConfig,
     #[serde(default)]
     pub log: LogConfig,
+    #[serde(default)]
+    pub tray: TrayConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -376,6 +378,25 @@ impl Default for WatchConfig {
         }
     }
 }
+
+/// Windows system tray configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrayConfig {
+    /// Refresh interval while the recent-files popup is open (milliseconds).
+    /// Default: 1000.
+    #[serde(default = "default_tray_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+}
+
+impl Default for TrayConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_ms: default_tray_poll_interval_ms(),
+        }
+    }
+}
+
+fn default_tray_poll_interval_ms() -> u64 { 1000 }
 
 fn default_debounce_ms() -> u64         { client_defaults().watch.debounce_ms }
 fn default_excludes() -> Vec<String>         { client_defaults().scan.exclude.clone() }

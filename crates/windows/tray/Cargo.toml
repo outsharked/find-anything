@@ -8,6 +8,12 @@ name = "find-tray"
 path = "src/main.rs"
 
 # find-tray is Windows-only; the stub main on non-Windows just prints an error.
+# winres runs on the build host (Linux or Windows) and embeds a Windows
+# VERSIONINFO resource into the binary.  It must be unconditional here because
+# build scripts always compile for the host, not the target.
+[build-dependencies]
+winres = "0.1"
+
 [target.'cfg(windows)'.dependencies]
 find-common = { path = "../../common" }
 find-windows-service = { path = "../service" }
@@ -22,4 +28,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-windows-sys = { version = "0.52", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

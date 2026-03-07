@@ -186,6 +186,22 @@ pub fn count_files(conn: &Connection) -> Result<usize> {
     Ok(n as usize)
 }
 
+/// Return the `limit` most recently indexed outer files (no `::` in path),
+/// ordered by `indexed_at` descending.  Returns `(path, indexed_at)` pairs.
+pub fn recent_files(conn: &Connection, limit: usize) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, COALESCE(indexed_at, mtime) FROM files \
+         WHERE path NOT LIKE '%::%' \
+         ORDER BY COALESCE(indexed_at, mtime) DESC LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 // ── File listing (for deletion detection) ────────────────────────────────────
 
 pub fn list_files(conn: &Connection) -> Result<Vec<FileRecord>> {

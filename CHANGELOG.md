@@ -11,6 +11,20 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Tray recent-files popup** — left-clicking the tray icon opens a Win32 popup window listing the 20 most recently indexed files; the list refreshes continuously while the popup is open (demand-driven polling); each row shows `[source]  filename   (parent dir)`; popup auto-dismisses on focus loss or Escape
+- **`GET /api/v1/recent`** — new server endpoint returns the N most recently indexed outer files (no archive members) across all sources, sorted by `indexed_at` descending with `mtime` as a fallback for rows predating the feature
+- **`[tray]` config section** — `poll_interval_ms` controls how often the popup refreshes while open (default 1000 ms)
+- **Windows installer robustness** — service install is now idempotent (stops and deletes an existing service before recreating); `find-tray.exe` is force-killed before file copy; `CloseApplications=yes` and `RestartApplications=yes` added for graceful shutdown on upgrade
+- **Windows installer UX** — directory-selection page removed; `path` is auto-populated from `%SYSTEMDRIVE%\` and `include` from `%USERPROFILE%` relative path; source name defaults to `%COMPUTERNAME%`; find-watch service registration and tray launch now happen automatically (no finish-page checkboxes); only the optional full-scan checkbox remains
+- **Windows installer icon** — setup application now shows the magnifying-glass icon (`icon_active.ico`) instead of the plain blue square
+
+### Fixed
+
+- **Tray popup race condition** — left-clicking the tray icon to dismiss the popup no longer immediately reopens it; close request from `WM_ACTIVATE`/`WA_INACTIVE` is captured before processing tray click events
+- **Tray right-click menu** — removed `with_menu()` from `TrayIconBuilder` (which caused the menu to appear on both clicks); context menu is now shown manually via `show_context_menu_for_hwnd` on right-click only
+- **Recent files `indexed_at` always populated** — the worker now updates `indexed_at` on every re-index (not only on first insert), so the popup shows recently re-indexed files; the `recent_files` DB query falls back to `mtime` for rows where `indexed_at IS NULL` (databases predating the feature)
+- **Windows service description** — includes link to GitHub repository
+
 - **`--version` flag** — all binaries (`find-scan`, `find-watch`, `find-anything`, `find-admin`, `find-upload`, `find-server`) now support `--version` to print the build version
 - **Server minimum client version** — `GET /api/v1/settings` now returns `min_client_version`; all client binaries check this on startup and refuse to run with a clear error if they are too old; update `MIN_CLIENT_VERSION` in `crates/common/src/api.rs` whenever a breaking API change is made
 - **Project commit workflow** — `.claude/commands/commit.md` codifies the pre-commit checklist (clippy, `MIN_CLIENT_VERSION` check, CHANGELOG update)

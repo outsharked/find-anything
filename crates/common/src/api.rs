@@ -545,6 +545,24 @@ pub struct UpdateApplyResponse {
     pub message: String,
 }
 
+// ── Recent files types ─────────────────────────────────────────────────────────
+
+/// One entry in a `GET /api/v1/recent` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentFile {
+    pub source: String,
+    /// Relative path within the source (outer files only; no `::` members).
+    pub path: String,
+    /// Unix timestamp (seconds) when this file was last indexed.
+    pub indexed_at: i64,
+}
+
+/// `GET /api/v1/recent` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentResponse {
+    pub files: Vec<RecentFile>,
+}
+
 // ── Upload API types ───────────────────────────────────────────────────────────
 
 /// `POST /api/v1/upload` request body — initiates a resumable file upload.

@@ -245,20 +245,9 @@ path = "$DIR_ESC"
 # max_line_length  = 120    # Wrap long lines at this column (0 = disable)
 # follow_symlinks  = false
 # include_hidden   = false  # Index dot-files and dot-directories
-# exclude = [               # Glob patterns to skip (these are the defaults)
-#   "**/.git/**",
-#   "**/node_modules/**",
-#   "**/target/**",
-#   "**/__pycache__/**",
-#   "**/.next/**",
-#   "**/dist/**",
-#   "**/.cache/**",
-#   "**/.tox/**",
-#   "**/.venv/**",
-#   "**/venv/**",
-#   "**/*.pyc",
-#   "**/*.class",
-# ]
+# Extra glob patterns to skip, added to the built-in defaults.
+# Use exclude = [...] instead to replace the defaults entirely.
+# exclude_extra = []
 
 [scan.archives]
 # enabled   = true
@@ -267,6 +256,9 @@ path = "$DIR_ESC"
 [watch]
 # debounce_ms   = 500   # Wait this long (ms) after last change before re-indexing
 # extractor_dir = ""    # Path to find-extract-* binaries (default: auto-detect)
+
+[tray]
+# poll_interval_ms = 1000   # Refresh interval while popup is open (ms)
 EOF
 
 echo ""

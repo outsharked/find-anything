@@ -2,4 +2,5 @@
 /config/
 /tmp/
 /test-data/
+/packaging/windows/Output/
 *.log

@@ -13,6 +13,13 @@ use find_common::config::{default_config_path, parse_client_config};
 use find_common::logging::LogIgnoreFilter;
 #[cfg(windows)]
 use find_common::config::ClientConfig;
+#[cfg(windows)]
+use std::sync::OnceLock;
+
+/// Config path captured in main() and shared with service_entry via OnceLock,
+/// because ServiceMain args are separate from the binary's command-line args.
+#[cfg(windows)]
+static SERVICE_CONFIG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 // ── Windows Service boilerplate ───────────────────────────────────────────────
 //
@@ -49,8 +56,13 @@ fn service_entry(args: Vec<std::ffi::OsString>) {
     };
 
     rt.block_on(async {
-        // Parse --config <path> from the launch arguments recorded in the SCM.
-        let config_path = parse_config_from_args(&args);
+        // Prefer the path captured in main() via OnceLock (set before
+        // service_dispatcher::start() is called).  Fall back to parsing from
+        // the ServiceMain args for extra args supplied via `sc start … <args>`.
+        let config_path = SERVICE_CONFIG_PATH
+            .get()
+            .cloned()
+            .or_else(|| parse_config_from_args(&args));
         let config = match config_path
             .as_ref()
             .and_then(|p| std::fs::read_to_string(p).ok())
@@ -132,7 +144,7 @@ fn parse_config_from_args(args: &[std::ffi::OsString]) -> Option<std::path::Path
 #[command(name = "find-watch", about = "Watch filesystem and update index in real-time", version)]
 struct Args {
     /// Path to the client config file.
-    #[arg(long)]
+    #[arg(long, global = true)]
     config: Option<String>,
 
     #[cfg(windows)]
@@ -217,6 +229,10 @@ fn run_windows_command(cmd: WindowsCommand, config_path: &str) -> Result<()> {
             find_windows_service::uninstall_service(&service_name)
         }
         WindowsCommand::ServiceRun => {
+            // Store the config path so service_entry can access it.
+            // (ServiceMain args are separate from the binary command-line args,
+            // so we can't rely on parse_config_from_args inside service_entry.)
+            let _ = SERVICE_CONFIG_PATH.set(std::path::PathBuf::from(config_path));
             // Hand control to the SCM dispatcher; it will call ffi_service_main.
             windows_service::service_dispatcher::start(
                 find_windows_service::SERVICE_NAME,
