@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.6.1] - 2026-03-07
+
 ### Added
 
 - **Tray recent-files popup** — left-clicking the tray icon opens a Win32 popup window listing the 20 most recently indexed files; the list refreshes continuously while the popup is open (demand-driven polling); each row shows `[source]  filename   (parent dir)`; popup auto-dismisses on focus loss or Escape
