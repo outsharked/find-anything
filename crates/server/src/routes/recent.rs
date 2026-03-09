@@ -21,7 +21,12 @@ use super::check_auth;
 pub struct RecentQuery {
     #[serde(default = "default_limit")]
     limit: usize,
+    /// `mtime` = sort by file modification time; anything else (or absent) = sort by indexed time.
+    #[serde(default)]
+    sort: String,
 }
+
+const MAX_RECENT_LIMIT: usize = 1000;
 
 fn default_limit() -> usize { 20 }
 
@@ -35,7 +40,14 @@ pub async fn get_recent(
     }
 
     let sources_dir = state.data_dir.join("sources");
-    let limit = query.limit.min(100);
+    if query.limit > MAX_RECENT_LIMIT {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("limit exceeds maximum of {MAX_RECENT_LIMIT}") })),
+        ).into_response();
+    }
+    let limit = query.limit;
+    let sort_by_mtime = query.sort == "mtime";
 
     let source_dbs: Vec<(String, std::path::PathBuf)> = match std::fs::read_dir(&sources_dir) {
         Err(_) => vec![],
@@ -57,7 +69,7 @@ pub async fn get_recent(
                     return Ok(vec![]);
                 }
                 let conn = db::open(&db_path)?;
-                let rows = db::recent_files(&conn, limit)?;
+                let rows = db::recent_files(&conn, limit, sort_by_mtime)?;
                 Ok(rows
                     .into_iter()
                     .map(|(path, indexed_at)| RecentFile {

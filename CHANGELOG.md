@@ -9,6 +9,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **`find-admin recent`** — new subcommand lists the N most recently indexed or recently modified files across all sources; supports `--limit` and `--mtime` flags; `--json` for machine-readable output
+- **`find-admin check` reports min client version** — the server's `min_client_version` is now included in the version line of `find-admin check` output
+
+### Fixed
+
+- **Missing extractor binary treated as deployment error** — when a subprocess extractor binary is not found (`ENOENT`), `find-scan` and `find-watch` now log a single `ERROR` (suppressing per-file repetitions) and skip the file entirely so it is retried once the binary is correctly deployed; previously the file would be indexed filename-only with no way to recover without a forced rescan
+- **`/api/v1/tree` crashes on NULL size** — `list_dir` now reads `size` as `Option<i64>`; archive members with unknown size (NULL in the DB) no longer cause an "Invalid column type Null" error
+- **`update-nas.sh` missing `find-extract-dispatch`** — the NAS deploy script now includes `find-extract-dispatch` alongside all other extractor binaries
+
+### Changed
+
+- **`GET /api/v1/recent` validates limit** — requests exceeding `MAX_RECENT_LIMIT` (1000) now return HTTP 400 Bad Request instead of silently capping the result
+
 ---
 
 ## [0.6.1] - 2026-03-07

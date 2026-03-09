@@ -1,9 +1,16 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+fn missing_binaries_warned() -> &'static Mutex<HashSet<String>> {
+    static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 use find_common::{api::IndexLine, config::ScanConfig};
 use find_extract_archive::MemberBatch;
@@ -12,8 +19,11 @@ use find_extract_archive::MemberBatch;
 pub enum SubprocessOutcome {
     /// Extraction succeeded; contains the extracted lines.
     Ok(Vec<IndexLine>),
-    /// Subprocess exited non-zero; error is already logged.
+    /// Subprocess ran but failed; file should be indexed filename-only.
     Failed,
+    /// Extractor binary was not found; file should not be indexed at all so it
+    /// is retried once the binary is correctly deployed.
+    BinaryMissing,
 }
 
 /// Extract content from any file via the appropriate subprocess.
@@ -90,8 +100,25 @@ pub async fn extract_via_subprocess(
             }
         }
         Ok(Err(e)) => {
-            warn!("failed to run extractor {}: {e:#}", binary);
-            SubprocessOutcome::Failed
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // The binary itself is missing — this is a deployment error, not
+                // a per-file extraction failure.  Log as ERROR once per binary so
+                // it's clearly visible without flooding the log.
+                let already_reported = missing_binaries_warned()
+                    .lock()
+                    .map(|mut set| !set.insert(binary.clone()))
+                    .unwrap_or(false);
+                if !already_reported {
+                    error!(
+                        "extractor binary not found: {binary} — check your installation \
+                         (this error will be suppressed for subsequent files)"
+                    );
+                }
+                SubprocessOutcome::BinaryMissing
+            } else {
+                warn!("failed to run extractor {binary}: {e:#}");
+                SubprocessOutcome::Failed
+            }
         }
     }
 }

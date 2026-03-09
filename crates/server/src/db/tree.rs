@@ -23,12 +23,12 @@ pub fn list_dir(conn: &Connection, prefix: &str) -> Result<Vec<DirEntry>> {
         "SELECT path, kind, size, mtime FROM files WHERE path >= ?1 AND path < ?2 ORDER BY path",
     )?;
 
-    let rows: Vec<(String, String, i64, i64)> = stmt
+    let rows: Vec<(String, String, Option<i64>, i64)> = stmt
         .query_map(params![low, high], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i64>>(2)?,
                 row.get::<_, i64>(3)?,
             ))
         })?
@@ -105,7 +105,7 @@ pub fn list_dir(conn: &Connection, prefix: &str) -> Result<Vec<DirEntry>> {
                     path,
                     entry_type: "file".to_string(),
                     kind: Some(kind),
-                    size: Some(size),
+                    size,
                     mtime: Some(mtime),
                 });
             }
@@ -135,7 +135,7 @@ pub fn list_dir(conn: &Connection, prefix: &str) -> Result<Vec<DirEntry>> {
                     path,
                     entry_type: "file".to_string(),
                     kind: Some(kind),
-                    size: Some(size),
+                    size,
                     mtime: Some(mtime),
                 });
             }
@@ -224,7 +224,7 @@ mod tests {
                 id    INTEGER PRIMARY KEY AUTOINCREMENT,
                 path  TEXT    NOT NULL UNIQUE,
                 mtime INTEGER NOT NULL,
-                size  INTEGER NOT NULL,
+                size  INTEGER,
                 kind  TEXT    NOT NULL DEFAULT 'text'
             );",
         )
@@ -235,6 +235,14 @@ mod tests {
     fn ins(conn: &rusqlite::Connection, path: &str, kind: &str) {
         conn.execute(
             "INSERT INTO files (path, mtime, size, kind) VALUES (?1, 0, 0, ?2)",
+            rusqlite::params![path, kind],
+        )
+        .unwrap();
+    }
+
+    fn ins_no_size(conn: &rusqlite::Connection, path: &str, kind: &str) {
+        conn.execute(
+            "INSERT INTO files (path, mtime, size, kind) VALUES (?1, 0, NULL, ?2)",
             rusqlite::params![path, kind],
         )
         .unwrap();
@@ -436,6 +444,23 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "file.txt");
         assert_eq!(entries[0].entry_type, "file");
+    }
+
+    /// `size` can be NULL in the DB (unknown size for archive members).
+    /// list_dir must not crash and must return size=None for those entries.
+    #[test]
+    fn list_dir_null_size_does_not_crash() {
+        let conn = test_db();
+        // Archive members may have NULL size when the extractor couldn't
+        // determine it (e.g. streaming archives, certain zip variants).
+        ins_no_size(&conn, "archive.zip::readme.txt", "text");
+        ins_no_size(&conn, "archive.zip::data.csv", "text");
+        let entries = list_dir(&conn, "archive.zip::").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries.iter().all(|e| e.size.is_none()),
+            "NULL size in DB must map to size=None in DirEntry, not crash"
+        );
     }
 
     /// A nested archive next to regular files and subdirs in an outer archive.

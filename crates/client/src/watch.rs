@@ -359,6 +359,7 @@ async fn handle_update(
 
     let lines = match subprocess::extract_via_subprocess(abs_path, eff_scan, extractor_dir).await {
         subprocess::SubprocessOutcome::Ok(lines) => lines,
+        subprocess::SubprocessOutcome::BinaryMissing => return Ok(()),
         subprocess::SubprocessOutcome::Failed => vec![],
     };
 

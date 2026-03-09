@@ -55,6 +55,15 @@ enum Command {
         /// Inbox filename, with or without .gz extension
         name: String,
     },
+    /// Show recently indexed or recently modified files
+    Recent {
+        /// Number of files to show (default: 20)
+        #[arg(long, short, default_value = "20")]
+        limit: usize,
+        /// Sort by file modification time (mtime) instead of index time
+        #[arg(long)]
+        mtime: bool,
+    },
     /// Delete all indexed data for a source (DB + content chunks in ZIP archives)
     DeleteSource {
         /// Name of the source to delete
@@ -156,7 +165,7 @@ async fn main() -> Result<()> {
                 Ok(settings) => {
                     println!("{}", format!("✓  Server reachable at {}", config.server.url).green());
                     println!("{}", "✓  Authenticated (token accepted)".green());
-                    println!("{}", format!("✓  Server version: {} (build {}, schema v{})", settings.version, settings.git_hash, settings.schema_version).green());
+                    println!("{}", format!("✓  Server version: {} (build {}, schema v{}, min client v{})", settings.version, settings.git_hash, settings.schema_version, settings.min_client_version).green());
                 }
                 Err(e) => {
                     // Distinguish auth failures from connectivity failures
@@ -350,6 +359,26 @@ async fn main() -> Result<()> {
                 println!("Failures ({}):", resp.failures.len());
                 for f in &resp.failures {
                     println!("  {}  —  {}", f.path, f.error);
+                }
+            }
+        }
+
+        Command::Recent { limit, mtime } => {
+            let client = api::ApiClient::new(&config.server.url, &config.server.token);
+            let files = client.get_recent(limit, mtime).await.context("fetching recent files")?;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&files)?);
+            } else if files.is_empty() {
+                println!("No files indexed yet.");
+            } else {
+                let label = if mtime { "modified" } else { "indexed" };
+                println!("Recently {label} ({} files):", files.len());
+                for f in &files {
+                    let ts = chrono::DateTime::from_timestamp(f.indexed_at, 0)
+                        .map(|utc| chrono::DateTime::<chrono::Local>::from(utc)
+                            .format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| f.indexed_at.to_string());
+                    println!("  {}  [{}]  {}", ts, f.source, f.path);
                 }
             }
         }

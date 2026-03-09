@@ -7,9 +7,9 @@ use std::io::Write;
 
 use find_common::api::{
     AppSettingsResponse, BulkRequest, ContextResponse, FileRecord, InboxDeleteResponse,
-    InboxRetryResponse, InboxShowResponse, InboxStatusResponse, SearchResponse, SourceDeleteResponse,
-    SourceInfo, StatsResponse, UploadInitRequest, UploadInitResponse, UploadPatchResponse,
-    UploadStatusResponse,
+    InboxRetryResponse, InboxShowResponse, InboxStatusResponse, RecentFile, RecentResponse,
+    SearchResponse, SourceDeleteResponse, SourceInfo, StatsResponse, UploadInitRequest,
+    UploadInitResponse, UploadPatchResponse, UploadStatusResponse,
 };
 
 pub struct ApiClient {
@@ -152,6 +152,23 @@ impl ApiClient {
             .json::<AppSettingsResponse>()
             .await
             .context("parsing settings response")
+    }
+
+    /// GET /api/v1/recent
+    pub async fn get_recent(&self, limit: usize, sort_by_mtime: bool) -> Result<Vec<RecentFile>> {
+        let sort = if sort_by_mtime { "mtime" } else { "indexed" };
+        self.client
+            .get(self.url(&format!("/api/v1/recent?limit={limit}&sort={sort}")))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("GET /api/v1/recent")?
+            .error_for_status()
+            .context("recent status")?
+            .json::<RecentResponse>()
+            .await
+            .context("parsing recent response")
+            .map(|r| r.files)
     }
 
     /// GET /api/v1/admin/inbox

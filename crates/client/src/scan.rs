@@ -471,6 +471,11 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
 
         let lines = match outcome {
             subprocess::SubprocessOutcome::Ok(lines) => lines,
+            subprocess::SubprocessOutcome::BinaryMissing => {
+                // Extractor binary not installed — skip this file entirely so it
+                // is re-indexed (with content) once the binary is deployed.
+                return Ok(());
+            }
             subprocess::SubprocessOutcome::Failed => {
                 if eff_scan.server_fallback {
                     if let Err(e) = upload::upload_file(ctx.api, abs_path, rel_path, mtime, ctx.source_name).await {

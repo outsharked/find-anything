@@ -186,14 +186,21 @@ pub fn count_files(conn: &Connection) -> Result<usize> {
     Ok(n as usize)
 }
 
-/// Return the `limit` most recently indexed outer files (no `::` in path),
-/// ordered by `indexed_at` descending.  Returns `(path, indexed_at)` pairs.
-pub fn recent_files(conn: &Connection, limit: usize) -> Result<Vec<(String, i64)>> {
-    let mut stmt = conn.prepare(
+/// Return the `limit` most recently indexed outer files (no `::` in path).
+/// `sort_by_mtime = false` orders by `COALESCE(indexed_at, mtime)` (recently indexed);
+/// `sort_by_mtime = true` orders by raw `mtime` (recently modified on disk).
+/// Returns `(path, sort_ts)` pairs.
+pub fn recent_files(conn: &Connection, limit: usize, sort_by_mtime: bool) -> Result<Vec<(String, i64)>> {
+    let sql = if sort_by_mtime {
+        "SELECT path, mtime FROM files \
+         WHERE path NOT LIKE '%::%' \
+         ORDER BY mtime DESC LIMIT ?1"
+    } else {
         "SELECT path, COALESCE(indexed_at, mtime) FROM files \
          WHERE path NOT LIKE '%::%' \
-         ORDER BY COALESCE(indexed_at, mtime) DESC LIMIT ?1",
-    )?;
+         ORDER BY COALESCE(indexed_at, mtime) DESC LIMIT ?1"
+    };
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt
         .query_map(params![limit as i64], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
