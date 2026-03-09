@@ -4,18 +4,19 @@
 //! when the user left-clicks the tray icon.  It dismisses automatically when
 //! it loses activation (user clicks elsewhere) or when the user presses Escape.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
 use anyhow::Result;
 use find_common::api::RecentFile;
 
 use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::CreateFontW;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IsWindowVisible,
     MoveWindow, RegisterClassExW, SendMessageW, SetForegroundWindow, SetWindowPos,
     ShowWindow, SystemParametersInfoW, WNDCLASSEXW,
-    CS_HREDRAW, CS_VREDRAW,
+    CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW,
     SW_HIDE, SW_SHOW,
     SPI_GETWORKAREA,
     WM_ACTIVATE, WM_KEYDOWN, WM_SIZE,
@@ -24,19 +25,40 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_NOZORDER,
 };
 
-// LBS_* and LB_* are in Win32_UI_WindowsAndMessaging but not always re-exported
-// by name, so use their documented numeric values.
+const WM_COMMAND: u32 = 0x0111;
+/// STATIC control styles.
+const SS_CENTER: u32 = 0x0001;
+const SS_NOPREFIX: u32 = 0x0080;
+
+// LBS_* and LB_* documented numeric values.
 const LBS_NOINTEGRALHEIGHT: u32 = 0x0100;
 const LBS_NOSEL: u32 = 0x0400;
+/// Always show the scrollbar even when all items fit (grayed out when unneeded).
+const LBS_DISABLENOSCROLL: u32 = 0x1000;
 const LB_RESETCONTENT: u32 = 0x0184;
 const LB_ADDSTRING: u32 = 0x0180;
+/// WM_SETFONT: set the font on a control. wParam = HFONT, lParam = fRedraw.
+const WM_SETFONT: u32 = 0x0030;
 // VK_ESCAPE
 const VK_ESCAPE: usize = 0x1B;
 // WA_INACTIVE
 const WA_INACTIVE: usize = 0;
 
-const POPUP_WIDTH: i32 = 440;
-const POPUP_HEIGHT: i32 = 420;
+// GDI font constants
+const FW_NORMAL: i32 = 400;
+const ANSI_CHARSET: u32 = 0;
+const OUT_DEFAULT_PRECIS: u32 = 0;
+const CLIP_DEFAULT_PRECIS: u32 = 0;
+/// ClearType anti-aliasing for clean sub-pixel rendering.
+const CLEARTYPE_QUALITY: u32 = 5;
+const DEFAULT_PITCH: u32 = 0;
+
+const POPUP_WIDTH: i32 = 660;
+const POPUP_HEIGHT: i32 = 480;
+/// Inner padding between window edge and controls.
+const PADDING: i32 = 6;
+/// Height of the "Recent activity" title bar at the top.
+const TITLE_HEIGHT: i32 = 22;
 
 /// Set by the WndProc when the popup should be closed; read by the main thread.
 static POPUP_CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -44,6 +66,11 @@ static POPUP_CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// HWND of the listbox child stored as `isize` so we can access it from the
 /// static WndProc without unsafe global state tricks.
 static LISTBOX_HWND: AtomicIsize = AtomicIsize::new(0);
+/// HWND of the title static control.
+static TITLE_HWND: AtomicIsize = AtomicIsize::new(0);
+/// Command ID posted via WM_COMMAND when the user selects a context-menu item.
+/// The main thread drains this with [`take_pending_command`].
+static PENDING_COMMAND: AtomicU32 = AtomicU32::new(0);
 
 fn class_name_w() -> Vec<u16> {
     "FindAnythingPopup\0".encode_utf16().collect()
@@ -71,12 +98,30 @@ unsafe extern "system" fn wnd_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        WM_COMMAND => {
+            // HIWORD(wParam) == 0 means a menu item was selected (not a control notification).
+            // We store the command ID so the main thread can dispatch it.
+            if (wparam >> 16) == 0 {
+                let cmd_id = (wparam & 0xFFFF) as u32;
+                if cmd_id != 0 {
+                    PENDING_COMMAND.store(cmd_id, Ordering::Relaxed);
+                }
+            }
+            0
+        }
         WM_SIZE => {
+            let title = TITLE_HWND.load(Ordering::Relaxed) as HWND;
             let lb = LISTBOX_HWND.load(Ordering::Relaxed) as HWND;
             if lb != 0 {
                 let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
                 GetClientRect(hwnd, &mut rc);
-                MoveWindow(lb, 0, 0, rc.right - rc.left, rc.bottom - rc.top, 1);
+                let w = rc.right - rc.left;
+                let h = rc.bottom - rc.top;
+                if title != 0 {
+                    MoveWindow(title, PADDING, PADDING, w - 2 * PADDING, TITLE_HEIGHT, 1);
+                }
+                let lb_y = PADDING + TITLE_HEIGHT + PADDING;
+                MoveWindow(lb, PADDING, lb_y, w - 2 * PADDING, h - lb_y - PADDING, 1);
             }
             0
         }
@@ -92,7 +137,8 @@ pub fn register_class() -> Result<()> {
 
     let wc = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-        style: CS_HREDRAW | CS_VREDRAW,
+        // CS_DROPSHADOW gives the popup a subtle Windows-native drop shadow.
+        style: CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW,
         lpfnWndProc: Some(wnd_proc),
         cbClsExtra: 0,
         cbWndExtra: 0,
@@ -147,14 +193,35 @@ impl Popup {
             anyhow::bail!("CreateWindowExW failed for popup");
         }
 
+        // "Recent activity" title label.
+        let static_class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let title_text: Vec<u16> = "Recent activity\0".encode_utf16().collect();
+        let title_ctrl = unsafe {
+            CreateWindowExW(
+                0,
+                static_class.as_ptr(),
+                title_text.as_ptr(),
+                WS_CHILD | WS_VISIBLE | SS_CENTER | SS_NOPREFIX,
+                PADDING, PADDING, POPUP_WIDTH - 2 * PADDING, TITLE_HEIGHT,
+                hwnd,
+                0,
+                hinstance,
+                std::ptr::null(),
+            )
+        };
+        TITLE_HWND.store(title_ctrl as isize, Ordering::Relaxed);
+
         let lb_class: Vec<u16> = "LISTBOX\0".encode_utf16().collect();
+        let lb_y = PADDING + TITLE_HEIGHT + PADDING;
         let listbox = unsafe {
             CreateWindowExW(
                 0,
                 lb_class.as_ptr(),
                 std::ptr::null(),
-                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOSEL | LBS_NOINTEGRALHEIGHT,
-                0, 0, POPUP_WIDTH, POPUP_HEIGHT,
+                // LBS_DISABLENOSCROLL: vertical scrollbar always visible (greyed when unneeded)
+                // so users always know they can scroll through recent files.
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOSEL | LBS_NOINTEGRALHEIGHT | LBS_DISABLENOSCROLL,
+                PADDING, lb_y, POPUP_WIDTH - 2 * PADDING, POPUP_HEIGHT - lb_y - PADDING,
                 hwnd,
                 0,
                 hinstance,
@@ -167,6 +234,28 @@ impl Popup {
         }
 
         LISTBOX_HWND.store(listbox as isize, Ordering::Relaxed);
+
+        // Apply Segoe UI 10pt with ClearType so the list reads cleanly.
+        // -13 logical units ≈ 10pt at 96 DPI.  The HFONT is intentionally
+        // leaked — it lives for the process lifetime alongside the listbox.
+        let face: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
+        let hfont = unsafe {
+            CreateFontW(
+                -13, 0, 0, 0,
+                FW_NORMAL, 0, 0, 0,
+                ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                face.as_ptr(),
+            )
+        };
+        if hfont != 0 {
+            unsafe {
+                SendMessageW(listbox, WM_SETFONT, hfont as WPARAM, 1);
+                if title_ctrl != 0 {
+                    SendMessageW(title_ctrl, WM_SETFONT, hfont as WPARAM, 1);
+                }
+            }
+        }
 
         Ok(Self { hwnd, listbox })
     }
@@ -229,28 +318,20 @@ pub fn take_close_request() -> bool {
     POPUP_CLOSE_REQUESTED.swap(false, Ordering::Relaxed)
 }
 
+/// Drain any context-menu command posted by the WndProc via WM_COMMAND.
+/// Returns `Some(cmd_id)` once per selection; the `cmd_id` matches the muda
+/// internal ID, which equals `menu_item.id().0.parse::<u32>()`.
+pub fn take_pending_command() -> Option<u32> {
+    let id = PENDING_COMMAND.swap(0, Ordering::Relaxed);
+    if id != 0 { Some(id) } else { None }
+}
+
 fn add_row(listbox: HWND, text: &str) {
     let wide: Vec<u16> = format!("{text}\0").encode_utf16().collect();
     unsafe { SendMessageW(listbox, LB_ADDSTRING, 0, wide.as_ptr() as LPARAM) };
 }
 
-/// Format a listbox row: `[source]  basename   (parent)`
+/// Format a listbox row: `[source]  full/path/to/file`
 fn format_row(file: &RecentFile) -> String {
-    use std::path::Path;
-    let p = Path::new(&file.path);
-    let basename = p
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&file.path);
-    let parent = p
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-
-    if parent.is_empty() {
-        format!("[{}]  {}", file.source, basename)
-    } else {
-        format!("[{}]  {}   ({})", file.source, basename, parent)
-    }
+    format!("[{}]  {}", file.source, file.path)
 }

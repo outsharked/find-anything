@@ -47,6 +47,18 @@ impl TrayMenu {
         })
     }
 
+    /// Show an interim transitioning state while the SCM command is in flight.
+    /// Disables the toggle button until the next status poll confirms the new state.
+    pub fn update_pending(&self, stopping: bool) {
+        let status_text = if stopping {
+            "Watcher: Stopping\u{2026}"
+        } else {
+            "Watcher: Starting\u{2026}"
+        };
+        self.status_item.set_text(status_text);
+        self.toggle_item.set_enabled(false);
+    }
+
     /// Returns the MenuId of each action item for event matching.
     pub fn scan_id(&self) -> MenuId { self.scan_item.id().clone() }
     pub fn toggle_id(&self) -> MenuId { self.toggle_item.id().clone() }
@@ -54,7 +66,8 @@ impl TrayMenu {
     pub fn quit_id(&self) -> MenuId { self.quit_item.id().clone() }
 
     /// Update the status labels and toggle button text based on service state
-    /// and server file count.
+    /// and server file count.  Always re-enables the toggle button so that a
+    /// previous `update_pending` call is cleared once the real state arrives.
     pub fn update_status(&self, service_running: bool, file_count: Option<u64>, source_count: Option<usize>) {
         let status_text = if service_running {
             "Watcher: Running"
@@ -68,6 +81,7 @@ impl TrayMenu {
         } else {
             "Start Watcher"
         };
+        self.toggle_item.set_enabled(true);
         self.toggle_item.set_text(toggle_text);
 
         let count_text = match (file_count, source_count) {

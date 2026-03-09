@@ -288,14 +288,32 @@ impl ApplicationHandler<AppEvent> for TrayApp {
                     button_state: MouseButtonState::Up,
                     ..
                 } => {
-                    // Show the context menu anchored to the popup HWND so the
-                    // system knows which window owns it, then fire a one-shot
-                    // poll so the file count is fresh.
+                    // Show the context menu using TrackPopupMenuEx directly so
+                    // we can pass TPM_BOTTOMALIGN, ensuring the menu appears
+                    // above the cursor when the taskbar is at the bottom of the
+                    // screen.  Without this flag, muda uses TPM_TOPALIGN and the
+                    // bottom items are clipped off-screen.
+                    //
+                    // WM_COMMAND is posted to the popup HWND (not returned via
+                    // TPM_RETURNCMD) and drained in the next about_to_wait via
+                    // popup::take_pending_command().
                     use tray_icon::menu::ContextMenu;
+                    use windows_sys::Win32::Foundation::POINT;
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        GetCursorPos, SetForegroundWindow, TrackPopupMenuEx,
+                        TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TPM_RIGHTALIGN,
+                    };
                     unsafe {
-                        self.tray_menu.menu.show_context_menu_for_hwnd(
+                        let mut pt = POINT { x: 0, y: 0 };
+                        GetCursorPos(&mut pt);
+                        SetForegroundWindow(self.popup.hwnd());
+                        TrackPopupMenuEx(
+                            self.tray_menu.menu.hpopupmenu(),
+                            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RIGHTALIGN,
+                            pt.x,
+                            pt.y,
                             self.popup.hwnd(),
-                            None,
+                            std::ptr::null(),
                         );
                     }
                     self.poller.poll_once();
@@ -304,9 +322,25 @@ impl ApplicationHandler<AppEvent> for TrayApp {
             }
         }
 
-        // Poll menu events.
+        // Poll menu events from muda's channel (keyboard shortcuts / subclassed windows).
         while let Ok(menu_event) = MenuEvent::receiver().try_recv() {
             self.handle_menu_event(&menu_event, event_loop);
+        }
+
+        // Drain any context-menu command posted via WM_COMMAND by our direct
+        // TrackPopupMenuEx call (right-click handler).
+        if let Some(cmd_id) = popup::take_pending_command() {
+            let parse = |id: tray_icon::menu::MenuId| id.0.parse::<u32>().unwrap_or(0);
+            if cmd_id == parse(self.tray_menu.quit_id()) {
+                self.should_quit = true;
+                event_loop.exit();
+            } else if cmd_id == parse(self.tray_menu.scan_id()) {
+                self.run_scan();
+            } else if cmd_id == parse(self.tray_menu.toggle_id()) {
+                self.toggle_service();
+            } else if cmd_id == parse(self.tray_menu.config_id()) {
+                self.open_config();
+            }
         }
 
         if self.should_quit {
@@ -372,21 +406,23 @@ impl TrayApp {
 
     fn toggle_service(&self) {
         if self.service_running {
-            if let Err(e) = service_ctl::stop_service() {
-                show_error(
+            match service_ctl::stop_service() {
+                Ok(()) => self.tray_menu.update_pending(true),
+                Err(e) => show_error(
                     "Find Anything — Service Error",
                     &format!("Failed to stop the watcher service:\n{e}"),
-                );
+                ),
             }
         } else {
-            if let Err(e) = service_ctl::start_service() {
-                show_error(
+            match service_ctl::start_service() {
+                Ok(()) => self.tray_menu.update_pending(false),
+                Err(e) => show_error(
                     "Find Anything — Service Error",
                     &format!(
                         "Failed to start the watcher service:\n{e}\n\n\
                          The service may not be installed. Try re-running the installer."
                     ),
-                );
+                ),
             }
         }
     }

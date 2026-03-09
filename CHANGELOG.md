@@ -11,6 +11,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Windows tray popup improvements** — popup is wider (660×480), shows "Recent activity" title, has 6 px padding between the border and controls, displays full file path per row (`[source]  full/path/to/file`), uses Segoe UI 10 pt ClearType font, always shows a vertical scrollbar, and has a native drop shadow
+- **Windows tray interim service status** — stopping or starting the watcher service immediately shows "Watcher: Stopping…" / "Watcher: Starting…" and disables the toggle button until the next status poll confirms the new state
+- **Windows tray recent files increased to 50** — the poller now requests the 50 most recently indexed files (was 20)
+
+### Fixed
+
+- **Windows tray right-click menu clipped at screen bottom** — the context menu is now shown via `TrackPopupMenuEx` with `TPM_BOTTOMALIGN | TPM_RIGHTALIGN` so it always pops up above the cursor; muda's default `TPM_TOPALIGN` caused the bottom items to be clipped off-screen when the taskbar is at the bottom of the display
+
+### Added
+
 - **`--version` shows commit hash** — all CLI binaries (`find-server`, `find-scan`, `find-admin`, `find-watch`, `find-upload`, `find`) now display a git commit hash suffix for non-release builds (e.g. `0.6.1 (abc1234)`); clean release-tag builds show only the version; dirty working trees show `(dev)`; implemented via a `tool_version!` macro in `find_common` using `option_env!` so each binary embeds its own build-time constants without a `build.rs` (which would fail in the cross-compilation Docker environment due to glibc version mismatches)
 - **Event-driven compaction scanner** — the background orphaned-chunk scanner no longer runs on a fixed interval; instead it runs once at startup (30 s delay) and then 60 s after the last delete batch completes, deferring on each subsequent delete so rapid back-to-back deletes coalesce into a single scan; `remove_chunks` now returns bytes freed, which are accumulated in `AppState.deleted_bytes_since_scan` and added to the last scan result to give a live wasted-space estimate between scans without re-scanning; `compact_scan_interval_mins` config key removed
 

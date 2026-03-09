@@ -140,7 +140,7 @@ fn query_recent(
     server_url: &str,
     token: &str,
 ) -> Vec<RecentFile> {
-    let url = format!("{server_url}/api/v1/recent?limit=20");
+    let url = format!("{server_url}/api/v1/recent?limit=50");
     let resp = match client.get(&url).bearer_auth(token).send() {
         Ok(r) => r,
         Err(_) => return vec![],
