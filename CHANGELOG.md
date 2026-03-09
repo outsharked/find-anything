@@ -15,6 +15,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Inbox worker request timeout** — each inbox request is now wrapped in a 600 s timeout; if a blocking thread hangs, the worker logs an error, moves the file to `failed/`, and continues the queue so a single slow request can no longer block all other work
+- **Batch summary logging** — after processing each inbox batch the worker logs a one-line INFO summary (file count, delete count, content lines, KB content, KB compressed, elapsed seconds); batches taking ≥ 120 s additionally emit a structured WARN for alerting
+- **Plan 049: parallel inbox workers** — design document for per-source worker pools, per-worker ZIP archives allocated from a shared atomic counter, per-archive rewrite locking, and configurable worker count (default 3)
+
 - **`include` in `.index` files** — per-directory `.index` files now support an `include` field containing glob patterns; only files matching at least one pattern are indexed within that subtree, allowing precise whitelisting without `.noindex` (e.g. `include = ["myfolder/**"]` in `backups/.index` indexes only `backups/myfolder/`); replacement semantics — innermost `.index` with `include` wins; patterns are relative to the directory containing the `.index` file
 - **`find-admin recent`** — new subcommand lists the N most recently indexed or recently modified files across all sources; supports `--limit` and `--mtime` flags; `--json` for machine-readable output
 - **`find-admin check` reports min client version** — the server's `min_client_version` is now included in the version line of `find-admin check` output

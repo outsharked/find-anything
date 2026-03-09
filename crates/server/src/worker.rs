@@ -12,6 +12,11 @@ use crate::archive::{self, ArchiveManager, ChunkRef};
 use crate::db;
 
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// Maximum time allowed to process a single inbox request before the worker
+/// abandons the blocking thread and moves the file to `failed/`.  The thread
+/// itself cannot be cancelled and will continue running in the background, but
+/// the worker is unblocked so it can process the rest of the queue.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Log a warning if `start` is older than `threshold_secs`.
 fn warn_slow(start: std::time::Instant, threshold_secs: u64, step: &str, context: &str) {
@@ -86,20 +91,37 @@ async fn process_request_async(
 ) {
     let status_reset = status.clone(); // held outside the closure to ensure Idle on any exit path
 
-    let result = tokio::task::spawn_blocking({
+    let blocking_task = tokio::task::spawn_blocking({
         let data_dir = data_dir.to_path_buf();
         let request_path = request_path.to_path_buf();
         move || process_request(&data_dir, &request_path, &status, log_batch_detail_limit)
-    })
-    .await;
+    });
 
-    // Ensure idle is set even if process_request errored or panicked.
+    let timed_result = tokio::time::timeout(REQUEST_TIMEOUT, blocking_task).await;
+
+    // Ensure idle is set even if process_request errored, panicked, or timed out.
     if let Ok(mut guard) = status_reset.lock() {
         *guard = WorkerStatus::Idle;
     }
 
-    match result {
-        Ok(Ok(())) => {
+    match timed_result {
+        Err(_timeout) => {
+            // The blocking thread is stuck — abandon it (it will keep running in
+            // the background) and move the file to failed/ so the worker can
+            // continue with the rest of the queue.
+            tracing::error!(
+                "Request processing timed out after {}s, abandoning: {}",
+                REQUEST_TIMEOUT.as_secs(),
+                request_path.display(),
+            );
+            handle_failure(
+                request_path,
+                failed_dir,
+                anyhow::anyhow!("Processing timed out after {}s", REQUEST_TIMEOUT.as_secs()),
+            )
+            .await;
+        }
+        Ok(Ok(Ok(()))) => {
             // Success - delete request file
             if let Err(e) = tokio::fs::remove_file(&request_path).await {
                 tracing::error!("Failed to delete processed request {}: {}", request_path.display(), e);
@@ -107,11 +129,11 @@ async fn process_request_async(
                 tracing::info!("Successfully processed: {}", request_path.display());
             }
         }
-        Ok(Err(e)) => {
+        Ok(Ok(Err(e))) => {
             // Processing error - move to failed
             handle_failure(request_path, failed_dir, e).await;
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             // Task panicked or was cancelled
             handle_failure(
                 request_path,
@@ -128,6 +150,7 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle, 
 
     // Decompress and parse request
     let compressed = std::fs::read(request_path)?;
+    let compressed_bytes = compressed.len();
     let mut decoder = GzDecoder::new(&compressed[..]);
     let mut json = String::new();
     decoder.read_to_string(&mut json)?;
@@ -135,16 +158,24 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle, 
     let request: BulkRequest = serde_json::from_str(&json)
         .context("parsing bulk request JSON")?;
 
+    // Pre-compute batch stats for summary logging.
+    let n_files = request.files.len();
+    let n_deletes = request.delete_paths.len();
+    let total_content_lines: usize = request.files.iter().map(|f| f.lines.len()).sum();
+    let total_content_bytes: usize = request.files.iter()
+        .flat_map(|f| f.lines.iter())
+        .map(|l| l.content.len())
+        .sum();
+
     // Log what is being processed. For small batches, emit each path so it's
     // easy to see which files are being indexed. For large batches, log the
     // count to avoid flooding the log.
-    let n = request.files.len();
-    if n <= log_batch_detail_limit {
+    if n_files <= log_batch_detail_limit {
         for f in &request.files {
             tracing::info!("Indexing [{}] {}", request.source, f.path);
         }
     } else {
-        tracing::info!("Indexing {} files [{}]", n, request.source);
+        tracing::info!("Indexing {} files [{}]", n_files, request.source);
     }
 
     // Open source database
@@ -231,13 +262,36 @@ fn process_request(data_dir: &Path, request_path: &Path, status: &StatusHandle, 
         db::upsert_indexing_errors(&conn, &server_side_failures, now)?;
     }
 
-    warn_slow(request_start, 120, "process_request", &request_path.display().to_string());
-
     // 4. Metadata
     if let Some(ts) = request.scan_timestamp {
         db::update_last_scan(&conn, ts)?;
         db::append_scan_history(&conn, ts)?;
     }
+
+    let elapsed = request_start.elapsed();
+    let elapsed_secs = elapsed.as_secs_f64();
+    let content_kb = total_content_bytes / 1024;
+    let compressed_kb = compressed_bytes / 1024;
+    tracing::info!(
+        "batch complete [{}]: {} files, {} deletes, {} lines, \
+         {} KB content, {} KB compressed, {:.1}s",
+        request.source, n_files, n_deletes, total_content_lines,
+        content_kb, compressed_kb, elapsed_secs,
+    );
+    if elapsed.as_secs() >= 120 {
+        tracing::warn!(
+            elapsed_secs = elapsed.as_secs(),
+            files = n_files,
+            deletes = n_deletes,
+            content_lines = total_content_lines,
+            content_kb,
+            compressed_kb,
+            "slow batch [{}]: {:.1}s — {} files, {} deletes, {} lines, {} KB content, {} KB compressed",
+            request.source, elapsed_secs, n_files, n_deletes, total_content_lines,
+            content_kb, compressed_kb,
+        );
+    }
+
     Ok(())
 }
 

@@ -1082,4 +1082,3 @@ mod tests {
         assert!(!dir_allowed(&["Users\\alice\\**"], "Users/bob"));
     }
 }
-
