@@ -179,15 +179,16 @@
 		window.addEventListener('keydown', handleKeydown, { capture: true });
 		// Scroll events as a secondary trigger: when the window is scrollable
 		// and the user scrolls near the sentinel, load more results.
-		window.addEventListener('scroll', checkScroll, { passive: true });
+		mainContent.addEventListener('scroll', checkScroll, { passive: true });
 		return () => {
 			window.removeEventListener('keydown', handleKeydown, { capture: true });
-			window.removeEventListener('scroll', checkScroll);
+			mainContent.removeEventListener('scroll', checkScroll);
 		};
 	});
 
 	// ── Load more ───────────────────────────────────────────────────────────────
 
+	let mainContent: HTMLElement;
 	let loadingMore = false;
 	let noMoreResults = false;
 	// Tracks server cursor independently of results.length. Client dedup can
@@ -441,7 +442,7 @@
 		/>
 	{/if}
 
-	<div class="main-content">
+	<div class="main-content" bind:this={mainContent}>
 		{#if view === 'file'}
 			<FileView
 				{fileSource}
@@ -537,10 +538,6 @@
 	.page-layout {
 		display: flex;
 		flex-direction: row;
-		min-height: 100vh;
-	}
-
-	.page-layout.file-view {
 		height: 100vh;
 		overflow: hidden;
 	}
@@ -578,10 +575,10 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
+		overflow-y: auto;
 	}
 
 	.page-layout.file-view .main-content {
-		height: 100vh;
 		overflow: hidden;
 	}
 

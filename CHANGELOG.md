@@ -17,6 +17,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **Sidebar scrolls independently from search results** — the page layout is now `height: 100vh; overflow: hidden` with the main content column (`overflow-y: auto`) as the scroll container instead of the window; the sidebar tree keeps its position while the user scrolls through results; the load-more scroll listener is moved from `window` to the main-content element (no behavioural change since `isNearBottom` already used viewport-relative `getBoundingClientRect`)
 - **Windows tray right-click menu clipped at screen bottom** — the context menu is now shown via `TrackPopupMenuEx` with `TPM_BOTTOMALIGN | TPM_RIGHTALIGN` so it always pops up above the cursor; muda's default `TPM_TOPALIGN` caused the bottom items to be clipped off-screen when the taskbar is at the bottom of the display
 
 ### Added
