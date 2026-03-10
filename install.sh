@@ -254,8 +254,8 @@ path = "$DIR_ESC"
 # max_depth = 10   # Max nesting depth for archives-within-archives
 
 [watch]
-# debounce_ms   = 500   # Wait this long (ms) after last change before re-indexing
-# extractor_dir = ""    # Path to find-extract-* binaries (default: auto-detect)
+# batch_window_secs = 5.0  # Buffer filesystem events for this many seconds before indexing
+# extractor_dir     = ""   # Path to find-extract-* binaries (default: auto-detect)
 
 [tray]
 # poll_interval_ms = 1000   # Refresh interval while popup is open (ms)

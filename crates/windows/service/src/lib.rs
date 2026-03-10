@@ -79,12 +79,31 @@ pub fn install_service(config_path: &Path, service_name: &str) -> Result<()> {
         });
         if is_running {
             let _ = existing.stop();
-            // Brief wait to let the SCM process the stop before deleting.
-            std::thread::sleep(Duration::from_millis(500));
+            // Wait up to 15 s for the service to reach Stopped.
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            loop {
+                std::thread::sleep(Duration::from_millis(200));
+                let stopped = existing.query_status()
+                    .map(|s| s.current_state == ServiceState::Stopped)
+                    .unwrap_or(true);
+                if stopped || std::time::Instant::now() > deadline { break; }
+            }
         }
         let _ = existing.delete();
-        // Give the SCM a moment to complete the deletion.
-        std::thread::sleep(Duration::from_millis(500));
+        // Drop our handle so we are not the reason the service lingers.
+        drop(existing);
+        // Poll until the SCM no longer knows about the service name (all
+        // handles closed) before calling CreateService.  Without this,
+        // CreateService returns ERROR_SERVICE_MARKED_FOR_DELETE if another
+        // process (e.g. the tray) still holds an open handle.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let gone = manager
+                .open_service(service_name, ServiceAccess::QUERY_STATUS)
+                .is_err();
+            if gone || std::time::Instant::now() > deadline { break; }
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
 
     let service = manager

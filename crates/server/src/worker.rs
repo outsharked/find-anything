@@ -194,15 +194,27 @@ pub async fn start_inbox_worker(
     // Router loop: poll inbox, dispatch files not already in-flight to the worker.
     // Files stay in inbox/ until the worker finishes; `in_flight` prevents
     // re-dispatching the same file on the next scan tick.
+    //
+    // Wake-up sources:
+    //  • 1-second interval tick (catches newly arriving inbox files)
+    //  • done_rx signal (worker finished — re-scan immediately so the next
+    //    file is dispatched without waiting up to 1 s for the next tick)
     let mut interval = tokio::time::interval(POLL_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut in_flight: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut done_rx = done_rx;
 
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = interval.tick() => {}
+            Some(done_path) = done_rx.recv() => {
+                in_flight.remove(&done_path);
+                // drain any further completions that arrived simultaneously
+                while let Ok(p) = done_rx.try_recv() { in_flight.remove(&p); }
+            }
+        }
 
-        // Drain completion signals from the worker.
+        // Drain any remaining completion signals (interval-tick path).
         while let Ok(done_path) = done_rx.try_recv() {
             in_flight.remove(&done_path);
         }

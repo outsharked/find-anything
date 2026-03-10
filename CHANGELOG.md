@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- **Debug builds strip symbols** — `[profile.dev] debug = false` in the workspace `Cargo.toml`; eliminates ~90 GB of DWARF data from `target/debug`; re-enable with `debug = true` when a debugger is needed
+
 ### Added
 
 - **Two-phase inbox processing (plan 053)** — inbox worker is now split into a single-threaded SQLite-only phase 1 (indexing) and a separate archive phase 2 (ZIP writes); phase 1 writes to SQLite only and moves the `.gz` to `inbox/to-archive/`; the archive thread batches up to `archive_batch_size` requests (default 200), coalesces last-writer-wins per path, rewrites ZIPs for pending chunk removes, appends new chunks, and updates line refs in a single transaction per source; eliminates WAL-mode SQLite deadlocks on WSL/network mounts caused by concurrent write connections; `pending_chunk_removes` table (schema v10) persists chunk refs between phases; per-source `source_lock` mutex in `SharedArchiveState` serialises SQLite writes between the two threads (held only during transactions, not during ZIP I/O)
@@ -27,6 +31,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **Windows tray recent files increased to 50** — the poller now requests the 50 most recently indexed files (was 20)
 
 ### Fixed
+
+- **Inbox router dispatches immediately when worker finishes** — the router loop now wakes on the worker's done signal (via `tokio::select!`) instead of waiting up to 1 s for the next poll tick; consecutive single-file watch events now process in milliseconds rather than ~1 s each
+- **Watch event buffering replaces sliding debounce** — `find-watch` now accumulates filesystem events for a fixed `batch_window_secs` (default `5.0`) from the first event rather than resetting the timer on every event; the batch is flushed immediately if it reaches `scan.batch_size` files; `debounce_ms` removed and replaced by `batch_window_secs` in `[watch]`
+- **Windows file modifications not detected** — `notify` maps `FILE_ACTION_MODIFIED` (ReadDirectoryChangesW) to `ModifyKind::Any`, not `ModifyKind::Data`; the accumulator now also matches `ModifyKind::Any` so file edits are picked up on Windows
+- **Windows service not starting after reinstall (root cause)** — the tray app holds an open SCM handle to the service for status polling; when the installer called `DeleteService`, the SCM marked the service "pending deletion" but could not remove it until the tray released its handle; subsequent `CreateService` failed with `ERROR_SERVICE_MARKED_FOR_DELETE`; fixed by killing `find-tray.exe` with `taskkill` before the uninstall/install sequence (tray is relaunched at the end), and hardening `install_service` to poll until `open_service` returns an error before calling `create_service`
+- **`find-admin status --watch` stale characters** — `\x1b[H]` (home) + `\x1b[0J]` (clear to end) left trailing characters on lines that got shorter between redraws; now always uses `\x1b[2J\x1b[H]` (full clear) on every redraw
+- **`find-admin status` shows inbox paused state** — the Inbox line now appends a yellow `PAUSED` label when inbox processing has been paused; `GET /api/v1/stats` response includes `inbox_paused: bool`
+- **InnoSetup checkbox text clipped** — `UseExistingCheck` lacked an explicit height; added `Height := 24` to prevent the "Keep existing configuration" label from being cut off
 
 - **Windows service ignores `exclude_extra`** — the Windows service code path used `toml::from_str::<ClientConfig>` directly, bypassing `parse_client_config` which merges `exclude_extra` globs into `exclude`; switched to `parse_client_config` so exclusion rules apply correctly when running as a service
 - **Windows service not restarted after reinstall** — InnoSetup `[UninstallRun]` only fires on explicit uninstall, not on upgrade/reinstall; the installer now explicitly calls `find-watch.exe uninstall` before `find-watch.exe install` in `ssPostInstall`, ensuring a clean service restart on every upgrade

@@ -134,26 +134,15 @@ async fn main() -> Result<()> {
                     print!("{}", format_status(&stats));
                 }
             } else {
-                // Watch mode: clear screen then redraw from top every 2 seconds.
+                // Watch mode: clear screen and redraw from top every 2 seconds.
+                // Always do a full clear so lines that got shorter don't leave
+                // trailing characters from the previous draw.
                 use std::io::Write;
-                let mut first = true;
                 loop {
                     match client.get_stats().await {
                         Ok(stats) => {
                             let output = format_status(&stats);
-                            if first {
-                                // Clear entire screen and move to top-left.
-                                print!("\x1b[2J\x1b[H");
-                                first = false;
-                            } else {
-                                // Move to top-left without clearing — content is
-                                // overwritten in-place; trailing lines are cleared below.
-                                print!("\x1b[H");
-                            }
-                            print!("{output}");
-                            // Clear from cursor to end of screen so any previously
-                            // longer output doesn't leave stale lines behind.
-                            print!("\x1b[0J");
+                            print!("\x1b[2J\x1b[H{output}");
                             std::io::stdout().flush().ok();
                         }
                         Err(e) => {
@@ -483,7 +472,14 @@ fn format_status(stats: &find_common::api::StatsResponse) -> String {
         ).unwrap();
     }
     writeln!(out).unwrap();
-    writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive", stats.inbox_pending, stats.failed_requests, stats.archive_queue).unwrap();
+    if stats.inbox_paused {
+        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive  {}",
+            stats.inbox_pending, stats.failed_requests, stats.archive_queue,
+            "PAUSED".yellow()).unwrap();
+    } else {
+        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive",
+            stats.inbox_pending, stats.failed_requests, stats.archive_queue).unwrap();
+    }
     writeln!(out, "Archives: {} ZIP files ({})", stats.total_archives, format_bytes(stats.archive_size_bytes)).unwrap();
     writeln!(out, "DB size:  {}", format_bytes(stats.db_size_bytes)).unwrap();
     match (stats.orphaned_bytes, stats.orphaned_stats_age_secs) {

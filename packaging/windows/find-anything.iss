@@ -223,8 +223,8 @@ begin
     '# max_depth = 10   # Max nesting depth for archives-within-archives' + NL +
     NL +
     '[watch]' + NL +
-    '# debounce_ms   = 500   # Wait this long (ms) after last change before re-indexing' + NL +
-    '# extractor_dir = ""    # Path to find-extract-* binaries (default: auto-detect)' + NL +
+    '# batch_window_secs = 5.0  # Buffer filesystem events for this many seconds before indexing' + NL +
+    '# extractor_dir     = ""   # Path to find-extract-* binaries (default: auto-detect)' + NL +
     NL +
     '[tray]' + NL +
     '# poll_interval_ms = 1000   # Refresh interval while popup is open (ms)' + NL;
@@ -277,6 +277,7 @@ begin
   UseExistingCheck.Top := 132;
   UseExistingCheck.Left := 0;
   UseExistingCheck.Width := ExistingConfigPage.SurfaceWidth;
+  UseExistingCheck.Height := 24;
   UseExistingCheck.Checked := True; // safe default: don't overwrite
 
   // ── Page 1: Server connection ──────────────────────────────────────────────
@@ -429,6 +430,15 @@ begin
     end;
 
     ConfigPath := ExpandConstant('{%USERPROFILE}\.config\FindAnything\client.toml');
+
+    // Kill any running tray instance before touching the service.  The tray
+    // polls service status and holds an open SCM handle; if that handle is open
+    // when we call DeleteService the SCM marks the service "pending deletion"
+    // and the subsequent CreateService call fails with
+    // ERROR_SERVICE_MARKED_FOR_DELETE.  The tray is relaunched at the end of
+    // this step, so killing it here is safe.
+    Exec('taskkill.exe', '/F /IM find-tray.exe',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
     // Stop and remove any existing service before registering the new one.
     // On a fresh install this is a no-op; on upgrade it ensures a clean restart.

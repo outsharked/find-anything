@@ -39,7 +39,7 @@ struct ArchiveDefaults {
 
 #[derive(Deserialize)]
 struct WatchDefaults {
-    debounce_ms: u64,
+    batch_window_secs: f64,
     scan_interval_hours: f64,
 }
 
@@ -394,9 +394,14 @@ fn default_max_7z_solid_block_mb() -> usize   { client_defaults().scan.archives.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatchConfig {
-    /// Milliseconds to wait after last event before processing the batch.
-    #[serde(default = "default_debounce_ms")]
-    pub debounce_ms: u64,
+    /// Seconds to buffer filesystem events before dispatching a batch to the server.
+    /// The timer starts on the first event and is NOT reset by subsequent events,
+    /// so events are always dispatched within this window regardless of how busy
+    /// the filesystem is. If the batch reaches `scan.batch_size` files the batch
+    /// is flushed immediately without waiting for the window to expire.
+    /// Default: 5.0.
+    #[serde(default = "default_batch_window_secs")]
+    pub batch_window_secs: f64,
 
     /// Directory containing find-extract-* binaries.
     /// None = auto-detect (same dir as find-watch, then PATH).
@@ -412,7 +417,7 @@ pub struct WatchConfig {
 impl Default for WatchConfig {
     fn default() -> Self {
         Self {
-            debounce_ms: default_debounce_ms(),
+            batch_window_secs: default_batch_window_secs(),
             extractor_dir: None,
             scan_interval_hours: default_scan_interval_hours(),
         }
@@ -438,7 +443,7 @@ impl Default for TrayConfig {
 
 fn default_tray_poll_interval_ms() -> u64 { 1000 }
 
-fn default_debounce_ms() -> u64             { client_defaults().watch.debounce_ms }
+fn default_batch_window_secs() -> f64       { client_defaults().watch.batch_window_secs }
 fn default_scan_interval_hours() -> f64     { client_defaults().watch.scan_interval_hours }
 fn default_excludes() -> Vec<String>         { client_defaults().scan.exclude.clone() }
 fn default_max_content_size_mb() -> u64      { client_defaults().scan.max_content_size_mb }
@@ -766,7 +771,7 @@ mod tests {
     #[test]
     fn watch_config_default_values() {
         let w = WatchConfig::default();
-        assert_eq!(w.debounce_ms, 500);
+        assert_eq!(w.batch_window_secs, 5.0);
         assert!(w.extractor_dir.is_none());
     }
 
@@ -774,16 +779,16 @@ mod tests {
     fn watch_config_serde_missing_fields_use_defaults() {
         // A config with no [watch] section should deserialise to defaults.
         let w: WatchConfig = serde_json::from_str("{}").unwrap();
-        assert_eq!(w.debounce_ms, 500);
+        assert_eq!(w.batch_window_secs, 5.0);
         assert!(w.extractor_dir.is_none());
     }
 
     #[test]
     fn watch_config_serde_explicit_values() {
         let w: WatchConfig =
-            serde_json::from_str(r#"{"debounce_ms":200,"extractor_dir":"/usr/local/bin"}"#)
+            serde_json::from_str(r#"{"batch_window_secs":10.0,"extractor_dir":"/usr/local/bin"}"#)
                 .unwrap();
-        assert_eq!(w.debounce_ms, 200);
+        assert_eq!(w.batch_window_secs, 10.0);
         assert_eq!(w.extractor_dir.as_deref(), Some("/usr/local/bin"));
     }
 
@@ -893,7 +898,7 @@ exclude = ["*.only"]
             "sources": []
         }"#;
         let cfg: ClientConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.watch.debounce_ms, 500);
+        assert_eq!(cfg.watch.batch_window_secs, 5.0);
         assert!(cfg.watch.extractor_dir.is_none());
     }
 

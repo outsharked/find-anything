@@ -478,6 +478,9 @@ pub struct StatsResponse {
     pub archive_size_bytes: u64,
     /// Current state of the inbox worker.
     pub worker_status: WorkerStatus,
+    /// True when inbox processing has been paused via `POST /api/v1/admin/inbox/pause`.
+    #[serde(default)]
+    pub inbox_paused: bool,
     /// Total compressed size of orphaned chunks across all archives (bytes).
     /// `None` if the background scanner has not yet run.
     #[serde(default)]

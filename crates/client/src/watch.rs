@@ -61,7 +61,8 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
         info!("  source {:?}: {:?}", src.name, src.path);
     }
 
-    let debounce_ms = config.watch.debounce_ms;
+    let batch_window = std::time::Duration::from_secs_f64(config.watch.batch_window_secs);
+    let batch_limit  = config.scan.batch_size;
 
     // Channel: notify (blocking thread) → tokio event loop.
     let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(1000);
@@ -78,37 +79,56 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
         info!("watching {:?}", root);
     }
 
-    // Debounce accumulator: path → what to do.
+    // Accumulator: path → what to do.
     let mut pending: HashMap<PathBuf, AccumulatedKind> = HashMap::new();
+    // When the batch window opened (i.e. when the first event in this batch arrived).
+    let mut window_start: Option<tokio::time::Instant> = None;
 
     loop {
-        // Wait for the first event (or a timeout to flush pending).
-        let timeout_dur = tokio::time::Duration::from_millis(debounce_ms);
-
-        let got_event = if pending.is_empty() {
-            // Nothing pending — block indefinitely.
+        // Decide whether to flush before waiting for the next event.
+        let flush = if pending.is_empty() {
+            // Nothing pending — block indefinitely waiting for the first event.
             match rx.recv().await {
-                Some(ev) => { accumulate(&mut pending, ev); true }
+                Some(ev) => {
+                    accumulate(&mut pending, ev);
+                    window_start = Some(tokio::time::Instant::now());
+                    false
+                }
                 None => break, // channel closed
             }
         } else {
-            // Events pending — wait up to debounce_ms for another.
-            match tokio::time::timeout(timeout_dur, rx.recv()).await {
-                Ok(Some(ev)) => { accumulate(&mut pending, ev); true }
-                Ok(None)     => break, // channel closed
-                Err(_)       => false, // timeout — time to flush
+            // Events are buffered. Compute how much of the window remains.
+            let elapsed = window_start.map(|s| s.elapsed()).unwrap_or(batch_window);
+            let remaining = batch_window.saturating_sub(elapsed);
+
+            if remaining.is_zero() {
+                true // window expired — flush now
+            } else {
+                // Wait for either a new event or the window to expire.
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Some(ev)) => { accumulate(&mut pending, ev); false }
+                    Ok(None)     => break, // channel closed
+                    Err(_)       => true,  // window expired
+                }
             }
         };
 
-        if got_event {
-            // Drain any immediately-available events (non-blocking).
-            while let Ok(ev) = rx.try_recv() {
-                accumulate(&mut pending, ev);
-            }
-            // Reset debounce window: go back to the top of the loop.
-            // The pending block will now wait debounce_ms again.
+        // Drain any immediately-available events before deciding to flush.
+        while let Ok(ev) = rx.try_recv() {
+            accumulate(&mut pending, ev);
+        }
+
+        // Flush if the window expired or the batch has hit its size limit.
+        if !flush && pending.len() < batch_limit {
             continue;
         }
+
+        if pending.is_empty() {
+            window_start = None;
+            continue;
+        }
+
+        window_start = None;
 
         // Flush accumulated events.
         let mut batch = std::mem::take(&mut pending);
@@ -301,7 +321,11 @@ fn accumulate(pending: &mut HashMap<PathBuf, AccumulatedKind>, res: notify::Resu
     for path in event.paths {
         let new_kind = match &event.kind {
             EventKind::Create(_) => AccumulatedKind::Update,
-            EventKind::Modify(notify::event::ModifyKind::Data(_)) => AccumulatedKind::Update,
+            // Data(_): inotify/kqueue — distinguishes data writes from metadata changes.
+            // Any:     ReadDirectoryChangesW (Windows) — FILE_ACTION_MODIFIED maps here;
+            //          Windows does not distinguish data vs metadata in this API.
+            EventKind::Modify(notify::event::ModifyKind::Data(_))
+            | EventKind::Modify(notify::event::ModifyKind::Any) => AccumulatedKind::Update,
             EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
                 // Renames: notify sends From path as Remove-like and To path as Create-like,
                 // but both arrive as Modify(Name). We treat each independently:

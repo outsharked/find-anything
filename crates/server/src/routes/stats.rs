@@ -45,6 +45,8 @@ pub async fn get_stats(
         .map(|g| g.clone())
         .unwrap_or(WorkerStatus::Idle);
 
+    let inbox_paused = state.inbox_paused.load(std::sync::atomic::Ordering::Relaxed);
+
     let deleted_since_scan = state.deleted_bytes_since_scan
         .load(std::sync::atomic::Ordering::Relaxed);
 
@@ -82,6 +84,7 @@ pub async fn get_stats(
         db_size_bytes,
         archive_size_bytes,
         worker_status,
+        inbox_paused,
         orphaned_bytes,
         orphaned_stats_age_secs,
     }).into_response()

@@ -17,6 +17,11 @@ members = [
 ]
 resolver = "2"
 
+[profile.dev]
+# Discard debug symbols — saves ~90 GB of target/debug bloat.
+# Re-enable with `debug = true` if you need a debugger.
+debug = false
+
 [workspace.dependencies]
 anyhow          = "1"
 blake3          = "1"
