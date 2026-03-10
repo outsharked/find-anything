@@ -3,11 +3,12 @@
 	import { getFile } from '$lib/api';
 	import { highlightFile } from '$lib/highlight';
 	import DirListing from './DirListing.svelte';
+	import ImageViewer from './ImageViewer.svelte';
+	import MarkdownViewer from './MarkdownViewer.svelte';
+	import CodeViewer from './CodeViewer.svelte';
 	import {
 		type LineSelection,
-		selectionSet,
 		firstLine,
-		toggleLine
 	} from '$lib/lineSelection';
 	import { profile } from '$lib/profile';
 	import { parseImageDimensions } from '$lib/imageMeta';
@@ -56,17 +57,10 @@
 	}
 	// For images: false = split view (image + metadata side-by-side), true = full-width image
 	let imageFullWidth = false;
-	// Image load state — reset whenever the source URL changes
-	let imageLoaded = false;
-	let imageError = false;
 	// PDF load state — reset whenever the source URL changes
 	let pdfLoaded = false;
-	$: {
-		rawInlineUrl;
-		imageLoaded = false;
-		imageError = false;
-		pdfLoaded = false;
-	}
+	$: { rawInlineUrl; pdfLoaded = false; }
+
 	// Parsed image dimensions for the aspect-ratio loading placeholder.
 	$: imgDims = parseImageDimensions(metaLines);
 	$: placeholderStyle = imgDims
@@ -211,23 +205,7 @@
 		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 	}
 
-	function handleLineClick(lineNum: number, e: MouseEvent) {
-		let next: LineSelection;
-		if (e.ctrlKey || e.metaKey) {
-			next = toggleLine(selection, lineNum);
-		} else if (e.shiftKey && selection.length > 0) {
-			const anchor = firstLine(selection)!;
-			next = [anchor <= lineNum ? [anchor, lineNum] : [lineNum, anchor]];
-		} else {
-			next = [lineNum];
-		}
-		selection = next;
-		dispatch('lineselect', { selection: next });
-	}
-
 	$: codeLines = highlightedCode ? highlightedCode.split('\n') : [];
-	$: highlightedSet = selectionSet(selection);
-	$: arrowLine = firstLine(selection);
 </script>
 
 <div class="file-viewer">
@@ -285,50 +263,15 @@
 		</div>
 		{#if showOriginal && canViewInline}
 			{#if fileKind === 'image'}
-				{#if imageFullWidth}
-					<!-- Full-width scrollable image -->
-					<div class="image-full-panel">
-						{#if imageError}
-							<div class="img-placeholder img-placeholder--error" style={placeholderStyle}>Image unavailable</div>
-						{:else}
-							{#if !imageLoaded}<div class="img-placeholder img-placeholder--loading" style={placeholderStyle}></div>{/if}
-							<img src={rawInlineUrl} alt={path}
-								class="image-full" class:img-hidden={!imageLoaded}
-								on:load={() => imageLoaded = true}
-								on:error={() => imageError = true} />
-						{/if}
-					</div>
-				{:else}
-					<!-- Split view: image left, metadata right -->
-					<div class="image-split-panel">
-						<div class="image-split-left">
-							{#if imageError}
-								<div class="img-placeholder img-placeholder--error" style={placeholderStyle}>Image unavailable</div>
-							{:else}
-								{#if !imageLoaded}<div class="img-placeholder img-placeholder--loading" style={placeholderStyle}></div>{/if}
-								<img src={rawInlineUrl} alt={path}
-									class="image-split-img" class:img-hidden={!imageLoaded}
-									on:load={() => imageLoaded = true}
-									on:error={() => imageError = true} />
-							{/if}
-						</div>
-						<div class="image-split-right">
-							{#if metaLines.length > 0 || duplicatePaths.length > 0}
-								{#each duplicatePaths as dup}
-									<div class="meta-row duplicate-row">
-										<span class="duplicate-label">DUPLICATE:</span>
-										<button class="duplicate-link" on:click={() => openDuplicate(dup)}>{dup}</button>
-									</div>
-								{/each}
-								{#each metaLines as meta}
-									<div class="meta-row">{meta.content}</div>
-								{/each}
-							{:else}
-								<div class="no-content">No metadata available.</div>
-							{/if}
-						</div>
-					</div>
-				{/if}
+				<ImageViewer
+					src={rawInlineUrl}
+					{path}
+					fullWidth={imageFullWidth}
+					{placeholderStyle}
+					{metaLines}
+					{duplicatePaths}
+					on:openDuplicate={(e) => openDuplicate(e.detail.path)}
+				/>
 			{:else}
 				<!-- PDF / other inline kind -->
 				<div class="original-panel">
@@ -358,9 +301,7 @@
 					</div>
 				{/if}
 				{#if markdownFormat && isMarkdown}
-					<div class="markdown-content">
-						{@html renderedMarkdown}
-					</div>
+					<MarkdownViewer rendered={String(renderedMarkdown)} />
 				{:else if codeLines.length === 0 && metaLines.length === 0 && duplicatePaths.length === 0 && fileKind === 'archive' && !archivePath}
 					<!-- Archive root: show member listing inline -->
 					<DirListing
@@ -381,28 +322,19 @@
 							}
 						}}
 					/>
-			{:else if codeLines.length === 0 && metaLines.length === 0 && duplicatePaths.length === 0}
+				{:else if codeLines.length === 0 && metaLines.length === 0 && duplicatePaths.length === 0}
 					<div class="no-content">No text content or metadata available for this file.</div>
 				{:else}
-					<table class="code-table" cellspacing="0" cellpadding="0">
-						<tbody>
-							{#each codeLines as line, i}
-								{@const lineNum = lineOffsets[i] ?? i + 1}
-								<!-- svelte-ignore a11y-click-events-have-key-events -->
-								<!-- svelte-ignore a11y-no-static-element-interactions -->
-								<tr
-									id="line-{lineNum}"
-									class="code-row"
-									class:target={highlightedSet.has(lineNum)}
-									on:click={(e) => handleLineClick(lineNum, e)}
-								>
-									<td class="td-ln">{lineNum}</td>
-									<td class="td-arrow">{lineNum === arrowLine ? '▶' : ''}</td>
-									<td class="td-code" class:wrap={wordWrap}><code>{@html line}</code></td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
+					<CodeViewer
+						{codeLines}
+						{lineOffsets}
+						{selection}
+						{wordWrap}
+						on:lineselect={(e) => {
+							selection = e.detail.selection;
+							dispatch('lineselect', e.detail);
+						}}
+					/>
 				{/if}
 			</div>
 		{/if}
@@ -431,60 +363,6 @@
 		flex: 1;
 		overflow: auto;
 		background: var(--bg);
-	}
-
-	.code-table {
-		width: 100%;
-		border-collapse: collapse;
-		font-family: var(--font-mono);
-		font-size: 13px;
-		line-height: 1.6;
-	}
-
-	.code-row {
-		border-left: 2px solid transparent;
-		cursor: pointer;
-	}
-
-	.code-row:hover {
-		background: var(--bg-hover, rgba(255, 255, 255, 0.04));
-	}
-
-	.code-row.target {
-		background: var(--match-line-bg);
-		border-left-color: var(--match-border);
-	}
-
-	.td-ln {
-		width: 1%;
-		min-width: 52px;
-		white-space: nowrap;
-		padding: 0 12px 0 8px;
-		text-align: right;
-		color: var(--text-dim);
-		user-select: none;
-		vertical-align: top;
-	}
-
-	.td-arrow {
-		width: 16px;
-		white-space: nowrap;
-		color: var(--accent);
-		font-size: 10px;
-		user-select: none;
-		vertical-align: top;
-	}
-
-	.td-code {
-		width: 100%;
-		padding: 0 16px 0 4px;
-		white-space: pre;
-		vertical-align: top;
-	}
-
-	.td-code.wrap {
-		white-space: pre-wrap;
-		word-break: break-word;
 	}
 
 	.toolbar {
@@ -610,87 +488,6 @@
 		display: none;
 	}
 
-	/* Image split view */
-	.image-split-panel {
-		flex: 1;
-		display: flex;
-		flex-direction: row;
-		overflow: hidden;
-		min-height: 0;
-	}
-
-	.image-split-left {
-		flex: 1;
-		overflow: auto;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		border-right: 1px solid var(--border, rgba(255, 255, 255, 0.1));
-		padding: 16px;
-		min-width: 0;
-	}
-
-	.image-split-img {
-		max-width: 100%;
-		max-height: 100%;
-		object-fit: contain;
-	}
-
-	.image-split-right {
-		width: 300px;
-		flex-shrink: 0;
-		overflow-y: auto;
-		padding: 12px 16px;
-		font-family: var(--font-mono);
-		font-size: 12px;
-		color: var(--text-muted);
-		background: var(--bg-secondary);
-	}
-
-	/* Image full-width view */
-	.image-full-panel {
-		flex: 1;
-		overflow: auto;
-		background: var(--bg);
-		display: flex;
-		align-items: flex-start;
-		justify-content: center;
-		padding: 16px;
-	}
-
-	.image-full {
-		max-width: 100%;
-		height: auto;
-		display: block;
-	}
-
-	/* Image placeholder (loading / error) */
-	.img-placeholder {
-		width: 100%;
-		min-height: 200px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 4px;
-		font-size: 12px;
-		color: var(--text-dim);
-	}
-
-	.img-placeholder--loading {
-		background: var(--bg-hover, rgba(255, 255, 255, 0.04));
-		animation: img-pulse 1.4s ease-in-out infinite;
-	}
-
-	.img-placeholder--error {
-		background: var(--bg-hover, rgba(255, 255, 255, 0.04));
-		color: var(--text-muted);
-	}
-
-	@keyframes img-pulse {
-		0%, 100% { opacity: 0.5; }
-		50%       { opacity: 1;   }
-	}
-
 	.pdf-loading {
 		flex: 1;
 		display: flex;
@@ -711,11 +508,7 @@
 		to { transform: rotate(360deg); }
 	}
 
-	.img-hidden {
-		display: none;
-	}
-
-.indexing-error-banner {
+	.indexing-error-banner {
 		padding: 8px 16px;
 		background: rgba(230, 162, 60, 0.12);
 		border-bottom: 1px solid rgba(230, 162, 60, 0.3);
@@ -737,147 +530,5 @@
 		color: var(--text-muted);
 		font-family: var(--font-mono);
 		word-break: break-all;
-	}
-
-	/* Markdown rendering styles — child selectors use :global() because the
-	   content is injected via {@html} and Svelte can't see those elements. */
-	.markdown-content {
-		padding: 32px 48px;
-		max-width: 900px;
-		margin: 0 auto;
-		color: var(--text);
-		line-height: 1.7;
-	}
-
-	.markdown-content :global(h1),
-	.markdown-content :global(h2),
-	.markdown-content :global(h3) {
-		border-bottom: 1px solid var(--border);
-		padding-bottom: 0.4em;
-		margin-top: 32px;
-		margin-bottom: 20px;
-		font-weight: 600;
-	}
-
-	.markdown-content :global(h1) {
-		font-size: 2em;
-		margin-top: 0;
-	}
-
-	.markdown-content :global(h2) {
-		font-size: 1.5em;
-	}
-
-	.markdown-content :global(h3) {
-		font-size: 1.25em;
-	}
-
-	.markdown-content :global(h4) {
-		font-size: 1.1em;
-		font-weight: 600;
-		margin-top: 24px;
-		margin-bottom: 16px;
-	}
-
-	.markdown-content :global(h5),
-	.markdown-content :global(h6) {
-		font-size: 1em;
-		font-weight: 600;
-		margin-top: 20px;
-		margin-bottom: 12px;
-	}
-
-	.markdown-content :global(a) {
-		color: var(--accent);
-		text-decoration: none;
-	}
-
-	.markdown-content :global(a:hover) {
-		text-decoration: underline;
-	}
-
-	.markdown-content :global(code) {
-		background: var(--bg-secondary);
-		padding: 0.2em 0.4em;
-		border-radius: 3px;
-		font-family: var(--font-mono);
-		font-size: 0.9em;
-	}
-
-	.markdown-content :global(pre) {
-		background: var(--bg-secondary);
-		padding: 16px;
-		border-radius: 6px;
-		overflow-x: auto;
-		margin: 20px 0;
-		line-height: 1.5;
-	}
-
-	.markdown-content :global(pre code) {
-		background: none;
-		padding: 0;
-	}
-
-	.markdown-content :global(blockquote) {
-		border-left: 4px solid var(--accent);
-		padding: 8px 0 8px 20px;
-		margin: 24px 0;
-		color: var(--text-muted);
-	}
-
-	.markdown-content :global(table) {
-		border-collapse: collapse;
-		width: 100%;
-		margin: 24px 0;
-	}
-
-	.markdown-content :global(th),
-	.markdown-content :global(td) {
-		border: 1px solid var(--border);
-		padding: 8px 12px;
-		text-align: left;
-	}
-
-	.markdown-content :global(th) {
-		background: var(--bg-secondary);
-		font-weight: 600;
-	}
-
-	.markdown-content :global(tr:nth-child(even)) {
-		background: var(--bg-hover);
-	}
-
-	.markdown-content :global(img) {
-		max-width: 100%;
-		height: auto;
-	}
-
-	.markdown-content :global(ul),
-	.markdown-content :global(ol) {
-		padding-left: 2em;
-		margin: 16px 0;
-	}
-
-	.markdown-content :global(li) {
-		margin: 6px 0;
-		line-height: 1.6;
-	}
-
-	.markdown-content :global(li > p) {
-		margin: 4px 0;
-	}
-
-	.markdown-content :global(p) {
-		margin: 16px 0;
-	}
-
-	.markdown-content :global(p:first-child) {
-		margin-top: 0;
-	}
-
-	.markdown-content :global(hr) {
-		border: none;
-		border-top: 1px solid var(--border);
-		margin: 32px 0;
 	}
 </style>
