@@ -1324,6 +1324,7 @@ name = "find-common"
 version = "0.6.1"
 dependencies = [
  "anyhow",
+ "find-extract-types",
  "libc",
  "regex",
  "serde",
@@ -1342,9 +1343,9 @@ dependencies = [
  "anyhow",
  "blake3",
  "bzip2",
- "find-common",
  "find-extract-dispatch",
  "find-extract-media",
+ "find-extract-types",
  "flate2",
  "serde",
  "serde_json",
@@ -1362,7 +1363,6 @@ name = "find-extract-dispatch"
 version = "0.6.1"
 dependencies = [
  "anyhow",
- "find-common",
  "find-extract-epub",
  "find-extract-html",
  "find-extract-media",
@@ -1370,6 +1370,7 @@ dependencies = [
  "find-extract-pdf",
  "find-extract-pe",
  "find-extract-text",
+ "find-extract-types",
  "infer",
  "serde_json",
  "tracing",
@@ -1381,7 +1382,7 @@ name = "find-extract-epub"
 version = "0.6.1"
 dependencies = [
  "anyhow",
- "find-common",
+ "find-extract-types",
  "quick-xml 0.37.5",
  "serde",
  "serde_json",
@@ -1395,7 +1396,7 @@ name = "find-extract-html"
 version = "0.6.1"
 dependencies = [
  "anyhow",
- "find-common",
+ "find-extract-types",
  "scraper",
  "serde",
  "serde_json",
@@ -1408,7 +1409,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "audio-video-metadata",
- "find-common",
+ "find-extract-types",
  "id3",
  "kamadak-exif",
  "metaflac",
@@ -1425,7 +1426,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "calamine",
- "find-common",
+ "find-extract-types",
  "quick-xml 0.37.5",
  "serde",
  "serde_json",
@@ -1439,7 +1440,7 @@ name = "find-extract-pdf"
 version = "0.6.1"
 dependencies = [
  "anyhow",
- "find-common",
+ "find-extract-types",
  "pdf-extract",
  "serde",
  "serde_json",
@@ -1452,7 +1453,7 @@ name = "find-extract-pe"
 version = "0.6.1"
 dependencies = [
  "anyhow",
- "find-common",
+ "find-extract-types",
  "pelite",
  "serde",
  "serde_json",
@@ -1465,12 +1466,19 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "content_inspector",
- "find-common",
+ "find-extract-types",
  "gray_matter",
  "serde",
  "serde_json",
  "serde_yaml",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "find-extract-types"
+version = "0.6.1"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

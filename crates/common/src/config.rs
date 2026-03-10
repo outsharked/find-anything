@@ -457,71 +457,27 @@ fn default_batch_bytes() -> usize            { client_defaults().scan.batch_byte
 fn default_batch_interval_secs() -> u64      { client_defaults().scan.batch_interval_secs }
 fn default_true() -> bool               { true }
 
-/// Configuration passed to extractor functions.
-///
-/// Bundles all per-extraction settings into one struct so that adding new
-/// options in the future only requires updating this struct and its
-/// construction site — not every function signature in the call chain.
-///
-/// Construction sites that don't care about a particular field can use
-/// `..ExtractorConfig::default()` to forward-compatibly inherit the defaults.
-#[derive(Debug, Clone, Copy)]
-pub struct ExtractorConfig {
-    /// Maximum content size in KB; content is truncated at this limit.
-    pub max_content_kb: usize,
-    /// Maximum archive nesting depth; prevents zip-bomb recursion.
-    pub max_depth: usize,
-    /// Maximum line length in characters for PDF extraction.
-    /// Long lines are wrapped at word boundaries. 0 = no wrapping.
-    pub max_line_length: usize,
-    /// Maximum size in MB of a temporary file used when extracting nested 7z
-    /// archives (which require a seekable file path) or oversized nested zips.
-    /// Guards against excessive disk use. Default: 500 MB.
-    pub max_temp_file_mb: usize,
-    /// When false (default), archive members whose path contains a dot-prefixed
-    /// component (e.g. `.terraform/`, `.git/`) are skipped entirely, consistent
-    /// with the filesystem walk's `include_hidden = false` behaviour.
-    pub include_hidden: bool,
-    /// Maximum total uncompressed size in MB of a 7z solid block before
-    /// falling back to filename-only extraction.  Maps to
-    /// `scan.archives.max_7z_solid_block_mb`.  Default: 256 MB.
-    pub max_7z_solid_block_mb: usize,
-}
+pub use find_extract_types::ExtractorConfig;
 
-impl Default for ExtractorConfig {
-    fn default() -> Self {
-        Self {
-            max_content_kb: 10 * 1024,
-            max_depth: default_max_archive_depth(),
-            max_line_length: default_max_line_length(),
-            max_temp_file_mb: default_max_archive_temp_file_mb(),
-            include_hidden: false,
-            max_7z_solid_block_mb: default_max_7z_solid_block_mb(),
-        }
+/// Build an `ExtractorConfig` from the scan section of the client config.
+pub fn extractor_config_from_scan(scan: &ScanConfig) -> ExtractorConfig {
+    ExtractorConfig {
+        max_content_kb: scan.max_content_size_mb as usize * 1024,
+        max_depth: scan.archives.max_depth,
+        max_line_length: scan.max_line_length,
+        max_temp_file_mb: scan.archives.max_temp_file_mb,
+        include_hidden: scan.include_hidden,
+        max_7z_solid_block_mb: scan.archives.max_7z_solid_block_mb,
     }
 }
 
-impl ExtractorConfig {
-    /// Build an `ExtractorConfig` from the scan section of the client config.
-    pub fn from_scan(scan: &ScanConfig) -> Self {
-        Self {
-            max_content_kb: scan.max_content_size_mb as usize * 1024,
-            max_depth: scan.archives.max_depth,
-            max_line_length: scan.max_line_length,
-            max_temp_file_mb: scan.archives.max_temp_file_mb,
-            include_hidden: scan.include_hidden,
-            max_7z_solid_block_mb: scan.archives.max_7z_solid_block_mb,
-        }
-    }
-
-    /// Build an `ExtractorConfig` from the server's extraction settings.
-    pub fn from_extraction(extraction: &ExtractionSettings) -> Self {
-        Self {
-            max_content_kb: extraction.max_content_size_mb as usize * 1024,
-            max_depth: extraction.max_archive_depth,
-            max_line_length: extraction.max_line_length,
-            ..Default::default()
-        }
+/// Build an `ExtractorConfig` from the server's extraction settings.
+pub fn extractor_config_from_extraction(extraction: &ExtractionSettings) -> ExtractorConfig {
+    ExtractorConfig {
+        max_content_kb: extraction.max_content_size_mb as usize * 1024,
+        max_depth: extraction.max_archive_depth,
+        max_line_length: extraction.max_line_length,
+        ..ExtractorConfig::default()
     }
 }
 

@@ -1,6 +1,6 @@
 use std::path::Path;
-use find_common::api::IndexLine;
-use find_common::config::ExtractorConfig;
+use find_extract_types::IndexLine;
+use find_extract_types::ExtractorConfig;
 use tracing::{warn, error};
 
 /// Extract text content from PDF files.
@@ -138,7 +138,7 @@ pub fn accepts(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use find_common::config::ExtractorConfig;
+    use find_extract_types::ExtractorConfig;
 
     fn test_cfg() -> ExtractorConfig {
         ExtractorConfig {

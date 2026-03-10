@@ -12,7 +12,7 @@ name = "find-extract-dispatch"
 path = "src/main.rs"
 
 [dependencies]
-find-common        = { path = "../../common" }
+find-extract-types = { path = "../../extract-types" }
 find-extract-text  = { path = "../text" }
 find-extract-pdf   = { path = "../pdf" }
 find-extract-media = { path = "../media" }

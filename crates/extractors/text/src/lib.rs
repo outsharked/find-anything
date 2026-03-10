@@ -1,8 +1,8 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-use find_common::api::IndexLine;
-use find_common::config::ExtractorConfig;
+use find_extract_types::IndexLine;
+use find_extract_types::ExtractorConfig;
 use gray_matter::{engine::YAML, Matter, Pod};
 
 /// Extract text content from a file.

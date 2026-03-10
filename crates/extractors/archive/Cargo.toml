@@ -12,7 +12,7 @@ name = "find-extract-archive"
 path = "src/main.rs"
 
 [dependencies]
-find-common = { path = "../../common" }
+find-extract-types = { path = "../../extract-types" }
 # Unified dispatch handles all member extraction
 find-extract-dispatch = { path = "../dispatch" }
 # Still needed for accepts() and is_archive_ext()

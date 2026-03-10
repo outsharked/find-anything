@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::process;
-use find_common::config::ExtractorConfig;
+use find_extract_types::ExtractorConfig;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 fn main() {

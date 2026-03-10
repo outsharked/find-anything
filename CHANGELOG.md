@@ -20,6 +20,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 - **Debug builds strip symbols** — `[profile.dev] debug = false` in the workspace `Cargo.toml`; eliminates ~90 GB of DWARF data from `target/debug`; re-enable with `debug = true` when a debugger is needed
 
+- **`find-extract-types` micro-crate** — moves `IndexLine`, `SCANNER_VERSION`, `detect_kind_from_ext`, `ExtractorConfig`, and `mem::available_bytes` into a new minimal crate that depends only on `serde`; all nine extractor crates now depend on `find-extract-types` instead of `find-common`; `find-common` re-exports everything at the same public paths for zero churn in server/client code; breaks the rebuild cascade so touching `api.rs` or `config.rs` no longer triggers a full 14-crate recompile of all extractors (~32 s → ~4 s incremental)
+
 ### Added
 
 - **Two-phase inbox processing (plan 053)** — inbox worker is now split into a single-threaded SQLite-only phase 1 (indexing) and a separate archive phase 2 (ZIP writes); phase 1 writes to SQLite only and moves the `.gz` to `inbox/to-archive/`; the archive thread batches up to `archive_batch_size` requests (default 200), coalesces last-writer-wins per path, rewrites ZIPs for pending chunk removes, appends new chunks, and updates line refs in a single transaction per source; eliminates WAL-mode SQLite deadlocks on WSL/network mounts caused by concurrent write connections; `pending_chunk_removes` table (schema v10) persists chunk refs between phases; per-source `source_lock` mutex in `SharedArchiveState` serialises SQLite writes between the two threads (held only during transactions, not during ZIP I/O)

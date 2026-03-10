@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/common",
+    "crates/extract-types",
     "crates/server",
     "crates/client",
     "crates/extractors/text",

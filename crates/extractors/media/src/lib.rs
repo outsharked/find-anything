@@ -2,8 +2,8 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use find_common::api::IndexLine;
-use find_common::config::ExtractorConfig;
+use find_extract_types::IndexLine;
+use find_extract_types::ExtractorConfig;
 use audio_video_metadata::{get_format_from_file, Metadata};
 use id3::TagLike;
 

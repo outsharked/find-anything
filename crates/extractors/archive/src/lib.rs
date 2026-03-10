@@ -8,8 +8,8 @@ use flate2::read::GzDecoder;
 use tracing::warn;
 use xz2::read::XzDecoder;
 
-use find_common::api::IndexLine;
-use find_common::config::ExtractorConfig;
+use find_extract_types::IndexLine;
+use find_extract_types::ExtractorConfig;
 
 /// One batch of lines for a single archive member, with its content hash.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -40,7 +40,7 @@ fn has_hidden_component(name: &str) -> bool {
     name.split('/').any(|c| c.starts_with('.') && c.len() > 1 && c != "..")
 }
 
-use find_common::mem::available_bytes as available_memory_bytes;
+use find_extract_types::mem::available_bytes as available_memory_bytes;
 
 /// Extract content from archive files (ZIP, TAR, TGZ, TBZ2, TXZ, GZ, BZ2, XZ, 7Z).
 ///

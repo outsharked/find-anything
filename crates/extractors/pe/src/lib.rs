@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use find_common::api::IndexLine;
-use find_common::config::ExtractorConfig;
+use find_extract_types::IndexLine;
+use find_extract_types::ExtractorConfig;
 
 /// Extract version information from PE bytes.
 ///

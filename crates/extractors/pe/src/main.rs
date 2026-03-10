@@ -1,6 +1,6 @@
 use std::io::{self, BufRead};
 use std::path::Path;
-use find_common::config::ExtractorConfig;
+use find_extract_types::ExtractorConfig;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 fn main() -> anyhow::Result<()> {

@@ -1,0 +1,7 @@
+[package]
+name = "find-extract-types"
+version = "0.6.1"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }

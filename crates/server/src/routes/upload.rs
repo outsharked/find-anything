@@ -11,7 +11,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use find_common::api::{UploadInitRequest, UploadInitResponse, UploadPatchResponse, UploadStatusResponse};
-use find_common::config::ExtractorConfig;
+use find_common::config::extractor_config_from_extraction;
 
 use crate::upload::{index_upload, part_path, part_size, read_meta, touch_meta, uploads_dir, write_meta, UploadMeta};
 use crate::AppState;
@@ -118,7 +118,7 @@ pub async fn upload_patch(
     if received >= meta.total_size {
         let data_dir = state.data_dir.clone();
         let extractor_dir = state.config.server.extractor_dir.clone();
-        let ext_cfg = ExtractorConfig::from_extraction(&state.config.extraction);
+        let ext_cfg = extractor_config_from_extraction(&state.config.extraction);
         let meta_clone = meta.clone();
         let id_clone = id.clone();
         tokio::spawn(async move {
