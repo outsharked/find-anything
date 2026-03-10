@@ -15,6 +15,18 @@ use crate::db;
 
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Configuration values for the inbox worker — plain scalars read from the
+/// server config at startup. Bundled into a struct so function signatures stay
+/// stable when new settings are added.
+#[derive(Clone, Copy)]
+pub struct WorkerConfig {
+    pub log_batch_detail_limit: usize,
+    pub request_timeout: std::time::Duration,
+    pub inline_threshold_bytes: u64,
+    pub archive_batch_size: usize,
+    pub activity_log_max_entries: usize,
+}
+
 /// Log a warning if `start` is older than `threshold_secs`.
 fn warn_slow(start: std::time::Instant, threshold_secs: u64, step: &str, context: &str) {
     let elapsed = start.elapsed();
@@ -72,15 +84,10 @@ pub async fn recover_stranded_requests(data_dir: &Path) -> Result<()> {
 /// Phase 2 (archive loop): a single archive thread batches up to
 /// `archive_batch_size` requests from `to-archive/`, coalesces work, rewrites
 /// ZIPs, and updates line refs in SQLite.
-#[allow(clippy::too_many_arguments)]
 pub async fn start_inbox_worker(
     data_dir: PathBuf,
+    cfg: WorkerConfig,
     status: StatusHandle,
-    log_batch_detail_limit: usize,
-    request_timeout: std::time::Duration,
-    inline_threshold_bytes: u64,
-    archive_batch_size: usize,
-    activity_log_max_entries: usize,
     shared_archive_state: Arc<SharedArchiveState>,
     inbox_paused: Arc<AtomicBool>,
     deleted_bytes_since_scan: Arc<AtomicU64>,
@@ -122,10 +129,7 @@ pub async fn start_inbox_worker(
                     &failed_dir,
                     &to_archive_dir_clone,
                     status.clone(),
-                    log_batch_detail_limit,
-                    request_timeout,
-                    inline_threshold_bytes,
-                    activity_log_max_entries,
+                    cfg,
                     &archive_notify,
                     Arc::clone(&shared),
                 )
@@ -168,13 +172,13 @@ pub async fn start_inbox_worker(
                     let db = Arc::clone(&deleted_bytes);
                     let dn = Arc::clone(&notify);
                     let batch_result = tokio::task::spawn_blocking(move || {
-                        run_archive_batch(&data, &to_archive, archive_batch_size, &sh, &db, &dn)
+                        run_archive_batch(&data, &to_archive, cfg, &sh, &db, &dn)
                     })
                     .await;
 
                     match batch_result {
                         Ok(Ok(processed)) => {
-                            if processed < archive_batch_size {
+                            if processed < cfg.archive_batch_size {
                                 break; // queue drained
                             }
                             // else loop immediately for next batch
@@ -275,10 +279,7 @@ async fn process_request_async(
     failed_dir: &Path,
     to_archive_dir: &Path,
     status: StatusHandle,
-    log_batch_detail_limit: usize,
-    request_timeout: std::time::Duration,
-    inline_threshold_bytes: u64,
-    activity_log_max_entries: usize,
+    cfg: WorkerConfig,
     archive_notify: &Arc<tokio::sync::Notify>,
     shared_archive_state: Arc<SharedArchiveState>,
 ) {
@@ -287,10 +288,10 @@ async fn process_request_async(
     let blocking_task = tokio::task::spawn_blocking({
         let data_dir = data_dir.to_path_buf();
         let request_path = request_path.to_path_buf();
-        move || process_request_phase1(&data_dir, &request_path, &status, log_batch_detail_limit, inline_threshold_bytes, activity_log_max_entries, &shared_archive_state)
+        move || process_request_phase1(&data_dir, &request_path, &status, cfg, &shared_archive_state)
     });
 
-    let timed_result = tokio::time::timeout(request_timeout, blocking_task).await;
+    let timed_result = tokio::time::timeout(cfg.request_timeout, blocking_task).await;
 
     if let Ok(mut guard) = status_reset.lock() {
         *guard = WorkerStatus::Idle;
@@ -300,13 +301,13 @@ async fn process_request_async(
         Err(_timeout) => {
             tracing::error!(
                 "Request processing timed out after {}s, abandoning: {}",
-                request_timeout.as_secs(),
+                cfg.request_timeout.as_secs(),
                 request_path.display(),
             );
             handle_failure(
                 request_path,
                 failed_dir,
-                anyhow::anyhow!("Processing timed out after {}s", request_timeout.as_secs()),
+                anyhow::anyhow!("Processing timed out after {}s", cfg.request_timeout.as_secs()),
             )
             .await;
         }
@@ -354,9 +355,7 @@ fn process_request_phase1(
     data_dir: &Path,
     request_path: &Path,
     status: &StatusHandle,
-    log_batch_detail_limit: usize,
-    inline_threshold_bytes: u64,
-    activity_log_max_entries: usize,
+    cfg: WorkerConfig,
     shared_archive_state: &Arc<SharedArchiveState>,
 ) -> Result<()> {
     let request_start = std::time::Instant::now();
@@ -385,7 +384,7 @@ fn process_request_phase1(
 
     tracing::debug!("{tag} start: {} files, {} deletes, {} renames", n_files, n_deletes, n_renames);
 
-    if n_files <= log_batch_detail_limit {
+    if n_files <= cfg.log_batch_detail_limit {
         for f in &request.files {
             tracing::info!("{tag} indexing {}", f.path);
         }
@@ -432,7 +431,7 @@ fn process_request_phase1(
             };
         }
         let file_start = std::time::Instant::now();
-        match process_file_phase1(&mut conn, file, inline_threshold_bytes) {
+        match process_file_phase1(&mut conn, file, cfg.inline_threshold_bytes) {
             Ok(()) => {
                 successfully_indexed.push(file.path.clone());
                 // Track adds vs modifies for the activity log.
@@ -456,7 +455,7 @@ fn process_request_phase1(
                 } else {
                     (filename_only_file(file), false)
                 };
-                if let Err(e2) = process_file_phase1_fallback(&mut conn, &fallback, skip_inner, inline_threshold_bytes) {
+                if let Err(e2) = process_file_phase1_fallback(&mut conn, &fallback, skip_inner, cfg.inline_threshold_bytes) {
                     if is_db_locked(&e2) {
                         tracing::warn!("Filename-only fallback also failed for {} (db locked, will retry): {e2:#}", file.path);
                     } else {
@@ -502,7 +501,7 @@ fn process_request_phase1(
             .filter(|r| !r.old_path.contains("::") && !r.new_path.contains("::"))
             .map(|r| (r.old_path.clone(), r.new_path.clone()))
             .collect();
-        if let Err(e) = db::log_activity(&conn, now, &activity_added, &activity_modified, &deleted, &renamed, activity_log_max_entries) {
+        if let Err(e) = db::log_activity(&conn, now, &activity_added, &activity_modified, &deleted, &renamed, cfg.activity_log_max_entries) {
             tracing::warn!("Failed to write activity log: {e:#}");
         }
     }
@@ -764,7 +763,7 @@ fn process_file_phase1_fallback(
 fn run_archive_batch(
     data_dir: &Path,
     to_archive_dir: &Path,
-    archive_batch_size: usize,
+    cfg: WorkerConfig,
     shared_archive_state: &Arc<SharedArchiveState>,
     deleted_bytes_since_scan: &Arc<AtomicU64>,
     delete_notify: &Arc<tokio::sync::Notify>,
@@ -788,7 +787,7 @@ fn run_archive_batch(
     }
 
     let batch: Vec<PathBuf> = gz_files.into_iter()
-        .take(archive_batch_size)
+        .take(cfg.archive_batch_size)
         .map(|(_, p)| p)
         .collect();
     let processed = batch.len();

@@ -180,22 +180,20 @@ async fn main() -> Result<()> {
 
     // Spawn the two-phase inbox worker.
     let worker_data_dir = data_dir.clone();
-    let log_batch_detail_limit = state.config.server.log_batch_detail_limit;
-    let request_timeout = std::time::Duration::from_secs(
-        state.config.server.inbox_request_timeout_secs,
-    );
-    let archive_batch_size = state.config.server.archive_batch_size;
-    let inline_threshold_bytes = state.config.server.inline_threshold_bytes;
-    let activity_log_max_entries = state.config.server.activity_log_max_entries;
+    let worker_cfg = worker::WorkerConfig {
+        log_batch_detail_limit: state.config.server.log_batch_detail_limit,
+        request_timeout: std::time::Duration::from_secs(
+            state.config.server.inbox_request_timeout_secs,
+        ),
+        inline_threshold_bytes: state.config.server.inline_threshold_bytes,
+        archive_batch_size: state.config.server.archive_batch_size,
+        activity_log_max_entries: state.config.server.activity_log_max_entries,
+    };
     tokio::spawn(async move {
         if let Err(e) = worker::start_inbox_worker(
             worker_data_dir,
+            worker_cfg,
             worker_status,
-            log_batch_detail_limit,
-            request_timeout,
-            inline_threshold_bytes,
-            archive_batch_size,
-            activity_log_max_entries,
             archive_state,
             inbox_paused,
             deleted_bytes_since_scan,

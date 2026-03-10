@@ -17,6 +17,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Changed
 
 - **`normalise_path_sep`/`normalise_root` deduplicated** — extracted from `scan.rs` and `watch.rs` into a shared `path_util` module; both binaries now use a single definition; unit tests added for UNC paths, composite `::` paths, bare drive letters, and mixed separators
+- **`WorkerConfig` struct** — the five scalar config values (`log_batch_detail_limit`, `request_timeout`, `inline_threshold_bytes`, `archive_batch_size`, `activity_log_max_entries`) are now bundled into a `WorkerConfig` struct; `start_inbox_worker` drops from 11 parameters to 7; adding new worker settings now only requires changing the struct definition and its construction site in `main.rs`
 
 - **Server worker log format** — indexer logs now use `[indexer:source:req_stem]` prefix with a single completion line per request (`indexed N files, M deletes, K renames, ...`); archive logs use `[archive:source]` per batch; intermediate "start", "Processing N deletes", "Processed N renames", and "Phase 1 complete" lines removed (start demoted to DEBUG); "Queued bulk request" in the bulk route demoted to DEBUG; archive batch suppresses the log entirely when nothing was archived or removed (eliminates "processed 0 files" noise from delete-only batches)
 
