@@ -435,16 +435,27 @@ async fn main() -> Result<()> {
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&files)?);
             } else if files.is_empty() {
-                println!("No files indexed yet.");
+                println!("No recent activity.");
             } else {
-                let label = if mtime { "modified" } else { "indexed" };
-                println!("Recently {label} ({} files):", files.len());
+                let label = if mtime { "modified" } else { "activity" };
+                println!("Recent {label} ({} files):", files.len());
                 for f in &files {
                     let ts = chrono::DateTime::from_timestamp(f.indexed_at, 0)
                         .map(|utc| chrono::DateTime::<chrono::Local>::from(utc)
                             .format("%Y-%m-%d %H:%M").to_string())
                         .unwrap_or_else(|| f.indexed_at.to_string());
-                    println!("  {}  [{}]  {}", ts, f.source, f.path);
+                    let action_label = match f.action.as_str() {
+                        "added"    => "+",
+                        "modified" => "~",
+                        "deleted"  => "-",
+                        "renamed"  => "→",
+                        _          => "?",
+                    };
+                    if let Some(new_path) = &f.new_path {
+                        println!("  {}  [{}]  {} {}  →  {}", ts, f.source, action_label, f.path, new_path);
+                    } else {
+                        println!("  {}  [{}]  {} {}", ts, f.source, action_label, f.path);
+                    }
                 }
             }
         }

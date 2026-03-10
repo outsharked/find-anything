@@ -32,7 +32,7 @@ pub fn build_index_files(
             line_number: 0,
             content: rel_path.clone(),
         });
-        return vec![IndexFile { path: rel_path, mtime, size: Some(size), kind, lines: all_lines, extract_ms: None, content_hash: None, scanner_version: SCANNER_VERSION }];
+        return vec![IndexFile { path: rel_path, mtime, size: Some(size), kind, lines: all_lines, extract_ms: None, content_hash: None, scanner_version: SCANNER_VERSION, is_new: false }];
     }
 
     // Group by archive_path.
@@ -64,6 +64,7 @@ pub fn build_index_files(
         extract_ms: None,
         content_hash: None,
         scanner_version: SCANNER_VERSION,
+        is_new: false,
     });
 
     // One IndexFile per archive member, with composite path "zip::member".
@@ -96,6 +97,7 @@ pub fn build_index_files(
             extract_ms: None,
             content_hash: None,
             scanner_version: SCANNER_VERSION,
+            is_new: false,
         });
     }
 
@@ -165,6 +167,7 @@ pub fn build_member_index_files(
             extract_ms: None,
             content_hash: content_hash.clone(),
             scanner_version: SCANNER_VERSION,
+            is_new: false,
         });
     }
     result

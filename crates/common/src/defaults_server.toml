@@ -18,6 +18,7 @@ log_batch_detail_limit = 5
 inbox_request_timeout_secs = 1800
 archive_batch_size = 200
 inline_threshold_bytes = 256
+activity_log_max_entries = 10000
 
 # ── Search ───────────────────────────────────────────────────────────────────
 

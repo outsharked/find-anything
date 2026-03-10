@@ -34,7 +34,8 @@ type SourceMap = Vec<(PathBuf, String, String, GlobSet)>;
 /// What to do with a path after debounce.
 #[derive(Debug)]
 enum AccumulatedKind {
-    Update,
+    Create, // OS create event (file definitely new)
+    Update, // OS modify event (or create→modify collapse)
     Delete,
 }
 
@@ -194,11 +195,12 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
             }
 
             match kind {
-                AccumulatedKind::Update => {
+                AccumulatedKind::Create | AccumulatedKind::Update => {
                     // Only process if it exists and is a regular file.
                     if !abs_path.is_file() {
                         continue;
                     }
+                    let is_new = matches!(kind, AccumulatedKind::Create);
                     if let Err(e) = handle_update(
                         &api,
                         &source_name,
@@ -206,6 +208,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
                         &rel_path,
                         &eff_scan,
                         &config.watch.extractor_dir,
+                        is_new,
                     )
                     .await
                     {
@@ -320,7 +323,7 @@ fn accumulate(pending: &mut HashMap<PathBuf, AccumulatedKind>, res: notify::Resu
 
     for path in event.paths {
         let new_kind = match &event.kind {
-            EventKind::Create(_) => AccumulatedKind::Update,
+            EventKind::Create(_) => AccumulatedKind::Create,
             // Data(_): inotify/kqueue — distinguishes data writes from metadata changes.
             // Any:     ReadDirectoryChangesW (Windows) — FILE_ACTION_MODIFIED maps here;
             //          Windows does not distinguish data vs metadata in this API.
@@ -343,9 +346,17 @@ fn accumulate(pending: &mut HashMap<PathBuf, AccumulatedKind>, res: notify::Resu
 
         match pending.entry(path) {
             Entry::Occupied(mut occ) => {
-                // Collapse: Update→Delete = Delete, Delete→Update = Update.
+                // Collapse accumulated kinds:
+                //   Create→Modify  = Create  (still a new file)
+                //   Create→Delete  = Delete  (created and immediately deleted)
+                //   Delete→Create  = Create  (deleted then re-created → new)
+                //   Update→Delete  = Delete
+                //   Delete→Update  = Update  (unknown history)
                 let existing = occ.get_mut();
                 *existing = match (&*existing, &new_kind) {
+                    (AccumulatedKind::Create, AccumulatedKind::Update) => AccumulatedKind::Create,
+                    (AccumulatedKind::Create, AccumulatedKind::Delete) => AccumulatedKind::Delete,
+                    (AccumulatedKind::Delete, AccumulatedKind::Create) => AccumulatedKind::Create,
                     (AccumulatedKind::Update, AccumulatedKind::Delete) => AccumulatedKind::Delete,
                     (AccumulatedKind::Delete, AccumulatedKind::Update) => AccumulatedKind::Update,
                     _ => new_kind,
@@ -419,6 +430,7 @@ async fn handle_update(
     rel_path: &str,
     eff_scan: &ScanConfig,
     extractor_dir: &Option<String>,
+    is_new: bool,
 ) -> Result<()> {
     info!("update: {}", rel_path);
 
@@ -437,6 +449,9 @@ async fn handle_update(
     let kind = detect_kind_from_ext(ext).to_string();
 
     let mut files = build_index_files(rel_path.to_string(), mtime, size, kind, lines);
+    if let Some(f) = files.first_mut() {
+        f.is_new = is_new;
+    }
 
     api.bulk(&BulkRequest {
         source: source_name.to_string(),
@@ -485,7 +500,7 @@ async fn process_renames(
 
     let dir_updates: Vec<PathBuf> = batch
         .iter()
-        .filter(|(p, k)| matches!(k, AccumulatedKind::Update) && p.is_dir())
+        .filter(|(p, k)| matches!(k, AccumulatedKind::Create | AccumulatedKind::Update) && p.is_dir())
         .map(|(p, _)| p.clone())
         .collect();
 
@@ -585,7 +600,7 @@ async fn process_renames(
             AccumulatedKind::Delete if !path.exists() => {
                 file_del_groups.entry(key).or_default().push(path.clone());
             }
-            AccumulatedKind::Update if path.is_file() => {
+            AccumulatedKind::Create | AccumulatedKind::Update if path.is_file() => {
                 file_upd_groups.entry(key).or_default().push(path.clone());
             }
             _ => {}

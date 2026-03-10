@@ -65,6 +65,7 @@ struct ServerSettingsDefaults {
     archive_batch_size: usize,
     inbox_request_timeout_secs: u64,
     inline_threshold_bytes: u64,
+    activity_log_max_entries: usize,
 }
 
 #[derive(Deserialize)]
@@ -585,6 +586,12 @@ pub struct ServerAppSettings {
     /// Default: 256.
     #[serde(default = "default_inline_threshold_bytes")]
     pub inline_threshold_bytes: u64,
+    /// Maximum number of activity-log entries retained per source database.
+    /// When a batch pushes the count over this limit, the oldest entries are
+    /// pruned.  Set to 0 to disable the activity log entirely.
+    /// Default: 10000.
+    #[serde(default = "default_activity_log_max_entries")]
+    pub activity_log_max_entries: usize,
 }
 
 fn default_bind() -> String { server_defaults().server.bind.clone() }
@@ -593,6 +600,7 @@ fn default_log_batch_detail_limit() -> usize     { server_defaults().server.log_
 fn default_inbox_request_timeout_secs() -> u64   { server_defaults().server.inbox_request_timeout_secs }
 fn default_archive_batch_size() -> usize         { server_defaults().server.archive_batch_size }
 fn default_inline_threshold_bytes() -> u64       { server_defaults().server.inline_threshold_bytes }
+fn default_activity_log_max_entries() -> usize   { server_defaults().server.activity_log_max_entries }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchSettings {

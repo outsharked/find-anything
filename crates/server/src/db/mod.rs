@@ -64,8 +64,17 @@ pub fn open(db_path: &Path) -> Result<Connection> {
             id           INTEGER PRIMARY KEY,
             archive_name TEXT NOT NULL,
             chunk_name   TEXT NOT NULL
-        );"
-    ).context("creating pending_chunk_removes table")?;
+        );
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at INTEGER NOT NULL,
+            action      TEXT    NOT NULL,
+            path        TEXT    NOT NULL,
+            new_path    TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_log_occurred_at
+            ON activity_log(occurred_at DESC);"
+    ).context("creating pending_chunk_removes and activity_log tables")?;
 
     Ok(conn)
 }
@@ -227,6 +236,77 @@ pub fn recent_files(conn: &Connection, limit: usize, sort_by_mtime: bool) -> Res
     let rows = stmt
         .query_map(params![limit as i64], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+// ── Activity log ─────────────────────────────────────────────────────────────
+
+/// Append activity-log entries for a batch of events and prune the log to
+/// `max_entries` total rows (oldest rows are deleted first).
+///
+/// Only outer-file paths (no `::`) are logged; composite archive-member paths
+/// are silently skipped.
+pub fn log_activity(
+    conn: &Connection,
+    now: i64,
+    added:    &[String],
+    modified: &[String],
+    deleted:  &[String],
+    renamed:  &[(String, String)], // (old_path, new_path)
+    max_entries: usize,
+) -> Result<()> {
+    if added.is_empty() && modified.is_empty() && deleted.is_empty() && renamed.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO activity_log (occurred_at, action, path, new_path) VALUES (?1, ?2, ?3, ?4)"
+        )?;
+        for path in added    { if !path.contains("::") { stmt.execute(params![now, "added",    path, None::<&str>])?; } }
+        for path in modified { if !path.contains("::") { stmt.execute(params![now, "modified", path, None::<&str>])?; } }
+        for path in deleted  { if !path.contains("::") { stmt.execute(params![now, "deleted",  path, None::<&str>])?; } }
+        for (old, new) in renamed {
+            if !old.contains("::") && !new.contains("::") {
+                stmt.execute(params![now, "renamed", old, Some(new.as_str())])?;
+            }
+        }
+    }
+    // Prune to max_entries, keeping the most recent rows.  Since IDs are
+    // monotonically increasing with a single worker, ORDER BY id ≈ ORDER BY occurred_at.
+    if max_entries > 0 {
+        tx.execute(
+            "DELETE FROM activity_log WHERE id NOT IN \
+             (SELECT id FROM activity_log ORDER BY id DESC LIMIT ?1)",
+            params![max_entries as i64],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// One row from the activity log: `(action, path, new_path, occurred_at)`.
+pub type ActivityRow = (String, String, Option<String>, i64);
+
+/// Return the `limit` most recent activity-log entries across outer files.
+pub fn recent_activity(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<ActivityRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT action, path, new_path, occurred_at FROM activity_log \
+         ORDER BY occurred_at DESC LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)

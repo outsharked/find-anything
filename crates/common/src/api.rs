@@ -170,6 +170,11 @@ pub struct IndexFile {
     /// `SCANNER_VERSION` by `find-scan --upgrade` to detect stale entries.
     #[serde(default)]
     pub scanner_version: u32,
+    /// True when the client knows this file did not previously exist in the index.
+    /// Used by the server to log "added" vs "modified" in the activity log.
+    /// Defaults to false (treated as a modify) when absent (older clients).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_new: bool,
 }
 
 /// One extraction failure reported by the client.
@@ -608,10 +613,20 @@ pub struct UpdateApplyResponse {
 pub struct RecentFile {
     pub source: String,
     /// Relative path within the source (outer files only; no `::` members).
+    /// For `action = "renamed"` this is the old (pre-rename) path.
     pub path: String,
-    /// Unix timestamp (seconds) when this file was last indexed.
+    /// Unix timestamp (seconds) when this event was recorded.
     pub indexed_at: i64,
+    /// What happened: `"added"`, `"modified"`, `"deleted"`, or `"renamed"`.
+    /// Defaults to `"added"` when reading from older servers that don't populate this field.
+    #[serde(default = "default_recent_action")]
+    pub action: String,
+    /// For `action = "renamed"`: the new (post-rename) path.  `None` for all other actions.
+    #[serde(default)]
+    pub new_path: Option<String>,
 }
+
+fn default_recent_action() -> String { "added".to_string() }
 
 /// `GET /api/v1/recent` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]

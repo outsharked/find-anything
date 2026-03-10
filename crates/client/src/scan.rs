@@ -184,6 +184,7 @@ pub async fn run_scan(
     for (rel_path, abs_path) in local_entries {
         // Check mtime before any further work so unchanged files are skipped cheaply.
         let mtime = mtime_of(abs_path).unwrap_or(0);
+        let mut is_new = false; // set inside the !subdir_rescan block when server_entry is known
         if !subdir_rescan {
             let server_entry = server_files.get(rel_path.as_str()).copied();
             let needs_index = match server_entry {
@@ -203,11 +204,12 @@ pub async fn run_scan(
                 }
                 continue;
             }
+            is_new = server_entry.is_none();
         }
 
         indexed += 1;
         if !opts.dry_run {
-            process_file(&mut ctx, rel_path, abs_path, mtime).await?;
+            process_file(&mut ctx, rel_path, abs_path, mtime, is_new).await?;
         }
         if last_log.elapsed() >= log_interval {
             let total = indexed + skipped;
@@ -331,7 +333,7 @@ impl<'a> ScanContext<'a> {
 /// Process one file: resolve its effective config, extract content via
 /// subprocess, handle OOM server-fallback, and accumulate the result in the
 /// batch. Called from both the `run_scan` loop and `scan_single_file`.
-async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path, mtime: i64) -> Result<()> {
+async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path, mtime: i64, is_new: bool) -> Result<()> {
     // Resolve effective config for this file's directory (cached).
     let eff_scan = resolve_effective_scan(abs_path, ctx.paths, &ctx.scan_arc, &mut ctx.dir_scan_cache);
 
@@ -397,6 +399,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
             extract_ms: None,
             content_hash: None, // no hash on start sentinel — avoids premature dedup alias
             scanner_version: SCANNER_VERSION,
+            is_new,
         };
         ctx.batch.push(outer_start);
         ctx.submit(vec![]).await?;
@@ -491,6 +494,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
             extract_ms: None,
             content_hash: outer_hash,
             scanner_version: SCANNER_VERSION,
+            is_new,
         });
     } else {
         // ── Non-archive extraction ────────────────────────────────────────────
@@ -554,6 +558,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
         if let Some(f) = index_files.first_mut() {
             f.extract_ms = Some(extract_ms);
             f.content_hash = content_hash;
+            f.is_new = is_new;
         }
         for file in index_files {
             let file_bytes: usize = file.lines.iter().map(|l| l.content.len()).sum();
@@ -590,7 +595,7 @@ pub async fn scan_single_file(
 ) -> Result<()> {
     let mtime = mtime_of(abs_path).unwrap_or(0);
     let mut ctx = ScanContext::new(api, source.name, source.paths, scan, opts.quiet, true);
-    process_file(&mut ctx, rel_path, abs_path, mtime).await?;
+    process_file(&mut ctx, rel_path, abs_path, mtime, false).await?;
     ctx.submit(vec![]).await?;
     info!("done");
     Ok(())

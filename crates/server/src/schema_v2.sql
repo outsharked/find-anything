@@ -84,3 +84,16 @@ CREATE TABLE IF NOT EXISTS pending_chunk_removes (
     archive_name TEXT NOT NULL,
     chunk_name   TEXT NOT NULL
 );
+
+-- Append-only activity log: records every add, modify, rename, and delete
+-- event for outer files (no '::' composite paths).  Used by GET /api/v1/recent
+-- so that deleted and renamed files remain visible for a configurable
+-- retention window (server.activity_log_max_entries, default 10000).
+CREATE TABLE IF NOT EXISTS activity_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at INTEGER NOT NULL,
+    action      TEXT    NOT NULL,  -- 'added', 'modified', 'deleted', 'renamed'
+    path        TEXT    NOT NULL,  -- for 'renamed': the old path
+    new_path    TEXT               -- only for 'renamed': the new path; NULL otherwise
+);
+CREATE INDEX IF NOT EXISTS idx_activity_log_occurred_at ON activity_log(occurred_at DESC);

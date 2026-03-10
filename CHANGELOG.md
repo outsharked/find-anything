@@ -9,6 +9,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **Activity log for `find-admin recent`** — each source DB now has an `activity_log` table recording add, modify, delete, and rename events for outer files; `GET /api/v1/recent` reads from it by default (falling back to `sort=mtime` for file-table ordering); `RecentFile` response gains `action` (`"added"` / `"modified"` / `"deleted"` / `"renamed"`) and `new_path` (for renames); `find-admin recent` output shows `+`/`~`/`-`/`→` action prefixes and old→new paths for renames; deleted and renamed files remain visible up to `server.activity_log_max_entries` events (default 10 000, pruned oldest-first)
+- **`IndexFile.is_new` field** — `find-scan` sets `is_new = true` when the server has no prior entry for a file (server_entry is None); `find-watch` adds `AccumulatedKind::Create` so OS create events are distinguished from modifies across the debounce window (`Create→Modify=Create`, `Create→Delete=Delete`, `Delete→Create=Create`); the server uses this field directly instead of a pre-batch DB lookup to log "added" vs "modified"
+
 ### Changed
 
 - **Debug builds strip symbols** — `[profile.dev] debug = false` in the workspace `Cargo.toml`; eliminates ~90 GB of DWARF data from `target/debug`; re-enable with `debug = true` when a debugger is needed

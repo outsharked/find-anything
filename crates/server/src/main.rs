@@ -186,6 +186,7 @@ async fn main() -> Result<()> {
     );
     let archive_batch_size = state.config.server.archive_batch_size;
     let inline_threshold_bytes = state.config.server.inline_threshold_bytes;
+    let activity_log_max_entries = state.config.server.activity_log_max_entries;
     tokio::spawn(async move {
         if let Err(e) = worker::start_inbox_worker(
             worker_data_dir,
@@ -194,6 +195,7 @@ async fn main() -> Result<()> {
             request_timeout,
             inline_threshold_bytes,
             archive_batch_size,
+            activity_log_max_entries,
             archive_state,
             inbox_paused,
             deleted_bytes_since_scan,

@@ -69,15 +69,31 @@ pub async fn get_recent(
                     return Ok(vec![]);
                 }
                 let conn = db::open(&db_path)?;
-                let rows = db::recent_files(&conn, limit, sort_by_mtime)?;
-                Ok(rows
-                    .into_iter()
-                    .map(|(path, indexed_at)| RecentFile {
-                        source: source_name.clone(),
-                        path,
-                        indexed_at,
-                    })
-                    .collect())
+                if sort_by_mtime {
+                    let rows = db::recent_files(&conn, limit, true)?;
+                    Ok(rows
+                        .into_iter()
+                        .map(|(path, indexed_at)| RecentFile {
+                            source: source_name.clone(),
+                            path,
+                            indexed_at,
+                            action: "modified".to_string(),
+                            new_path: None,
+                        })
+                        .collect())
+                } else {
+                    let rows = db::recent_activity(&conn, limit)?;
+                    Ok(rows
+                        .into_iter()
+                        .map(|(action, path, new_path, occurred_at)| RecentFile {
+                            source: source_name.clone(),
+                            path,
+                            indexed_at: occurred_at,
+                            action,
+                            new_path,
+                        })
+                        .collect())
+                }
             })
         })
         .collect();

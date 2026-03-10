@@ -136,6 +136,7 @@ pub async fn index_upload(
             extract_ms: None,
             content_hash: None,
             scanner_version: find_common::api::SCANNER_VERSION,
+            is_new: false,
         }],
         delete_paths: vec![],
         scan_timestamp: Some(now),

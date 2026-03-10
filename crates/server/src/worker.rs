@@ -80,6 +80,7 @@ pub async fn start_inbox_worker(
     request_timeout: std::time::Duration,
     inline_threshold_bytes: u64,
     archive_batch_size: usize,
+    activity_log_max_entries: usize,
     shared_archive_state: Arc<SharedArchiveState>,
     inbox_paused: Arc<AtomicBool>,
     deleted_bytes_since_scan: Arc<AtomicU64>,
@@ -124,6 +125,7 @@ pub async fn start_inbox_worker(
                     log_batch_detail_limit,
                     request_timeout,
                     inline_threshold_bytes,
+                    activity_log_max_entries,
                     &archive_notify,
                     Arc::clone(&shared),
                 )
@@ -276,6 +278,7 @@ async fn process_request_async(
     log_batch_detail_limit: usize,
     request_timeout: std::time::Duration,
     inline_threshold_bytes: u64,
+    activity_log_max_entries: usize,
     archive_notify: &Arc<tokio::sync::Notify>,
     shared_archive_state: Arc<SharedArchiveState>,
 ) {
@@ -284,7 +287,7 @@ async fn process_request_async(
     let blocking_task = tokio::task::spawn_blocking({
         let data_dir = data_dir.to_path_buf();
         let request_path = request_path.to_path_buf();
-        move || process_request_phase1(&data_dir, &request_path, &status, log_batch_detail_limit, inline_threshold_bytes, &shared_archive_state)
+        move || process_request_phase1(&data_dir, &request_path, &status, log_batch_detail_limit, inline_threshold_bytes, activity_log_max_entries, &shared_archive_state)
     });
 
     let timed_result = tokio::time::timeout(request_timeout, blocking_task).await;
@@ -353,6 +356,7 @@ fn process_request_phase1(
     status: &StatusHandle,
     log_batch_detail_limit: usize,
     inline_threshold_bytes: u64,
+    activity_log_max_entries: usize,
     shared_archive_state: &Arc<SharedArchiveState>,
 ) -> Result<()> {
     let request_start = std::time::Instant::now();
@@ -425,6 +429,8 @@ fn process_request_phase1(
 
     let mut server_side_failures: Vec<IndexingFailure> = Vec::new();
     let mut successfully_indexed: Vec<String> = Vec::new();
+    let mut activity_added: Vec<String> = Vec::new();
+    let mut activity_modified: Vec<String> = Vec::new();
     for file in &request.files {
         if let Ok(mut guard) = status.lock() {
             *guard = WorkerStatus::Processing {
@@ -436,6 +442,15 @@ fn process_request_phase1(
         match process_file_phase1(&mut conn, file, inline_threshold_bytes) {
             Ok(()) => {
                 successfully_indexed.push(file.path.clone());
+                // Track adds vs modifies for the activity log.
+                // Skip mtime=0 archive sentinels and composite archive-member paths.
+                if file.mtime != 0 && !file.path.contains("::") {
+                    if file.is_new {
+                        activity_added.push(file.path.clone());
+                    } else {
+                        activity_modified.push(file.path.clone());
+                    }
+                }
             }
             Err(e) => {
                 if is_db_locked(&e) {
@@ -482,6 +497,22 @@ fn process_request_phase1(
         now,
         request.scan_timestamp,
     )?;
+
+    // Log activity: adds/modifies were accumulated during the loop above;
+    // deletes and renames come directly from the request.
+    {
+        let deleted: Vec<String> = request.delete_paths.iter()
+            .filter(|p| !p.contains("::"))
+            .cloned()
+            .collect();
+        let renamed: Vec<(String, String)> = request.rename_paths.iter()
+            .filter(|r| !r.old_path.contains("::") && !r.new_path.contains("::"))
+            .map(|r| (r.old_path.clone(), r.new_path.clone()))
+            .collect();
+        if let Err(e) = db::log_activity(&conn, now, &activity_added, &activity_modified, &deleted, &renamed, activity_log_max_entries) {
+            tracing::warn!("Failed to write activity log: {e:#}");
+        }
+    }
 
     let elapsed = request_start.elapsed();
     let elapsed_secs = elapsed.as_secs_f64();
@@ -1066,6 +1097,7 @@ fn filename_only_file(file: &IndexFile) -> IndexFile {
         extract_ms: None,
         content_hash: None,
         scanner_version: file.scanner_version,
+        is_new: file.is_new,
     }
 }
 
@@ -1083,6 +1115,7 @@ fn outer_archive_stub(file: &IndexFile) -> IndexFile {
         extract_ms: None,
         content_hash: None,
         scanner_version: file.scanner_version,
+        is_new: file.is_new,
     }
 }
 
