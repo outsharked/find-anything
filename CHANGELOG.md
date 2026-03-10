@@ -17,6 +17,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Changed
 
 - **`normalise_path_sep`/`normalise_root` deduplicated** — extracted from `scan.rs` and `watch.rs` into a shared `path_util` module; both binaries now use a single definition; unit tests added for UNC paths, composite `::` paths, bare drive letters, and mixed separators
+- **`worker.rs` split into focused modules** — `worker.rs` (1,238 lines, 5 concerns) converted to a `worker/` directory; per-file SQLite writes extracted to `worker/pipeline.rs` (279 lines); archive-phase batch processing extracted to `worker/archive_batch.rs` (333 lines); `worker/mod.rs` retains only the inbox polling loop and request coordinator (657 lines)
 - **FileViewer sub-components** — `FileViewer.svelte` (883 lines) split into `ImageViewer.svelte`, `MarkdownViewer.svelte`, and `CodeViewer.svelte`; each sub-component owns its styles and local state; `FileViewer.svelte` reduced to ~490 lines acting as a dispatcher
 
 - **`WorkerConfig` struct** — the five scalar config values (`log_batch_detail_limit`, `request_timeout`, `inline_threshold_bytes`, `archive_batch_size`, `activity_log_max_entries`) are now bundled into a `WorkerConfig` struct; `start_inbox_worker` drops from 11 parameters to 7; adding new worker settings now only requires changing the struct definition and its construction site in `main.rs`
