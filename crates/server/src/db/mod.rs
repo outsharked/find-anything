@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, functions::FunctionFlags, params};
 
 use find_common::api::{ContextLine, FileRecord, IndexFile, PathRename};
+use find_common::path::{composite_like_prefix, is_composite};
 
 use crate::archive::{ArchiveManager, ChunkRef};
 
@@ -265,11 +266,11 @@ pub fn log_activity(
         let mut stmt = tx.prepare_cached(
             "INSERT INTO activity_log (occurred_at, action, path, new_path) VALUES (?1, ?2, ?3, ?4)"
         )?;
-        for path in added    { if !path.contains("::") { stmt.execute(params![now, "added",    path, None::<&str>])?; } }
-        for path in modified { if !path.contains("::") { stmt.execute(params![now, "modified", path, None::<&str>])?; } }
-        for path in deleted  { if !path.contains("::") { stmt.execute(params![now, "deleted",  path, None::<&str>])?; } }
+        for path in added    { if !is_composite(path) { stmt.execute(params![now, "added",    path, None::<&str>])?; } }
+        for path in modified { if !is_composite(path) { stmt.execute(params![now, "modified", path, None::<&str>])?; } }
+        for path in deleted  { if !is_composite(path) { stmt.execute(params![now, "deleted",  path, None::<&str>])?; } }
         for (old, new) in renamed {
-            if !old.contains("::") && !new.contains("::") {
+            if !is_composite(old) && !is_composite(new) {
                 stmt.execute(params![now, "renamed", old, Some(new.as_str())])?;
             }
         }
@@ -407,7 +408,7 @@ pub fn delete_files(
         tx.execute("DELETE FROM indexing_errors WHERE path = ?1", params![path])?;
         tx.execute(
             "DELETE FROM indexing_errors WHERE path LIKE ?1",
-            params![format!("{}::%", path)],
+            params![composite_like_prefix(path)],
         )?;
     }
 
@@ -437,10 +438,10 @@ fn delete_one_path(
 
     // Delete all inner archive members first (path LIKE 'x::%').
     // These are bulk-deleted without canonical promotion (they self-heal on next scan).
-    let inner_refs = collect_chunk_refs_for_pattern(tx, &format!("{}::%", path))?;
+    let inner_refs = collect_chunk_refs_for_pattern(tx, &composite_like_prefix(path))?;
     tx.execute(
         "DELETE FROM files WHERE path LIKE ?1",
-        params![format!("{}::%", path)],
+        params![composite_like_prefix(path)],
     )?;
     refs_to_remove.extend(inner_refs);
 

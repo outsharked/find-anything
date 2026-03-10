@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use find_common::api::{BulkRequest, IndexingFailure, WorkerStatus};
+use find_common::path::is_composite;
 
 use crate::archive::SharedArchiveState;
 use crate::db;
@@ -439,7 +440,7 @@ fn process_request_phase1(
                 successfully_indexed.push(file.path.clone());
                 // Track adds vs modifies for the activity log.
                 // Skip mtime=0 archive sentinels and composite archive-member paths.
-                if file.mtime != 0 && !file.path.contains("::") {
+                if file.mtime != 0 && !is_composite(&file.path) {
                     if file.is_new {
                         activity_added.push(file.path.clone());
                     } else {
@@ -497,11 +498,11 @@ fn process_request_phase1(
     // deletes and renames come directly from the request.
     {
         let deleted: Vec<String> = request.delete_paths.iter()
-            .filter(|p| !p.contains("::"))
+            .filter(|p| !is_composite(p))
             .cloned()
             .collect();
         let renamed: Vec<(String, String)> = request.rename_paths.iter()
-            .filter(|r| !r.old_path.contains("::") && !r.new_path.contains("::"))
+            .filter(|r| !is_composite(&r.old_path) && !is_composite(&r.new_path))
             .map(|r| (r.old_path.clone(), r.new_path.clone()))
             .collect();
         if let Err(e) = db::log_activity(&conn, now, &activity_added, &activity_modified, &deleted, &renamed, cfg.activity_log_max_entries) {

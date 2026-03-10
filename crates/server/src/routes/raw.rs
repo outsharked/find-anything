@@ -11,6 +11,8 @@ use serde::Deserialize;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
+use find_common::path::split_composite;
+
 use crate::AppState;
 
 use super::check_auth;
@@ -39,7 +41,7 @@ pub async fn get_raw(
     }
 
     // Archive member paths (contain "::") — extract from the outer ZIP.
-    if let Some((outer, member)) = params.path.split_once("::") {
+    if let Some((outer, member)) = split_composite(&params.path) {
         return serve_archive_member(
             &state, &params.source, outer, member, params.convert.as_deref(),
         ).await;
@@ -245,7 +247,7 @@ async fn serve_archive_member(
 
         // Nested member: outer.zip::inner.zip::file — extract the intermediate
         // ZIP from the outer archive, then extract the target file from that.
-        let (bytes, leaf_name) = if let Some((mid_path, leaf)) = member_name.split_once("::") {
+        let (bytes, leaf_name) = if let Some((mid_path, leaf)) = split_composite(&member_name) {
             // Step 1: read the intermediate ZIP from the outer archive.
             let mid_bytes = {
                 let mut mid_entry = match zip.by_name(mid_path) {

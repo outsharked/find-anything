@@ -2,6 +2,7 @@ pub mod api;
 pub mod config;
 pub mod logging;
 pub mod mem;
+pub mod path;
 pub mod subprocess;
 
 /// Returns the tool version string for `--version` output.

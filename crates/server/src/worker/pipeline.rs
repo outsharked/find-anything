@@ -7,6 +7,7 @@ use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 
 use find_common::api::{IndexFile, IndexLine};
+use find_common::path::{composite_like_prefix, is_composite};
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ pub(super) fn process_file_phase1_fallback(
 
     // If re-indexing an outer archive, delete stale inner members first (SQL only).
     if !skip_inner_delete && is_outer_archive(&file.path, &file.kind) && file.mtime == 0 {
-        let like_pat = format!("{}::%", file.path);
+        let like_pat = composite_like_prefix(&file.path);
         // Collect chunk refs for inner members and queue them for removal.
         let file_ids: Vec<i64> = {
             let mut stmt = conn.prepare("SELECT id FROM files WHERE path LIKE ?1")?;
@@ -234,7 +235,7 @@ pub(super) fn process_file_phase1_fallback(
 /// Returns `true` if `file` is a top-level archive (kind="archive" with no
 /// "::" in the path).
 pub(crate) fn is_outer_archive(path: &str, kind: &str) -> bool {
-    kind == "archive" && !path.contains("::")
+    kind == "archive" && !is_composite(path)
 }
 
 /// Build a fallback `IndexFile` that records only the file path (line 0).

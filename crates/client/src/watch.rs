@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use find_common::{
     api::{detect_kind_from_ext, BulkRequest, IndexFile, PathRename},
     config::{load_dir_override, ClientConfig, ScanConfig, SourceConfig},
+    path::is_composite,
 };
 
 use walkdir::WalkDir;
@@ -141,7 +142,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
             // Skip paths that contain '::' — those are archive member paths
             // managed server-side, not real filesystem paths.
             let path_str = abs_path.to_string_lossy();
-            if path_str.contains("::") {
+            if is_composite(&path_str) {
                 continue;
             }
 
@@ -564,7 +565,7 @@ async fn process_renames(
     let mut file_upd_groups: HashMap<GroupKey, Vec<PathBuf>> = HashMap::new();
 
     for (path, kind) in batch.iter() {
-        if path.to_string_lossy().contains("::") {
+        if is_composite(&path.to_string_lossy()) {
             continue;
         }
         let Some((src, _, _, _)) = find_source(path, source_map) else { continue };

@@ -9,6 +9,7 @@ use axum::{
 use serde::Deserialize;
 
 use find_common::api::FileResponse;
+use find_common::path::split_composite;
 
 use crate::{archive::ArchiveManager, db, AppState};
 
@@ -62,7 +63,7 @@ pub async fn get_file(
         // For archive members (path contains "::"), fall back to the outer archive's
         // error if no per-member error was recorded.
         let indexing_error = db::get_indexing_error(&conn, &full_path)?.or_else(|| {
-            let outer = full_path.split_once("::")?.0;
+            let (outer, _) = split_composite(&full_path)?;
             db::get_indexing_error(&conn, outer).ok().flatten()
         });
         Ok(Json(FileResponse { lines, file_kind: kind, total_lines, mtime, size, indexing_error }))

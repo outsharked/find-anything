@@ -12,6 +12,7 @@ use walkdir::WalkDir;
 use find_common::{
     api::{IndexFile, IndexLine, IndexingFailure, SCANNER_VERSION},
     config::{load_dir_override, ScanConfig},
+    path::is_composite,
 };
 
 use crate::api::ApiClient;
@@ -118,7 +119,7 @@ pub async fn run_scan(
         .list_files(source_name)
         .await?
         .into_iter()
-        .filter(|f| !f.path.contains("::"))
+        .filter(|f| !is_composite(&f.path))
         .filter(|f| match &source.subdir {
             None => true,
             Some(sub) => f.path == *sub || f.path.starts_with(&format!("{sub}/")),
