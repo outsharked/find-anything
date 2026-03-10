@@ -16,6 +16,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- **`normalise_path_sep`/`normalise_root` deduplicated** — extracted from `scan.rs` and `watch.rs` into a shared `path_util` module; both binaries now use a single definition; unit tests added for UNC paths, composite `::` paths, bare drive letters, and mixed separators
+
 - **Server worker log format** — indexer logs now use `[indexer:source:req_stem]` prefix with a single completion line per request (`indexed N files, M deletes, K renames, ...`); archive logs use `[archive:source]` per batch; intermediate "start", "Processing N deletes", "Processed N renames", and "Phase 1 complete" lines removed (start demoted to DEBUG); "Queued bulk request" in the bulk route demoted to DEBUG; archive batch suppresses the log entirely when nothing was archived or removed (eliminates "processed 0 files" noise from delete-only batches)
 
 - **Debug builds strip symbols** — `[profile.dev] debug = false` in the workspace `Cargo.toml`; eliminates ~90 GB of DWARF data from `target/debug`; re-enable with `debug = true` when a debugger is needed

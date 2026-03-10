@@ -285,33 +285,7 @@ fn is_excluded(abs_path: &Path, source_map: &SourceMap, excludes: &GlobSet) -> b
     false
 }
 
-/// On Windows, replace backslash separators with forward slashes so paths are
-/// stored consistently. On Unix, backslash is a valid filename character.
-#[cfg(windows)]
-fn normalise_path_sep(s: &str) -> String {
-    s.replace('\\', "/")
-}
-
-#[cfg(not(windows))]
-fn normalise_path_sep(s: &str) -> String {
-    s.to_string()
-}
-
-/// On Windows, normalise a bare drive letter like `"C:"` to `"C:/"` so that
-/// `starts_with` and `strip_prefix` work correctly against absolute paths.
-#[cfg(windows)]
-fn normalise_root(s: &str) -> String {
-    if s.len() == 2 && s.as_bytes()[1] == b':' {
-        format!("{s}/")
-    } else {
-        s.to_string()
-    }
-}
-
-#[cfg(not(windows))]
-fn normalise_root(s: &str) -> String {
-    s.to_string()
-}
+use crate::path_util::{normalise_path_sep, normalise_root};
 
 // ── Event accumulation ────────────────────────────────────────────────────────
 

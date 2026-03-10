@@ -2,6 +2,7 @@ mod api;
 mod batch;
 mod extract;
 mod lazy_header;
+mod path_util;
 mod scan;
 mod subprocess;
 mod upload;
@@ -119,7 +120,7 @@ async fn main() -> Result<()> {
         })?;
 
         if abs.is_file() {
-            let rel_path = scan::normalise_path_sep(&rel.to_string_lossy());
+            let rel_path = path_util::normalise_path_sep(&rel.to_string_lossy());
             tracing::info!("Scanning single file: {} (source: {}, rel: {})", abs.display(), source.name, rel_path);
             let scan_source = ScanSource {
                 name: &source.name,
@@ -130,7 +131,7 @@ async fn main() -> Result<()> {
             scan::scan_single_file(&client, &scan_source, &rel_path, &abs, &config.scan, &opts).await?;
         } else {
             // Directory: rescan all files under it, ignoring mtime.
-            let rel_path = scan::normalise_path_sep(&rel.to_string_lossy());
+            let rel_path = path_util::normalise_path_sep(&rel.to_string_lossy());
             let subdir = if rel_path.is_empty() { None } else { Some(rel_path.clone()) };
             let subdir_label = if rel_path.is_empty() { "(source root)" } else { &rel_path };
             tracing::info!(

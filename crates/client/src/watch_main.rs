@@ -1,5 +1,6 @@
 mod api;
 mod batch;
+mod path_util;
 mod subprocess;
 mod watch;
 

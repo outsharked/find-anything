@@ -905,36 +905,7 @@ fn relative_path(abs: &Path, roots: &[String]) -> String {
     normalise_path_sep(&abs.to_string_lossy())
 }
 
-/// On Windows, replace backslash separators with forward slashes so that
-/// paths are stored consistently regardless of platform. On Unix, backslash
-/// is a valid filename character and must not be replaced.
-#[cfg(windows)]
-pub fn normalise_path_sep(s: &str) -> String {
-    s.replace('\\', "/")
-}
-
-#[cfg(not(windows))]
-pub fn normalise_path_sep(s: &str) -> String {
-    s.to_string()
-}
-
-/// On Windows, normalise a bare drive letter like `"C:"` to `"C:/"` so that
-/// WalkDir walks the drive root (not the drive's current directory) and
-/// `strip_prefix` returns clean relative paths without a leading separator.
-/// On non-Windows this is a no-op.
-#[cfg(windows)]
-fn normalise_root(s: &str) -> String {
-    if s.len() == 2 && s.as_bytes()[1] == b':' {
-        format!("{s}/")
-    } else {
-        s.to_string()
-    }
-}
-
-#[cfg(not(windows))]
-fn normalise_root(s: &str) -> String {
-    s.to_string()
-}
+use crate::path_util::{normalise_path_sep, normalise_root};
 
 fn mtime_of(path: &Path) -> Option<i64> {
     path.metadata()
