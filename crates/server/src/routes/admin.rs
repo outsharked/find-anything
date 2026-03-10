@@ -40,6 +40,7 @@ pub async fn inbox_status(
 
     let inbox_dir = state.data_dir.join("inbox");
     let failed_dir = inbox_dir.join("failed");
+    let to_archive_dir = inbox_dir.join("to-archive");
 
     run_blocking("inbox_status", move || -> anyhow::Result<_> {
         let now = SystemTime::now();
@@ -72,10 +73,21 @@ pub async fn inbox_status(
             items
         };
 
+        let count_gz = |dir: &std::path::Path| -> usize {
+            std::fs::read_dir(dir)
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .filter(|e| e.path().extension().map(|x| x == "gz").unwrap_or(false))
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+
         let paused = state.inbox_paused.load(Ordering::Relaxed);
         let pending = read_items(&inbox_dir);
         let failed = read_items(&failed_dir);
-        Ok(Json(InboxStatusResponse { pending, failed, paused }))
+        let archive_queue = count_gz(&to_archive_dir);
+        Ok(Json(InboxStatusResponse { pending, failed, paused, archive_queue }))
     }).await
 }
 

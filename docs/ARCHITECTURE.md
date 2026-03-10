@@ -81,70 +81,120 @@ find-server
 ```
 find-scan → POST /api/v1/bulk (gzip JSON) → inbox/{id}.gz on disk
                                                     │
-                                         background worker (polls every 1s)
+                                   Phase 1: indexing thread (SQLite only)
+                                      delete old rows, queue chunk removes,
+                                      upsert files/lines/FTS5 (chunk_archive=NULL)
                                                     │
-                                   for each file: remove old chunks from ZIPs
+                                            inbox/to-archive/{id}.gz
                                                     │
-                                   chunk content → append to content_NNNNN.zip
-                                                    │
-                                   upsert files table + insert lines table + FTS5
+                                   Phase 2: archive thread (ZIP I/O)
+                                      remove old chunks from ZIPs,
+                                      chunk content → append to content_NNNNN.zip,
+                                      UPDATE lines SET chunk_archive=...
 ```
 
 Key invariants:
-- **All DB writes go through the inbox worker pool** — no route handler writes SQLite directly.
+- **All DB writes go through the inbox worker** — no route handler writes SQLite directly.
 - The bulk route handler only writes a `.gz` file to `data_dir/inbox/` and returns `202 Accepted`.
 - Within a `BulkRequest`, the worker processes **deletes first, then upserts** so renames work correctly.
-- A **stale-mtime guard** in the upsert path skips writing if the incoming `mtime` is older than what is already stored — defence against two workers processing the same file out of order.
 
 ---
 
-## Inbox Worker Pool
+## Two-Phase Inbox Processing
 
-The inbox is processed by a pool of N workers (default: 3, configurable via
-`inbox_workers` in `server.toml`). A single bounded channel (`capacity=256`)
-feeds all workers.
+Inbox processing is split into two phases handled by two independent threads.
+Files stay in `inbox/` until phase 1 completes; the router never pre-claims
+them into a separate directory.
 
 ```
 router loop (every 1 s)
   → scan inbox/, sort .gz files by mtime
-  → send each path to shared channel
+  → try_send to indexing worker (capacity-1 channel, non-blocking)
+  → track in-flight paths in HashSet to avoid re-dispatching
 
-worker 0 ──┐
-worker 1 ──┼── pull from channel → spawn_blocking(process_request) with timeout
-worker 2 ──┘
+Phase 1 — indexing thread (SQLite only, no ZIP I/O):
+  receive path → spawn_blocking(process_request_phase1) with timeout
+    → delete_files_phase1: remove DB rows, queue old chunk refs to
+      pending_chunk_removes table for phase 2
+    → upsert files/lines/FTS5 with NULL chunk_archive (deferred)
+    → inline small files (≤ inline_threshold_bytes) directly to file_content
+  → move .gz from inbox/ to inbox/to-archive/
+  → signal archive thread via Notify
+
+Phase 2 — archive thread (ZIP I/O + SQLite update):
+  wait for Notify (or 60 s timeout)
+  sleep 5 s to let queue accumulate
+  loop until drained:
+    read up to archive_batch_size .gz files from inbox/to-archive/
+    per source:
+      → take_pending_chunk_removes (clears pending removes table)
+      → rewrite ZIPs to remove old chunks
+      → coalesce upserts (last-writer-wins per path)
+      → append new content chunks to ZIPs
+      → UPDATE lines SET chunk_archive=... in a single transaction
+    → delete processed .gz files
 ```
 
-### Per-worker ZIP archives (`SharedArchiveState`)
+### Why two phases?
 
-Each worker owns its own **in-progress ZIP archive** for appending new chunks.
-Archive numbers are allocated from a shared `AtomicU32` counter
-(`SharedArchiveState`), so no two workers ever write to the same archive
-simultaneously on the append path — no locking needed there.
+SQLite WAL mode uses POSIX `fcntl` byte-range locks to coordinate writers.
+A critical POSIX property is that **a process cannot conflict with its own
+locks**: when two file descriptors in the same process try to acquire the same
+byte-range lock, the OS grants both immediately (same PID = same owner).
+This means two connections from the same process to the same SQLite file do
+not mutually exclude each other at the OS level, undermining WAL's write
+serialisation regardless of `busy_timeout`.
+
+The two-phase design avoids this by ensuring only one thread ever writes to a
+given source DB at a time — enforced by a per-source `Mutex` in application
+memory (see below), not by OS file locks.
+
+### Per-source write lock (`SharedArchiveState::source_locks`)
+
+`SharedArchiveState` holds a `Mutex<HashMap<String, Arc<Mutex<()>>>>` — one
+inner mutex per source name. Both the indexing thread and the archive thread
+**must hold this mutex for the duration of any SQLite write transaction** to
+that source's DB.
 
 ```
-worker 0 → content_00100.zip  (its exclusive write target)
-worker 1 → content_00101.zip
-worker 2 → content_00102.zip
+indexing thread                        archive thread
+───────────────────────────────────    ──────────────────────────────────
+acquire source_lock("music")           // phase 2a: drain pending removes
+  delete_files_phase1(...)             acquire source_lock("music")
+  upsert files/lines/FTS5               take_pending_chunk_removes(...)
+release source_lock("music")          release source_lock("music")
+                                       // ZIP I/O (no lock held)
+                                       rewrite ZIPs, append new chunks
+                                       // phase 2b: update line refs
+                                       acquire source_lock("music")
+                                         UPDATE lines SET chunk_archive=...
+                                       release source_lock("music")
 ```
 
-The only contention point is **rewriting** an old sealed archive to remove
-chunks during re-indexing or deletion. This is serialised via a per-archive
-`Mutex` stored in `SharedArchiveState::rewrite_locks`. Two workers rewriting
-different archives proceed in parallel; two workers rewriting the same archive
-are serialised.
+The lock is **released between** the two archive-thread write segments so ZIP
+I/O (potentially seconds) does not block the indexing thread. A plain
+`std::sync::Mutex` is used — no timeout, no filesystem involvement — so it
+waits indefinitely with no overhead and is immune to POSIX same-process lock
+semantics.
 
-`SharedArchiveState` is stored in `AppState` and shared between the worker
-pool and admin routes (e.g. `DELETE /api/v1/admin/source`) so that all
-rewrite locks are globally coordinated.
+### ZIP archive allocation (`SharedArchiveState`)
+
+The archive thread owns a single **in-progress ZIP archive** for appending.
+Archive numbers are allocated from a shared `AtomicU32` counter, so the
+archive thread and any concurrent admin operation never write to the same
+archive simultaneously on the append path.
+
+The only other contention point is **rewriting** a sealed archive to remove
+old chunks. This is serialised via a per-archive `Mutex` in
+`SharedArchiveState::rewrite_locks`. `SharedArchiveState` is stored in
+`AppState` and shared with admin routes (e.g. `DELETE /api/v1/admin/source`)
+so rewrite locks are globally coordinated.
 
 ### Timeout
 
-Each `spawn_blocking` call is wrapped in `tokio::time::timeout`
-(`inbox_request_timeout_secs`, default 1800 s / 30 min). If a blocking thread
-is stuck, the worker abandons it (the thread continues in the background —
-blocking threads cannot be cancelled), logs an error, moves the file to
-`inbox/failed/`, and picks up the next item. With N parallel workers a single
-stuck request no longer blocks the entire queue.
+The phase 1 `spawn_blocking` call is wrapped in `tokio::time::timeout`
+(`inbox_request_timeout_secs`, default 1800 s / 30 min). If the blocking
+thread hangs, the worker logs an error and moves the file to `inbox/failed/`.
 
 ---
 

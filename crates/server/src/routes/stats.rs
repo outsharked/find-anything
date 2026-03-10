@@ -20,6 +20,7 @@ pub async fn get_stats(
 
     let inbox_dir = state.data_dir.join("inbox");
     let failed_dir = inbox_dir.join("failed");
+    let to_archive_dir = inbox_dir.join("to-archive");
 
     let count_gz = |dir: &std::path::Path| -> usize {
         std::fs::read_dir(dir)
@@ -33,6 +34,7 @@ pub async fn get_stats(
 
     let inbox_pending = count_gz(&inbox_dir);
     let failed_requests = count_gz(&failed_dir);
+    let archive_queue = count_gz(&to_archive_dir);
 
     // Archive totals are maintained incrementally — instant reads, no I/O.
     let total_archives = state.archive_state.total_archives() as usize;
@@ -75,6 +77,7 @@ pub async fn get_stats(
         sources,
         inbox_pending,
         failed_requests,
+        archive_queue,
         total_archives,
         db_size_bytes,
         archive_size_bytes,

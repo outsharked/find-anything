@@ -181,6 +181,15 @@ pub struct IndexingFailure {
     pub error: String,
 }
 
+/// A file rename — old path to new path within the same source.
+/// Sent by the watcher when a file or directory is renamed. The server
+/// updates `files.path` without re-extracting content or touching ZIP archives.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathRename {
+    pub old_path: String,
+    pub new_path: String,
+}
+
 /// POST /api/v1/bulk request body.
 /// Combines upserts, deletes, and scan-complete into a single async operation.
 #[derive(Debug, Serialize, Deserialize)]
@@ -198,6 +207,11 @@ pub struct BulkRequest {
     /// Extraction failures encountered during this scan batch.
     #[serde(default)]
     pub indexing_failures: Vec<IndexingFailure>,
+    /// Path renames detected by the watcher. The server updates file paths in
+    /// the index without re-extracting content. Processed after deletes and
+    /// before upserts.
+    #[serde(default)]
+    pub rename_paths: Vec<PathRename>,
 }
 
 /// One search result.
@@ -454,6 +468,9 @@ pub struct StatsResponse {
     pub sources: Vec<SourceStats>,
     pub inbox_pending: usize,
     pub failed_requests: usize,
+    /// Number of requests waiting for the archive thread to write ZIP content.
+    #[serde(default)]
+    pub archive_queue: usize,
     pub total_archives: usize,
     /// Total on-disk size of all SQLite source databases (bytes).
     pub db_size_bytes: u64,
@@ -489,6 +506,10 @@ pub struct InboxStatusResponse {
     /// True when inbox processing has been paused via `POST /api/v1/admin/inbox/pause`.
     #[serde(default)]
     pub paused: bool,
+    /// Number of requests that have been indexed into SQLite but are waiting
+    /// for the archive thread to write their content to ZIP archives.
+    #[serde(default)]
+    pub archive_queue: usize,
 }
 
 /// `DELETE /api/v1/admin/inbox` response.

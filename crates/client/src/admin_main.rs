@@ -239,6 +239,8 @@ async fn main() -> Result<()> {
                     );
                 }
                 println!();
+                println!("Archive queue ({}): requests indexed, awaiting ZIP content write", status.archive_queue);
+                println!();
                 println!("Failed ({}):", status.failed.len());
                 for item in &status.failed {
                     println!(
@@ -476,7 +478,7 @@ fn format_status(stats: &find_common::api::StatsResponse) -> String {
         ).unwrap();
     }
     writeln!(out).unwrap();
-    writeln!(out, "Inbox:    {} pending, {} failed", stats.inbox_pending, stats.failed_requests).unwrap();
+    writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive", stats.inbox_pending, stats.failed_requests, stats.archive_queue).unwrap();
     writeln!(out, "Archives: {} ZIP files ({})", stats.total_archives, format_bytes(stats.archive_size_bytes)).unwrap();
     writeln!(out, "DB size:  {}", format_bytes(stats.db_size_bytes)).unwrap();
     match (stats.orphaned_bytes, stats.orphaned_stats_age_secs) {

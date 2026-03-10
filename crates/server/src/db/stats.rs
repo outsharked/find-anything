@@ -147,6 +147,79 @@ pub fn clear_errors_for_paths(conn: &Connection, paths: &[String]) -> Result<()>
     Ok(())
 }
 
+/// Consolidate all post-write cleanup into a **single** transaction to avoid
+/// the WAL POSIX lock deadlock on WSL / network mounts.
+///
+/// On these mount types issuing a second `BEGIN` on the same connection after a
+/// previous write transaction commits can hang indefinitely because the POSIX
+/// advisory lock left by the first commit is not reliably visible to the same
+/// file descriptor.  Merging all cleanup into one transaction means at most one
+/// extra write per request on the connection used for file/delete writes.
+///
+/// - `clear_paths`: indexing-error rows to delete (successfully indexed files).
+///   Deleted-path errors are handled inside `delete_files` and must not be
+///   passed here to avoid duplicating the DELETE.
+/// - `indexing_failures`: client- and server-side failures to record.
+/// - `scan_timestamp`: if set, update `last_scan` and snapshot scan history.
+pub fn do_cleanup_writes(
+    conn: &Connection,
+    clear_paths: &[String],
+    indexing_failures: &[IndexingFailure],
+    now: i64,
+    scan_timestamp: Option<i64>,
+) -> Result<()> {
+    let has_work = !clear_paths.is_empty()
+        || !indexing_failures.is_empty()
+        || scan_timestamp.is_some();
+    if !has_work {
+        return Ok(());
+    }
+
+    let tx = conn.unchecked_transaction()?;
+
+    if !clear_paths.is_empty() {
+        let mut stmt = tx.prepare_cached("DELETE FROM indexing_errors WHERE path = ?1")?;
+        for path in clear_paths {
+            stmt.execute(params![path])?;
+        }
+    }
+
+    if !indexing_failures.is_empty() {
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO indexing_errors (path, error, first_seen, last_seen, count)
+             VALUES (?1, ?2, ?3, ?3, 1)
+             ON CONFLICT(path) DO UPDATE SET
+               error     = excluded.error,
+               last_seen = excluded.last_seen,
+               count     = count + 1",
+        )?;
+        for f in indexing_failures {
+            stmt.execute(params![f.path, f.error, now])?;
+        }
+    }
+
+    if let Some(ts) = scan_timestamp {
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('last_scan', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![ts.to_string()],
+        )?;
+
+        // Snapshot current stats into scan_history within the same transaction.
+        // Reading inside an open write transaction is valid in WAL mode.
+        let (total_files, total_size, by_kind) = get_stats(&tx)?;
+        let by_kind_json = serde_json::to_string(&by_kind).context("serialising by_kind")?;
+        tx.execute(
+            "INSERT INTO scan_history (scanned_at, total_files, total_size, by_kind)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![ts, total_files as i64, total_size, by_kind_json],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
 /// Return a page of indexing errors ordered by `last_seen` descending.
 pub fn get_indexing_errors(
     conn: &Connection,

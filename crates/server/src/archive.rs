@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
-use zip::write::SimpleFileOptions;
+use zip::write::{SimpleFileOptions, FullFileOptions};
 
 const TARGET_ARCHIVE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 const CHUNK_SIZE: usize = 1024; // 1KB chunks
@@ -30,14 +30,10 @@ pub struct SharedArchiveState {
     archive_size_bytes: AtomicU64,
     /// Per-archive rewrite lock, keyed by absolute archive path.
     rewrite_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
-    /// Per-source DB write lock, keyed by source name.
-    ///
-    /// Workers acquire this for each delete chunk or file upsert and release
-    /// it immediately after — so a large request (e.g. 80 k deletes) holds the
-    /// lock for at most one chunk at a time, letting other workers on the same
-    /// source slip in between chunks.  This is necessary because SQLite's own
-    /// busy-timeout relies on POSIX advisory locks, which are unreliable on
-    /// some mount types (network shares, certain WSL mounts, etc.).
+    /// Per-source write serialisation lock.  Both the indexing thread and the
+    /// archive thread acquire this before any SQLite write to the source DB.
+    /// Released before (and re-acquired after) ZIP I/O so the two threads
+    /// cannot block each other on disk work.
     source_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -65,14 +61,6 @@ impl SharedArchiveState {
     /// Running sum of archive ZIP on-disk sizes in bytes (updated incrementally).
     pub fn archive_size_bytes(&self) -> u64 {
         self.archive_size_bytes.load(Ordering::Relaxed)
-    }
-
-    /// Return (creating if necessary) the write-serialisation mutex for `source`.
-    pub fn source_lock(&self, source: &str) -> Arc<Mutex<()>> {
-        let mut map = self.source_locks.lock().unwrap();
-        map.entry(source.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
     }
 
     /// Scan the content directory tree; return (max_archive_num, count, total_bytes).
@@ -115,6 +103,19 @@ impl SharedArchiveState {
             .clone()
     }
 
+    /// Return (or lazily create) the per-source write serialisation lock.
+    ///
+    /// Both the indexing thread and the archive thread must hold this mutex
+    /// for the duration of any SQLite write transaction to the named source DB.
+    /// The lock must be released before ZIP I/O so neither thread blocks the
+    /// other on disk work.
+    pub fn source_lock(&self, source: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.source_locks.lock().unwrap();
+        locks.entry(source.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     /// Compute the on-disk path for a given archive number.
     ///
     /// Archives are organised in thousands-based subfolders:
@@ -152,7 +153,8 @@ pub struct ArchiveManager {
 /// A chunk of file content to be stored
 #[derive(Debug, Clone)]
 pub struct Chunk {
-    pub file_path: String,
+    pub file_id: i64,
+    pub file_path: String,  // kept for ZIP entry comment
     pub chunk_number: usize,
     pub content: String,
 }
@@ -192,9 +194,9 @@ impl ArchiveManager {
 
         for chunk in chunks {
             let archive_path = self.current_archive_path()?;
-            let chunk_name = format!("{}.chunk{}.txt", chunk.file_path, chunk.chunk_number);
+            let chunk_name = format!("{}.{}", chunk.file_id, chunk.chunk_number);
 
-            self.append_to_zip(&archive_path, &chunk_name, chunk.content.as_bytes())?;
+            self.append_to_zip_with_comment(&archive_path, &chunk_name, chunk.content.as_bytes(), &chunk.file_path)?;
 
             refs.push(ChunkRef {
                 archive_name: archive_path
@@ -318,11 +320,11 @@ impl ArchiveManager {
         Ok(new_path)
     }
 
-    /// Append a single entry to a ZIP file.
+    /// Append a single entry to a ZIP file with an optional per-entry comment.
     ///
     /// If `entry_name` already exists (left over from a previous partial run),
     /// the existing entry is removed first so the write is idempotent.
-    fn append_to_zip(&self, archive_path: &Path, entry_name: &str, content: &[u8]) -> Result<()> {
+    fn append_to_zip_with_comment(&self, archive_path: &Path, entry_name: &str, content: &[u8], comment: &str) -> Result<()> {
         {
             let file = File::open(archive_path)?;
             let zip = ZipArchive::new(file)?;
@@ -343,9 +345,11 @@ impl ArchiveManager {
 
         let mut zip = ZipWriter::new_append(file)?;
 
-        let options = SimpleFileOptions::default()
+        let options: FullFileOptions<'_> = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(6));
+            .compression_level(Some(6))
+            .into_full_options()
+            .with_file_comment(comment);
 
         zip.start_file(entry_name, options)?;
         zip.write_all(content)?;
@@ -370,19 +374,22 @@ impl ArchiveManager {
         let temp_file = File::create(&temp_path)?;
         let mut new_zip = ZipWriter::new(temp_file);
 
-        let options = SimpleFileOptions::default()
+        let base_options = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(6));
+            .compression_level(Some(6))
+            .into_full_options();
 
         let mut bytes_freed: u64 = 0;
         for i in 0..old_zip.len() {
             let mut entry = old_zip.by_index(i)?;
             let name = entry.name().to_string();
+            let comment = entry.comment().to_string();
 
             if chunks_to_remove.contains(&name) {
                 bytes_freed += entry.compressed_size();
             } else {
-                new_zip.start_file(&name, options)?;
+                let entry_options = base_options.clone().with_file_comment(comment.as_str());
+                new_zip.start_file(&name, entry_options)?;
                 std::io::copy(&mut entry, &mut new_zip)?;
             }
         }
@@ -434,7 +441,7 @@ pub struct ChunkResult {
 }
 
 /// Chunk file content into fixed-size pieces, tracking where each line ends up
-pub fn chunk_lines(file_path: &str, lines: &[(usize, String)]) -> ChunkResult {
+pub fn chunk_lines(file_id: i64, file_path: &str, lines: &[(usize, String)]) -> ChunkResult {
     let mut chunks = Vec::new();
     let mut line_mappings = Vec::new();
     let mut current_chunk = String::new();
@@ -446,6 +453,7 @@ pub fn chunk_lines(file_path: &str, lines: &[(usize, String)]) -> ChunkResult {
 
         if current_chunk.len() + line_text.len() > CHUNK_SIZE && !current_chunk.is_empty() {
             chunks.push(Chunk {
+                file_id,
                 file_path: file_path.to_string(),
                 chunk_number,
                 content: current_chunk.clone(),
@@ -468,6 +476,7 @@ pub fn chunk_lines(file_path: &str, lines: &[(usize, String)]) -> ChunkResult {
 
     if !current_chunk.is_empty() {
         chunks.push(Chunk {
+            file_id,
             file_path: file_path.to_string(),
             chunk_number,
             content: current_chunk,
@@ -510,7 +519,7 @@ mod tests {
             (3, "c".repeat(500)),
         ];
 
-        let result = chunk_lines("/test/file.txt", &lines);
+        let result = chunk_lines(0, "/test/file.txt", &lines);
 
         assert_eq!(result.chunks.len(), 2);
         assert_eq!(result.chunks[0].chunk_number, 0);
@@ -534,7 +543,7 @@ mod tests {
     fn test_chunk_single_large_line() {
         let lines = vec![(1, "x".repeat(2000))];
 
-        let result = chunk_lines("/test/file.txt", &lines);
+        let result = chunk_lines(0, "/test/file.txt", &lines);
 
         assert_eq!(result.chunks.len(), 1);
         assert_eq!(result.line_mappings.len(), 1);

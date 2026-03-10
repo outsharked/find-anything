@@ -178,22 +178,22 @@ async fn main() -> Result<()> {
         tracing::error!("Failed to recover stranded requests: {e}");
     }
 
-    // Spawn the inbox worker pool.
+    // Spawn the two-phase inbox worker.
     let worker_data_dir = data_dir.clone();
     let log_batch_detail_limit = state.config.server.log_batch_detail_limit;
-    let num_workers = state.config.server.inbox_workers;
     let request_timeout = std::time::Duration::from_secs(
         state.config.server.inbox_request_timeout_secs,
     );
-    let delete_batch_size = state.config.server.inbox_delete_batch_size;
+    let archive_batch_size = state.config.server.archive_batch_size;
+    let inline_threshold_bytes = state.config.server.inline_threshold_bytes;
     tokio::spawn(async move {
         if let Err(e) = worker::start_inbox_worker(
             worker_data_dir,
             worker_status,
             log_batch_detail_limit,
-            num_workers,
             request_timeout,
-            delete_batch_size,
+            inline_threshold_bytes,
+            archive_batch_size,
             archive_state,
             inbox_paused,
             deleted_bytes_since_scan,

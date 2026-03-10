@@ -15,9 +15,9 @@
 bind = "127.0.0.1:8080"
 download_zip_member_levels = 2
 log_batch_detail_limit = 5
-inbox_workers = 3
 inbox_request_timeout_secs = 1800
-inbox_delete_batch_size = 100
+archive_batch_size = 200
+inline_threshold_bytes = 256
 
 # ── Search ───────────────────────────────────────────────────────────────────
 

@@ -143,8 +143,8 @@ pub fn fts_candidates(
         file_path: String,
         file_kind: String,
         line_number: usize,
-        chunk_archive: String,
-        chunk_name: String,
+        chunk_archive: Option<String>,
+        chunk_name: Option<String>,
         line_offset: usize,
         file_id: i64,
         mtime: i64,
@@ -212,12 +212,17 @@ pub fn fts_candidates(
         rows
     };
 
-    // Read content from ZIP archives, caching chunks to avoid redundant reads.
+    // Read content from ZIP archives or inline storage, caching chunks to avoid redundant reads.
     let mut chunk_cache: HashMap<(String, String), Vec<String>> = HashMap::new();
     let mut results = Vec::with_capacity(raw.len());
 
     for row in raw {
-        let content = read_chunk_lines(&mut chunk_cache, archive_mgr, &row.chunk_archive, &row.chunk_name)
+        let content = read_chunk_lines(
+            &mut chunk_cache, archive_mgr, conn,
+            row.file_id,
+            row.chunk_archive.as_deref(),
+            row.chunk_name.as_deref(),
+        )
             .get(row.line_offset)
             .cloned()
             .unwrap_or_default();
@@ -349,8 +354,8 @@ pub fn document_candidates(
         file_path: String,
         file_kind: String,
         line_number: usize,
-        chunk_archive: String,
-        chunk_name: String,
+        chunk_archive: Option<String>,
+        chunk_name: Option<String>,
         line_offset: usize,
         file_id: i64,
         mtime: i64,
@@ -388,8 +393,8 @@ pub fn document_candidates(
                 file_path:    row.get(0)?,
                 file_kind:    row.get(1)?,
                 line_number:  row.get::<_, i64>(2)? as usize,
-                chunk_archive: row.get(3)?,
-                chunk_name:   row.get(4)?,
+                chunk_archive: row.get::<_, Option<String>>(3)?,
+                chunk_name:   row.get::<_, Option<String>>(4)?,
                 line_offset:  row.get::<_, i64>(5)? as usize,
                 file_id,
                 mtime:        row.get(7)?,
@@ -414,7 +419,12 @@ pub fn document_candidates(
 
         // First row is the top FTS-ranked line → the representative.
         let rep_row = &rows[0];
-        let rep_content = read_chunk_lines(&mut chunk_cache, archive_mgr, &rep_row.chunk_archive, &rep_row.chunk_name)
+        let rep_content = read_chunk_lines(
+            &mut chunk_cache, archive_mgr, conn,
+            rep_row.file_id,
+            rep_row.chunk_archive.as_deref(),
+            rep_row.chunk_name.as_deref(),
+        )
             .get(rep_row.line_offset)
             .cloned()
             .unwrap_or_default();
@@ -445,7 +455,12 @@ pub fn document_candidates(
             if uncovered.is_empty() {
                 break;
             }
-            let content = read_chunk_lines(&mut chunk_cache, archive_mgr, &extra_row.chunk_archive, &extra_row.chunk_name)
+            let content = read_chunk_lines(
+                &mut chunk_cache, archive_mgr, conn,
+                extra_row.file_id,
+                extra_row.chunk_archive.as_deref(),
+                extra_row.chunk_name.as_deref(),
+            )
                 .get(extra_row.line_offset)
                 .cloned()
                 .unwrap_or_default();

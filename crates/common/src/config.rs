@@ -62,9 +62,9 @@ struct ServerSettingsDefaults {
     bind: String,
     download_zip_member_levels: usize,
     log_batch_detail_limit: usize,
-    inbox_workers: usize,
+    archive_batch_size: usize,
     inbox_request_timeout_secs: u64,
-    inbox_delete_batch_size: usize,
+    inline_threshold_bytes: u64,
 }
 
 #[derive(Deserialize)]
@@ -561,31 +561,33 @@ pub struct ServerAppSettings {
     /// only the count. Default: 5.
     #[serde(default = "default_log_batch_detail_limit")]
     pub log_batch_detail_limit: usize,
-    /// Total number of inbox workers. Each worker processes one request at a
-    /// time. Workers share a ZIP archive counter but never write to the same
-    /// archive simultaneously. Default: 3.
-    #[serde(default = "default_inbox_workers")]
-    pub inbox_workers: usize,
     /// Maximum seconds a single inbox request may run before the worker
     /// abandons it and moves the file to `failed/`. The blocking thread
     /// cannot be cancelled and continues in the background, but the worker
     /// slot is freed for new work. Default: 1800 (30 minutes).
     #[serde(default = "default_inbox_request_timeout_secs")]
     pub inbox_request_timeout_secs: u64,
-    /// Maximum number of file deletions to process in a single SQLite
-    /// transaction. Large delete batches are split into chunks of this size
-    /// so the database write lock is released between chunks, keeping other
-    /// workers responsive. Default: 100.
-    #[serde(default = "default_inbox_delete_batch_size")]
-    pub inbox_delete_batch_size: usize,
+    /// Number of `to-archive/` requests processed per archive-thread batch.
+    /// The archive thread coalesces work across all files in a batch before
+    /// doing ZIP rewrites, so larger batches reduce the number of rewrite passes.
+    /// Default: 200.
+    #[serde(default = "default_archive_batch_size")]
+    pub archive_batch_size: usize,
+    /// Files whose total extracted content is at or below this size (bytes) are
+    /// stored directly in SQLite (`file_content` table) rather than in ZIP archives.
+    /// This eliminates ZIP overhead for small files (config files, dotfiles, etc.)
+    /// and speeds up reads for them.  Set to 0 to disable inline storage.
+    /// Default: 256.
+    #[serde(default = "default_inline_threshold_bytes")]
+    pub inline_threshold_bytes: u64,
 }
 
 fn default_bind() -> String { server_defaults().server.bind.clone() }
 fn default_download_zip_member_levels() -> usize { server_defaults().server.download_zip_member_levels }
 fn default_log_batch_detail_limit() -> usize     { server_defaults().server.log_batch_detail_limit }
-fn default_inbox_workers() -> usize              { server_defaults().server.inbox_workers }
 fn default_inbox_request_timeout_secs() -> u64   { server_defaults().server.inbox_request_timeout_secs }
-fn default_inbox_delete_batch_size() -> usize    { server_defaults().server.inbox_delete_batch_size }
+fn default_archive_batch_size() -> usize         { server_defaults().server.archive_batch_size }
+fn default_inline_threshold_bytes() -> u64       { server_defaults().server.inline_threshold_bytes }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchSettings {

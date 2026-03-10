@@ -189,6 +189,7 @@ pub async fn submit_batch(
         delete_paths,
         scan_timestamp,
         indexing_failures,
+        rename_paths: vec![],
     })
     .await
 }

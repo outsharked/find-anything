@@ -255,7 +255,7 @@ pub fn compact_archives(
 
 /// Rewrite `archive_path` omitting the named entries.
 fn rewrite_without(archive_path: &Path, to_remove: &HashSet<String>) -> Result<()> {
-    use zip::write::SimpleFileOptions;
+    use zip::write::{FullFileOptions, SimpleFileOptions};
     use zip::{CompressionMethod, ZipWriter};
 
     let temp_path = archive_path.with_extension("zip.tmp");
@@ -264,13 +264,16 @@ fn rewrite_without(archive_path: &Path, to_remove: &HashSet<String>) -> Result<(
         let mut old_zip = ZipArchive::new(src_file)?;
         let tmp_file = File::create(&temp_path)?;
         let mut new_zip = ZipWriter::new(tmp_file);
-        let opts = SimpleFileOptions::default()
+        let base_opts: FullFileOptions<'_> = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(6));
+            .compression_level(Some(6))
+            .into_full_options();
         for i in 0..old_zip.len() {
             let mut entry = old_zip.by_index(i)?;
             if !to_remove.contains(entry.name()) {
-                new_zip.start_file(entry.name(), opts)?;
+                let comment = entry.comment().to_string();
+                let entry_opts = base_opts.clone().with_file_comment(comment.as_str());
+                new_zip.start_file(entry.name(), entry_opts)?;
                 std::io::copy(&mut entry, &mut new_zip)?;
             }
         }

@@ -32,14 +32,23 @@ CREATE TABLE IF NOT EXISTS lines (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id              INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     line_number          INTEGER NOT NULL,
-    chunk_archive        TEXT    NOT NULL,  -- e.g., "content_00001.zip"
-    chunk_name           TEXT    NOT NULL,  -- e.g., "path/to/file.chunk0.txt"
-    line_offset_in_chunk INTEGER NOT NULL   -- which line within the chunk (0-indexed)
+    chunk_archive        TEXT,    -- NULL for inline-stored files; "content_00001.zip" for ZIP-stored
+    chunk_name           TEXT,    -- NULL for inline-stored files; "{file_id}.{chunk_number}" for ZIP-stored
+    line_offset_in_chunk INTEGER NOT NULL   -- line index within chunk (0-indexed)
 );
 
 CREATE INDEX IF NOT EXISTS lines_file_id   ON lines(file_id);
 CREATE INDEX IF NOT EXISTS lines_file_line ON lines(file_id, line_number);
-CREATE INDEX IF NOT EXISTS lines_chunk     ON lines(chunk_archive, chunk_name);
+CREATE INDEX IF NOT EXISTS lines_chunk     ON lines(chunk_archive, chunk_name)
+    WHERE chunk_archive IS NOT NULL;
+
+-- Inline content for small files (below inline_threshold_bytes server setting).
+-- Only populated when chunk_archive/chunk_name are NULL in the lines table.
+-- Kept separate from `files` to avoid row-width bloat on the heavily-scanned files table.
+CREATE TABLE IF NOT EXISTS file_content (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    content TEXT NOT NULL
+);
 
 -- FTS5 table with content='' (no content storage, index only)
 CREATE VIRTUAL TABLE IF NOT EXISTS lines_fts USING fts5(
@@ -66,4 +75,12 @@ CREATE TABLE IF NOT EXISTS scan_history (
     total_files INTEGER NOT NULL,
     total_size  INTEGER NOT NULL,
     by_kind     TEXT    NOT NULL
+);
+
+-- Chunk references queued for removal by the archive thread.
+-- Phase 1 (indexing thread) inserts rows here; phase 2 (archive thread) drains them.
+CREATE TABLE IF NOT EXISTS pending_chunk_removes (
+    id           INTEGER PRIMARY KEY,
+    archive_name TEXT NOT NULL,
+    chunk_name   TEXT NOT NULL
 );

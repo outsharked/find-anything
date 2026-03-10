@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -10,9 +10,11 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use find_common::{
-    api::{detect_kind_from_ext, BulkRequest},
+    api::{detect_kind_from_ext, BulkRequest, IndexFile, PathRename},
     config::{load_dir_override, ClientConfig, ScanConfig, SourceConfig},
 };
+
+use walkdir::WalkDir;
 
 use crate::api::ApiClient;
 use crate::batch::build_index_files;
@@ -109,7 +111,11 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
         }
 
         // Flush accumulated events.
-        let batch = std::mem::take(&mut pending);
+        let mut batch = std::mem::take(&mut pending);
+
+        // Detect rename pairs and process them; removes paired entries from batch.
+        process_renames(&mut batch, &source_map, &config.scan, &config.watch.extractor_dir, &api).await;
+
         for (abs_path, kind) in batch {
             // Skip paths that contain '::' — those are archive member paths
             // managed server-side, not real filesystem paths.
@@ -414,6 +420,7 @@ async fn handle_update(
         delete_paths: vec![],
         scan_timestamp: None,
         indexing_failures: vec![],
+        rename_paths: vec![],
     })
     .await
 }
@@ -429,6 +436,291 @@ async fn handle_delete(
         source: source_name.to_string(),
         files: vec![],
         delete_paths: vec![rel_path.to_string()],
+        scan_timestamp: None,
+        indexing_failures: vec![],
+        rename_paths: vec![],
+    })
+    .await
+}
+
+// ── Rename detection ─────────────────────────────────────────────────────────
+
+/// Detect rename pairs in a debounce-flush batch and send the appropriate
+/// `BulkRequest`s. Removes handled entries from `batch` so the caller's
+/// fallback loop can process remaining events with standard delete/update logic.
+async fn process_renames(
+    batch: &mut HashMap<PathBuf, AccumulatedKind>,
+    source_map: &SourceMap,
+    global_scan: &ScanConfig,
+    extractor_dir: &Option<String>,
+    api: &ApiClient,
+) {
+    // --- Directory rename detection ---
+    // Look for a Delete path paired with an Update path that is a directory,
+    // in the same parent directory and the same source (1:1 per parent).
+
+    let dir_updates: Vec<PathBuf> = batch
+        .iter()
+        .filter(|(p, k)| matches!(k, AccumulatedKind::Update) && p.is_dir())
+        .map(|(p, _)| p.clone())
+        .collect();
+
+    let deletes: Vec<PathBuf> = batch
+        .iter()
+        .filter(|(_, k)| matches!(k, AccumulatedKind::Delete))
+        .map(|(p, _)| p.clone())
+        .collect();
+
+    // Index directory updates by parent.
+    let mut dir_upd_by_parent: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for p in &dir_updates {
+        if let Some(parent) = p.parent() {
+            dir_upd_by_parent.entry(parent.to_path_buf()).or_default().push(p.clone());
+        }
+    }
+
+    // Index deletes by parent.
+    let mut del_by_parent: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for p in &deletes {
+        if let Some(parent) = p.parent() {
+            del_by_parent.entry(parent.to_path_buf()).or_default().push(p.clone());
+        }
+    }
+
+    let mut handled: HashSet<PathBuf> = HashSet::new();
+
+    for (parent, del_paths) in &del_by_parent {
+        let Some(upd_dirs) = dir_upd_by_parent.get(parent) else { continue };
+        // Only pair when exactly 1 delete and 1 directory update share this parent.
+        if del_paths.len() != 1 || upd_dirs.len() != 1 {
+            continue;
+        }
+        let old_dir = &del_paths[0];
+        let new_dir = &upd_dirs[0];
+
+        let Some((source_name, old_rel_dir, source_root, source_includes)) =
+            find_source(old_dir, source_map)
+        else {
+            continue;
+        };
+        let Some((new_source_name, new_rel_dir, _, _)) = find_source(new_dir, source_map) else {
+            continue;
+        };
+        if source_name != new_source_name {
+            continue;
+        }
+
+        if let Err(e) = handle_dir_rename(
+            api,
+            &source_name,
+            old_dir,
+            new_dir,
+            &old_rel_dir,
+            &new_rel_dir,
+            &source_root,
+            source_includes,
+            global_scan,
+            extractor_dir,
+        )
+        .await
+        {
+            warn!("dir rename {} → {}: {e:#}", old_dir.display(), new_dir.display());
+        }
+
+        // Mark the directory entries and all child events as handled.
+        handled.insert(old_dir.clone());
+        handled.insert(new_dir.clone());
+        let keys: Vec<PathBuf> = batch.keys().cloned().collect();
+        for path in keys {
+            if path.starts_with(old_dir) || path.starts_with(new_dir) {
+                handled.insert(path);
+            }
+        }
+    }
+
+    for p in &handled {
+        batch.remove(p);
+    }
+
+    // --- Single file rename detection ---
+    // Group remaining Delete+Update pairs by (source_name, parent_dir).
+    // Pairs with exactly 1 delete and 1 file-update per group are treated as renames.
+
+    type GroupKey = (String, PathBuf);
+    let mut file_del_groups: HashMap<GroupKey, Vec<PathBuf>> = HashMap::new();
+    let mut file_upd_groups: HashMap<GroupKey, Vec<PathBuf>> = HashMap::new();
+
+    for (path, kind) in batch.iter() {
+        if path.to_string_lossy().contains("::") {
+            continue;
+        }
+        let Some((src, _, _, _)) = find_source(path, source_map) else { continue };
+        let Some(parent) = path.parent() else { continue };
+        let key = (src, parent.to_path_buf());
+        match kind {
+            AccumulatedKind::Delete if !path.exists() => {
+                file_del_groups.entry(key).or_default().push(path.clone());
+            }
+            AccumulatedKind::Update if path.is_file() => {
+                file_upd_groups.entry(key).or_default().push(path.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let mut file_handled: HashSet<PathBuf> = HashSet::new();
+
+    for (key, del_paths) in &file_del_groups {
+        if del_paths.len() != 1 {
+            continue;
+        }
+        let Some(upd_paths) = file_upd_groups.get(key) else { continue };
+        if upd_paths.len() != 1 {
+            continue;
+        }
+        let old_path = &del_paths[0];
+        let new_path = &upd_paths[0];
+
+        let Some((source_name, old_rel, source_root, source_includes)) =
+            find_source(old_path, source_map)
+        else {
+            continue;
+        };
+        let Some((_, new_rel, _, _)) = find_source(new_path, source_map) else { continue };
+
+        // Check source-level include for new path.
+        if !source_includes.is_empty() && !source_includes.is_match(&*new_rel) {
+            continue; // excluded by source include — fall back to plain delete
+        }
+
+        // Check per-directory config for new path.
+        let (eff_scan, skip) = resolve_watch_config(new_path, &source_root, global_scan);
+        if skip {
+            continue; // .noindex subtree — fall back to plain delete
+        }
+        let eff_excludes = match build_globset(&eff_scan.exclude) {
+            Ok(gs) => gs,
+            Err(_) => continue,
+        };
+        if is_excluded(new_path, source_map, &eff_excludes) {
+            continue; // excluded by per-dir glob — fall back to plain delete
+        }
+
+        info!("rename: {} → {}", old_rel, new_rel);
+        if let Err(e) = api
+            .bulk(&BulkRequest {
+                source: source_name,
+                files: vec![],
+                delete_paths: vec![],
+                rename_paths: vec![PathRename { old_path: old_rel, new_path: new_rel }],
+                scan_timestamp: None,
+                indexing_failures: vec![],
+            })
+            .await
+        {
+            warn!("rename {}: {e:#}", old_path.display());
+            continue; // leave in batch — fall back to plain delete + re-index
+        }
+
+        file_handled.insert(old_path.clone());
+        file_handled.insert(new_path.clone());
+    }
+
+    for p in &file_handled {
+        batch.remove(p);
+    }
+}
+
+/// Walk `new_dir` on disk, re-evaluate include/exclude rules for each file,
+/// and emit a single `BulkRequest` covering renames, deletes, and new upserts.
+#[allow(clippy::too_many_arguments)]
+async fn handle_dir_rename(
+    api: &ApiClient,
+    source_name: &str,
+    _old_dir: &Path,
+    new_dir: &Path,
+    old_rel_dir: &str,
+    new_rel_dir: &str,
+    source_root: &Path,
+    source_includes: &GlobSet,
+    global_scan: &ScanConfig,
+    extractor_dir: &Option<String>,
+) -> Result<()> {
+    let mut rename_paths: Vec<PathRename> = Vec::new();
+    let mut delete_paths: Vec<String> = Vec::new();
+    let mut new_files: Vec<IndexFile> = Vec::new();
+
+    for entry in WalkDir::new(new_dir).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let new_abs = entry.path();
+        let sub_path = match new_abs.strip_prefix(new_dir) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let sub_str = normalise_path_sep(&sub_path.to_string_lossy());
+        let new_rel = if new_rel_dir.is_empty() {
+            sub_str.clone()
+        } else {
+            format!("{}/{}", new_rel_dir, sub_str)
+        };
+        let old_rel = if old_rel_dir.is_empty() {
+            sub_str.clone()
+        } else {
+            format!("{}/{}", old_rel_dir, sub_str)
+        };
+
+        // Evaluate inclusion for the new path.
+        let new_source_included =
+            source_includes.is_empty() || source_includes.is_match(&*new_rel);
+        let (new_eff_scan, new_skip) = resolve_watch_config(new_abs, source_root, global_scan);
+        let new_eff_excludes = build_globset(&new_eff_scan.exclude).unwrap_or_default();
+        let new_included =
+            new_source_included && !new_skip && !new_eff_excludes.is_match(&*new_rel);
+
+        // Evaluate source-level inclusion for the old path (old dir is gone; only
+        // source-glob check is possible — .noindex/.index files move with the rename).
+        let old_source_included =
+            source_includes.is_empty() || source_includes.is_match(&*old_rel);
+
+        if new_included && old_source_included {
+            // Was included, still included → rename.
+            rename_paths.push(PathRename { old_path: old_rel, new_path: new_rel });
+        } else if !new_included && old_source_included {
+            // Was included, now excluded → delete from index.
+            delete_paths.push(old_rel);
+        } else if new_included && !old_source_included {
+            // Was excluded, now included → full re-extraction.
+            let lines = match subprocess::extract_via_subprocess(
+                new_abs,
+                &new_eff_scan,
+                extractor_dir,
+            )
+            .await
+            {
+                subprocess::SubprocessOutcome::Ok(lines) => lines,
+                subprocess::SubprocessOutcome::BinaryMissing | subprocess::SubprocessOutcome::Failed => vec![],
+            };
+            let mtime = mtime_of(new_abs).unwrap_or(0);
+            let size = size_of(new_abs).unwrap_or(0);
+            let ext = new_abs.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let kind = detect_kind_from_ext(ext).to_string();
+            let mut built = build_index_files(new_rel, mtime, size, kind, lines);
+            new_files.append(&mut built);
+        }
+        // else: was excluded, still excluded — nothing to do.
+    }
+
+    if rename_paths.is_empty() && delete_paths.is_empty() && new_files.is_empty() {
+        return Ok(());
+    }
+
+    api.bulk(&BulkRequest {
+        source: source_name.to_string(),
+        files: new_files,
+        delete_paths,
+        rename_paths,
         scan_timestamp: None,
         indexing_failures: vec![],
     })

@@ -140,6 +140,7 @@ pub async fn index_upload(
         delete_paths: vec![],
         scan_timestamp: Some(now),
         indexing_failures: vec![],
+        rename_paths: vec![],
     };
 
     // Gzip-compress and write to inbox so the normal worker processes it.
