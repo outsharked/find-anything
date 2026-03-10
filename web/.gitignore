@@ -13,3 +13,6 @@ build/
 # Editor
 .DS_Store
 *.log
+
+# Vite TS config cache (e.g. vite.config.ts.timestamp-*.mjs)
+*.timestamp-*.mjs
