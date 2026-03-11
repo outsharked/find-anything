@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -143,11 +144,20 @@ impl SharedArchiveState {
 /// in-progress archive number. Multiple workers never write to the same archive
 /// on the append path. Rewrite operations (chunk removal) serialise via the
 /// per-archive lock in `SharedArchiveState`.
+///
+/// Read-only instances (created via `new_for_reading`) carry a
+/// `read_cache` that stores the raw bytes of each archive opened during the
+/// instance's lifetime, so multiple chunks from the same archive pay only one
+/// `File::open` call.
 pub struct ArchiveManager {
     state: Arc<SharedArchiveState>,
     /// Archive number this worker is currently appending to. `None` until the
     /// first chunk is written, or after a rotation.
     current_archive_num: Option<u32>,
+    /// Cache of raw archive bytes, keyed by absolute archive path.
+    /// Populated lazily by `read_chunk`; empty for write-mode managers.
+    /// Uses `RefCell` for interior mutability so callers can use `&ArchiveManager`.
+    read_cache: RefCell<HashMap<PathBuf, Vec<u8>>>,
 }
 
 /// A chunk of file content to be stored
@@ -168,7 +178,7 @@ pub struct ChunkRef {
 
 impl ArchiveManager {
     pub fn new(state: Arc<SharedArchiveState>) -> Self {
-        Self { state, current_archive_num: None }
+        Self { state, current_archive_num: None, read_cache: RefCell::new(HashMap::new()) }
     }
 
     /// Create an `ArchiveManager` for **read-only** use (e.g. route handlers
@@ -185,7 +195,7 @@ impl ArchiveManager {
             rewrite_locks: Mutex::new(HashMap::new()),
             source_locks: Mutex::new(HashMap::new()),
         });
-        Self { state, current_archive_num: None }
+        Self { state, current_archive_num: None, read_cache: RefCell::new(HashMap::new()) }
     }
 
     /// Append chunks to archives, creating new ones as needed.
@@ -265,7 +275,8 @@ impl ArchiveManager {
         Ok(bytes_freed)
     }
 
-    /// Read chunk content from archive
+    /// Read chunk content from archive, using a per-instance byte cache to
+    /// avoid re-opening the same archive file more than once per request.
     pub fn read_chunk(&self, chunk_ref: &ChunkRef) -> Result<String> {
         let archive_path = if let Some(num) = parse_archive_number(&chunk_ref.archive_name) {
             self.state.archive_path_for_number(num as u32)
@@ -273,10 +284,17 @@ impl ArchiveManager {
             self.state.sources_dir().join(&chunk_ref.archive_name)
         };
 
-        let file = File::open(&archive_path)
-            .with_context(|| format!("opening archive {}", archive_path.display()))?;
+        // Populate cache on first access for this archive path.
+        if !self.read_cache.borrow().contains_key(&archive_path) {
+            let bytes = std::fs::read(&archive_path)
+                .with_context(|| format!("reading archive {}", archive_path.display()))?;
+            self.read_cache.borrow_mut().insert(archive_path.clone(), bytes);
+        }
 
-        let mut zip = ZipArchive::new(file)?;
+        let cache = self.read_cache.borrow();
+        let bytes = cache.get(&archive_path).expect("just inserted");
+        let cursor = std::io::Cursor::new(bytes.as_slice());
+        let mut zip = ZipArchive::new(cursor)?;
 
         let mut entry = zip
             .by_name(&chunk_ref.chunk_name)
