@@ -36,6 +36,7 @@
 	let sources: SourceInfo[] = [];
 	let selectedSources: string[] = [];
 	let selectedKinds: string[] = [];
+	let caseSensitive = false;
 	// ISO date strings bound to the AdvancedSearch inputs (propagated back for controlled state).
 	let dateFromStr = '';
 	let dateToStr = '';
@@ -208,7 +209,7 @@
 		if (loadingMore || noMoreResults || query.trim().length < 3) return;
 		loadingMore = true;
 		try {
-			const resp = await search({ q: nlpResult?.query ?? query, mode, sources: selectedSources, kinds: selectedKinds, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo });
+			const resp = await search({ q: nlpResult?.query ?? query, mode, sources: selectedSources, kinds: selectedKinds, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
 			if (resp.results.length === 0) {
 				noMoreResults = true;
 			} else {
@@ -261,7 +262,7 @@
 			window.scrollTo(0, 0);
 		}
 		try {
-			const resp = await search({ q: apiQuery, mode: m, sources: srcs, kinds: selectedKinds, limit: 50, offset: 0, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo });
+			const resp = await search({ q: apiQuery, mode: m, sources: srcs, kinds: selectedKinds, limit: 50, offset: 0, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
 			if (mySearchId !== searchId) return;
 			results = resp.results;
 			totalResults = resp.total;
@@ -299,9 +300,10 @@
 		doSearch(query, mode, selectedSources);
 	}
 
-	function handleFilterChange(e: CustomEvent<{ sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number }>) {
+	function handleFilterChange(e: CustomEvent<{ sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean }>) {
 		selectedSources = e.detail.sources;
 		selectedKinds = e.detail.kinds;
+		caseSensitive = e.detail.caseSensitive;
 		dateFromTs = e.detail.dateFrom;
 		dateToTs = e.detail.dateTo;
 		// Keep ISO strings in sync so AdvancedSearch inputs remain controlled.
@@ -441,6 +443,7 @@
 				sources={sourceNames}
 				{selectedSources}
 				{selectedKinds}
+				{caseSensitive}
 				dateFrom={dateFromStr}
 				dateTo={dateToStr}
 				on:back={handleBack}
@@ -460,6 +463,7 @@
 				sources={sourceNames}
 				{selectedSources}
 				{selectedKinds}
+				{caseSensitive}
 				dateFrom={dateFromStr}
 				dateTo={dateToStr}
 				{results}

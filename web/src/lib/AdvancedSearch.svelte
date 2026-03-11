@@ -12,9 +12,11 @@
 	export let dateFrom = '';
 	/** Current date-to value as ISO string (YYYY-MM-DD), or empty. */
 	export let dateTo = '';
+	/** Whether case-sensitive matching is active. */
+	export let caseSensitive = false;
 
 	const dispatch = createEventDispatcher<{
-		change: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number };
+		change: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean };
 	}>();
 
 	// All supported kind values and their display labels.
@@ -36,6 +38,7 @@
 	let draftKinds: string[] = [];
 	let draftFrom = '';
 	let draftTo = '';
+	let draftCaseSensitive = false;
 
 	// Sync draft from props whenever the panel opens.
 	function openPanel() {
@@ -43,6 +46,7 @@
 		draftKinds = [...selectedKinds];
 		draftFrom = dateFrom;
 		draftTo = dateTo;
+		draftCaseSensitive = caseSensitive;
 		isOpen = true;
 	}
 
@@ -57,7 +61,8 @@
 			sources: draftSources,
 			kinds: draftKinds,
 			dateFrom: isoToUnix(draftFrom),
-			dateTo: isoToUnix(draftTo)
+			dateTo: isoToUnix(draftTo),
+			caseSensitive: draftCaseSensitive,
 		});
 		isOpen = false;
 	}
@@ -67,7 +72,8 @@
 		draftKinds = [];
 		draftFrom = '';
 		draftTo = '';
-		dispatch('change', { sources: [], kinds: [] });
+		draftCaseSensitive = false;
+		dispatch('change', { sources: [], kinds: [], caseSensitive: false });
 		isOpen = false;
 	}
 
@@ -92,15 +98,16 @@
 		JSON.stringify(draftSources.slice().sort()) !== JSON.stringify(selectedSources.slice().sort()) ||
 		JSON.stringify(draftKinds.slice().sort()) !== JSON.stringify(selectedKinds.slice().sort()) ||
 		draftFrom !== dateFrom ||
-		draftTo !== dateTo;
+		draftTo !== dateTo ||
+		draftCaseSensitive !== caseSensitive;
 
 	$: sourceFiltered = selectedSources.length > 0 && selectedSources.length < sources.length;
 	$: kindFiltered = selectedKinds.length > 0;
 	$: dateFiltered = dateFrom !== '' || dateTo !== '';
-	$: anyFilter = sourceFiltered || kindFiltered || dateFiltered;
+	$: anyFilter = sourceFiltered || kindFiltered || dateFiltered || caseSensitive;
 
 	// Count badge: number of active filter dimensions
-	$: filterCount = (sourceFiltered ? 1 : 0) + (kindFiltered ? 1 : 0) + (dateFiltered ? 1 : 0);
+	$: filterCount = (sourceFiltered ? 1 : 0) + (kindFiltered ? 1 : 0) + (dateFiltered ? 1 : 0) + (caseSensitive ? 1 : 0);
 
 	function showFromPicker() {
 		(document.getElementById('adv-date-from') as HTMLInputElement)?.showPicker();
@@ -206,7 +213,14 @@
 				</div>
 			</div>
 
-			<div class="footer">
+			<div class="section">
+				<label class="option-item">
+					<input type="checkbox" bind:checked={draftCaseSensitive} />
+					<span class="option-label">Case sensitive</span>
+				</label>
+			</div>
+
+		<div class="footer">
 				{#if anyFilter}
 					<button class="clear-all" on:click={clearAll}>Clear all</button>
 				{/if}
@@ -429,6 +443,24 @@
 	.cal-btn:hover {
 		color: var(--text);
 		background: var(--hover-bg);
+	}
+
+	.option-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 2px 0;
+		cursor: pointer;
+	}
+
+	.option-item input[type='checkbox'] {
+		cursor: pointer;
+		margin: 0;
+	}
+
+	.option-label {
+		font-size: 13px;
+		color: var(--text);
 	}
 
 	.footer {

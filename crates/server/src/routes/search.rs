@@ -29,6 +29,8 @@ pub struct SearchParams {
     pub date_to: Option<i64>,
     /// Optional file kind allowlist (e.g. "pdf", "image"). Empty = any kind.
     pub kinds: Vec<String>,
+    /// When true, fuzzy/exact/document/regex matching is case-sensitive. Default: false.
+    pub case_sensitive: bool,
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
@@ -44,21 +46,23 @@ impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
         let mut date_from = None;
         let mut date_to = None;
         let mut kinds = Vec::new();
+        let mut case_sensitive = false;
 
         for (k, v) in form_urlencoded::parse(raw.as_bytes()) {
             match k.as_ref() {
-                "q"         => q         = Some(v.into_owned()),
-                "mode"      => mode      = Some(v.into_owned()),
-                "source"    => source.push(v.into_owned()),
-                "kind"      => kinds.push(v.into_owned()),
-                "limit"     => limit     = Some(v.parse::<usize>()
+                "q"              => q         = Some(v.into_owned()),
+                "mode"           => mode      = Some(v.into_owned()),
+                "source"         => source.push(v.into_owned()),
+                "kind"           => kinds.push(v.into_owned()),
+                "limit"          => limit     = Some(v.parse::<usize>()
                     .map_err(|_| (StatusCode::BAD_REQUEST, "invalid limit".to_string()))?),
-                "offset"    => offset    = Some(v.parse::<usize>()
+                "offset"         => offset    = Some(v.parse::<usize>()
                     .map_err(|_| (StatusCode::BAD_REQUEST, "invalid offset".to_string()))?),
-                "date_from" => date_from = Some(v.parse::<i64>()
+                "date_from"      => date_from = Some(v.parse::<i64>()
                     .map_err(|_| (StatusCode::BAD_REQUEST, "invalid date_from".to_string()))?),
-                "date_to"   => date_to   = Some(v.parse::<i64>()
+                "date_to"        => date_to   = Some(v.parse::<i64>()
                     .map_err(|_| (StatusCode::BAD_REQUEST, "invalid date_to".to_string()))?),
+                "case_sensitive" => case_sensitive = matches!(v.as_ref(), "1" | "true"),
                 _ => {}
             }
         }
@@ -72,6 +76,7 @@ impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
             date_from,
             date_to,
             kinds,
+            case_sensitive,
         })
     }
 }
@@ -169,6 +174,7 @@ pub async fn search(
     let data_dir = state.data_dir.clone();
     let offset = params.offset;
     let date_filter = DateFilter { from: params.date_from, to: params.date_to, kinds: params.kinds };
+    let case_sensitive = params.case_sensitive;
 
     // Only score enough candidates to fill this page plus a buffer for fuzzy
     // filtering. This avoids reading thousands of ZIP chunks for common queries
@@ -190,8 +196,8 @@ pub async fn search(
 
                 // Document mode has its own query path (one result per file).
                 if mode == "document" {
-                    let (doc_total, candidates) = db::document_candidates(&conn, &archive_mgr, &query, scoring_limit, date_filter)?;
-                    let mut scorer = FuzzyScorer::new(&query);
+                    let (doc_total, candidates) = db::document_candidates(&conn, &archive_mgr, &query, scoring_limit, date_filter, case_sensitive)?;
+                    let mut scorer = FuzzyScorer::new(&query, case_sensitive);
                     let result_pairs: Vec<(SearchResult, i64)> = candidates
                         .into_iter()
                         .map(|(rep, extras)| {
@@ -234,22 +240,40 @@ pub async fn search(
                 // Build (SearchResult, file_id) pairs for alias lookup.
                 let result_pairs: Vec<(SearchResult, i64)> = match mode.as_str() {
                     "exact" => {
-                        // FTS5 trigram is already a substring match — candidates are the answer.
+                        // FTS5 trigram is case-insensitive pre-filter; for case-sensitive mode
+                        // add a post-filter to discard candidates that don't literally contain the query.
                         candidates.into_iter()
+                            .filter(|c| !case_sensitive || c.content.contains(query.as_str()))
                             .map(|c| (make_result(&source_name, &c, 0, vec![]), c.file_id))
                             .collect()
                     }
                     "regex" => {
-                        let re = regex::RegexBuilder::new(&query).case_insensitive(true).build()?;
+                        let re = regex::RegexBuilder::new(&query).case_insensitive(!case_sensitive).build()?;
                         candidates.into_iter()
                             .filter(|c| re.is_match(&c.content))
                             .map(|c| (make_result(&source_name, &c, 0, vec![]), c.file_id))
                             .collect()
                     }
                     _ /* "fuzzy" */ => {
-                        let mut scorer = FuzzyScorer::new(&query);
+                        let query_terms: Vec<&str> = if case_sensitive {
+                            query.split_whitespace().collect()
+                        } else {
+                            vec![]
+                        };
+                        let mut scorer = FuzzyScorer::new(&query, case_sensitive);
                         candidates.into_iter()
                             .filter_map(|c| {
+                                // In case-sensitive mode, require every query term to appear
+                                // as a literal substring. Nucleo's subsequence algorithm can
+                                // match scattered lowercase letters inside capitalised words
+                                // (e.g. "monhegan" matching "Monhegan" via 'm' in a prior word
+                                // + 'onhegan' from the capital-M word), which is not the
+                                // user-expected behaviour for case-sensitive search.
+                                if !query_terms.is_empty()
+                                    && !query_terms.iter().all(|t| c.content.contains(*t))
+                                {
+                                    return None;
+                                }
                                 scorer.score(&c.content)
                                     .map(|score| (make_result(&source_name, &c, score, vec![]), c.file_id))
                             })

@@ -262,6 +262,7 @@ pub fn document_candidates(
     query: &str,
     limit: usize,
     date: DateFilter,
+    case_sensitive: bool,
 ) -> Result<DocumentCandidates> {
     use std::collections::HashSet;
 
@@ -408,7 +409,13 @@ pub fn document_candidates(
 
     // Read content from ZIP archives, reusing a chunk cache.
     let mut chunk_cache: HashMap<(String, String), Vec<String>> = HashMap::new();
-    let tokens_lower: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+    // For case-insensitive matching, compare lowercased tokens against lowercased content.
+    // For case-sensitive matching, compare tokens as-is.
+    let tokens_cmp: Vec<String> = if case_sensitive {
+        tokens.clone()
+    } else {
+        tokens.iter().map(|t| t.to_lowercase()).collect()
+    };
 
     let mut results = Vec::new();
     for file_id in file_order.into_iter().take(limit) {
@@ -428,7 +435,7 @@ pub fn document_candidates(
             .get(rep_row.line_offset)
             .cloned()
             .unwrap_or_default();
-        let rep_content_lower = rep_content.to_lowercase();
+        let rep_content_cmp = if case_sensitive { rep_content.clone() } else { rep_content.to_lowercase() };
         let (file_path, archive_path) = split_composite_path(&rep_row.file_path);
 
         let representative = CandidateRow {
@@ -443,10 +450,10 @@ pub fn document_candidates(
         };
 
         // For each token not already covered by the representative, find the first
-        // subsequent row that covers it (simple case-insensitive substring check).
-        let mut uncovered: Vec<&str> = tokens_lower
+        // subsequent row that covers it.
+        let mut uncovered: Vec<&str> = tokens_cmp
             .iter()
-            .filter(|t| !rep_content_lower.contains(t.as_str()))
+            .filter(|t| !rep_content_cmp.contains(t.as_str()))
             .map(|t| t.as_str())
             .collect();
 
@@ -464,12 +471,12 @@ pub fn document_candidates(
                 .get(extra_row.line_offset)
                 .cloned()
                 .unwrap_or_default();
-            let content_lower = content.to_lowercase();
+            let content_cmp = if case_sensitive { content.clone() } else { content.to_lowercase() };
             // Only include this row if it covers at least one new token.
             let newly_covered: Vec<usize> = uncovered
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| content_lower.contains(*t))
+                .filter(|(_, t)| content_cmp.contains(*t))
                 .map(|(i, _)| i)
                 .collect();
             if !newly_covered.is_empty() {

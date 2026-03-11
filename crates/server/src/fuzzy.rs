@@ -9,11 +9,12 @@ pub struct FuzzyScorer {
 }
 
 impl FuzzyScorer {
-    pub fn new(query: &str) -> Self {
+    pub fn new(query: &str, case_sensitive: bool) -> Self {
         let matcher = Matcher::new(Config::DEFAULT);
+        let case = if case_sensitive { CaseMatching::Respect } else { CaseMatching::Ignore };
         let pattern = Pattern::new(
             query,
-            CaseMatching::Smart,
+            case,
             Normalization::Smart,
             AtomKind::Fuzzy,
         );

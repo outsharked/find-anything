@@ -19,11 +19,12 @@
 	export let selectedKinds: string[] = [];
 	export let dateFrom = '';
 	export let dateTo = '';
+	export let caseSensitive = false;
 
 	const dispatch = createEventDispatcher<{
 		back: void;
 		search: { query: string; mode: string };
-		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number };
+		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean };
 		treeToggle: void;
 		openFileFromTree: { source: string; path: string; kind: string; archivePath?: string; showAsDirectory?: boolean };
 		openDirFile: { source: string; path: string; kind: string; archivePath?: string };
@@ -61,6 +62,7 @@
 			{selectedKinds}
 			{dateFrom}
 			{dateTo}
+			{caseSensitive}
 			on:change={(e) => dispatch('filterChange', e.detail)}
 		/>
 	{/if}

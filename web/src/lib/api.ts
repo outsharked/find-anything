@@ -124,6 +124,8 @@ export interface SearchParams {
 	dateTo?: number;
 	/** Allowlist of file kinds (e.g. "pdf", "image"). Empty/omitted = any kind. */
 	kinds?: string[];
+	/** When true, matching is case-sensitive. Default: false (case-insensitive). */
+	caseSensitive?: boolean;
 }
 
 export async function search(params: SearchParams): Promise<SearchResponse> {
@@ -140,6 +142,7 @@ export async function search(params: SearchParams): Promise<SearchResponse> {
 	if (params.kinds && params.kinds.length > 0) {
 		params.kinds.forEach((k) => url.searchParams.append('kind', k));
 	}
+	if (params.caseSensitive) url.searchParams.set('case_sensitive', '1');
 
 	const resp = await apiFetch(url.toString());
 	if (!resp.ok) {
