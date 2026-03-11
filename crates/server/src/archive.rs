@@ -368,10 +368,41 @@ impl ArchiveManager {
         let size_before = std::fs::metadata(archive_path).map(|m| m.len()).unwrap_or(0);
         let temp_path = archive_path.with_extension("zip.tmp");
 
+        let result = self.rewrite_archive_inner(archive_path, chunks_to_remove, &temp_path);
+        if result.is_err() {
+            // Clean up the partial temp file so we don't leave corrupt `.zip.tmp` files on disk.
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        let bytes_freed = result?;
+
+        // Update running size total.
+        let size_after = std::fs::metadata(archive_path).map(|m| m.len()).unwrap_or(0);
+        match size_after.cmp(&size_before) {
+            std::cmp::Ordering::Greater => {
+                self.state.archive_size_bytes.fetch_add(size_after - size_before, Ordering::Relaxed);
+            }
+            std::cmp::Ordering::Less => {
+                let _ = self.state.archive_size_bytes.fetch_update(
+                    Ordering::Relaxed, Ordering::Relaxed,
+                    |v| Some(v.saturating_sub(size_before - size_after)),
+                );
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+
+        Ok(bytes_freed)
+    }
+
+    fn rewrite_archive_inner(
+        &self,
+        archive_path: &Path,
+        chunks_to_remove: &HashSet<String>,
+        temp_path: &Path,
+    ) -> Result<u64> {
         let file = File::open(archive_path)?;
         let mut old_zip = ZipArchive::new(file)?;
 
-        let temp_file = File::create(&temp_path)?;
+        let temp_file = File::create(temp_path)?;
         let mut new_zip = ZipWriter::new(temp_file);
 
         let base_options = SimpleFileOptions::default()
@@ -397,23 +428,7 @@ impl ArchiveManager {
         new_zip.finish()?;
         drop(old_zip);
 
-        std::fs::rename(&temp_path, archive_path)?;
-
-        // Update running size total.
-        let size_after = std::fs::metadata(archive_path).map(|m| m.len()).unwrap_or(0);
-        match size_after.cmp(&size_before) {
-            std::cmp::Ordering::Greater => {
-                self.state.archive_size_bytes.fetch_add(size_after - size_before, Ordering::Relaxed);
-            }
-            std::cmp::Ordering::Less => {
-                let _ = self.state.archive_size_bytes.fetch_update(
-                    Ordering::Relaxed, Ordering::Relaxed,
-                    |v| Some(v.saturating_sub(size_before - size_after)),
-                );
-            }
-            std::cmp::Ordering::Equal => {}
-        }
-
+        std::fs::rename(temp_path, archive_path)?;
         Ok(bytes_freed)
     }
 }
