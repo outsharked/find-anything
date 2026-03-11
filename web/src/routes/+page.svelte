@@ -14,8 +14,8 @@
 	import { formatHash } from '$lib/lineSelection';
 	import type { LineSelection } from '$lib/lineSelection';
 	import { FilePath } from '$lib/filePath';
-	import { buildUrl, restoreFromParams, serializeState, deserializeState } from '$lib/appState';
-	import type { AppState, SerializedAppState } from '$lib/appState';
+	import { buildUrl, restoreFromParams, serializeState, deserializeState, expandFileView, collapseFileView } from '$lib/appState';
+	import type { AppState, SerializedAppState, FileViewState } from '$lib/appState';
 	import { profile } from '$lib/profile';
 	import { parseNlpQuery } from '$lib/nlpQuery';
 	import type { NlpResult } from '$lib/nlpQuery';
@@ -28,7 +28,8 @@
 
 	// ── State ──────────────────────────────────────────────────────────────────
 
-	let view: 'results' | 'file' = 'results';
+	/** Non-null when the file/directory viewer is open. */
+	let fileView: FileViewState | null = null;
 	let query = '';
 	let mode = 'fuzzy';
 
@@ -55,11 +56,6 @@
 	let searchError: string | null = null;
 	let searchId = 0;
 
-	let fileSource = '';
-	let currentFile: FilePath | null = null;
-	let fileSelection: LineSelection = [];
-	let panelMode: 'file' | 'dir' = 'file';
-	let currentDirPrefix = '';
 	let showTree = true;
 	let showPalette = false;
 
@@ -100,12 +96,12 @@
 	// ── History ─────────────────────────────────────────────────────────────────
 
 	function captureState(): AppState {
-		return { view, query, mode, selectedSources, fileSource, currentFile, fileSelection, panelMode, currentDirPrefix };
+		return { query, mode, selectedSources, ...expandFileView(fileView) };
 	}
 
 	function pushState() {
 		const s = captureState();
-		svelteKitPushState(buildUrl(s) + formatHash(fileSelection), serializeState(s));
+		svelteKitPushState(buildUrl(s) + formatHash(s.fileSelection), serializeState(s));
 	}
 
 	// Like pushState but replaces the current history entry instead of adding one.
@@ -115,26 +111,21 @@
 	// state that blocks pointer and keyboard events.
 	function replaceSearchState() {
 		const s = captureState();
-		const url = buildUrl(s) + formatHash(fileSelection);
+		const url = buildUrl(s) + formatHash(s.fileSelection);
 		history.replaceState(history.state, '', url);
 	}
 
 	function syncHash() {
-		const hash = formatHash(fileSelection);
+		const hash = formatHash(fileView?.selection ?? []);
 		const base = location.pathname + location.search;
 		svelteKitReplaceState(hash ? base + hash : base, get(page).state);
 	}
 
 	function applyState(s: AppState) {
-		view = s.view;
+		fileView = collapseFileView(s);
 		query = s.query;
 		mode = s.mode;
 		selectedSources = s.selectedSources;
-		fileSource = s.fileSource;
-		currentFile = s.currentFile;
-		fileSelection = s.fileSelection;
-		panelMode = s.panelMode;
-		currentDirPrefix = s.currentDirPrefix;
 		if (s.query) doSearch(s.query, s.mode, s.selectedSources, false);
 	}
 
@@ -209,7 +200,7 @@
 	}
 
 	function checkScroll() {
-		if (loadingMore || noMoreResults || view !== 'results' || query.trim().length < 3) return;
+		if (loadingMore || noMoreResults || fileView !== null || query.trim().length < 3) return;
 		if (isNearBottom()) triggerLoad();
 	}
 
@@ -274,11 +265,11 @@
 			totalResults = resp.total;
 			loadOffset = resp.results.length; // server cursor starts after page 0
 			if (resp.results.length === 0) noMoreResults = true;
-			if (push) view = 'results';
+			if (push) fileView = null;
 		} catch (e) {
 			searchError = String(e);
 			results = []; totalResults = 0; noMoreResults = true; loadOffset = 0;
-			if (push) view = 'results';
+			if (push) fileView = null;
 		} finally {
 			searching = false;
 		}
@@ -320,49 +311,41 @@
 
 	function openFile(e: CustomEvent<SearchResult>) {
 		const r = e.detail;
-		fileSource = r.source;
-		currentFile = FilePath.fromParts(r.path, r.archive_path ?? null);
+		const file = FilePath.fromParts(r.path, r.archive_path ?? null);
 		const extraLines = (r.extra_matches ?? [])
 			.map((m) => m.line_number)
 			.filter((n) => n > 0 && n !== r.line_number);
-		fileSelection = r.line_number
+		const selection: LineSelection = r.line_number
 			? [r.line_number, ...extraLines]
 			: extraLines.length ? extraLines : [];
-		panelMode = 'file';
 		savedScrollTop = mainContent?.scrollTop ?? 0;
-		view = 'file';
+		fileView = { source: r.source, file, selection, panelMode: 'file', dirPrefix: '' };
 		pushState();
 	}
 
 	function handleOpenFileFromTree(e: CustomEvent<{ source: string; path: string; kind: string; archivePath?: string; showAsDirectory?: boolean }>) {
-		fileSource = e.detail.source;
-		currentFile = FilePath.fromParts(e.detail.path, e.detail.archivePath ?? null);
-		fileSelection = [];
+		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath ?? null);
 		if (e.detail.showAsDirectory) {
-			panelMode = 'dir';
-			currentDirPrefix = currentFile.full + '::';
+			fileView = { source: e.detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' };
 		} else {
-			panelMode = 'file';
+			fileView = { source: e.detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' };
 		}
-		view = 'file';
 		pushState();
 	}
 
 	function handleOpenDirFile(e: CustomEvent<{ source: string; path: string; kind: string; archivePath?: string }>) {
-		currentFile = FilePath.fromParts(e.detail.path, e.detail.archivePath ?? null);
-		fileSelection = [];
-		panelMode = 'file';
+		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath ?? null);
+		fileView = { ...(fileView!), file, selection: [], panelMode: 'file' };
 		pushState();
 	}
 
 	function handleOpenDir(e: CustomEvent<{ prefix: string }>) {
-		currentDirPrefix = e.detail.prefix;
-		panelMode = 'dir';
+		fileView = { ...(fileView!), panelMode: 'dir', dirPrefix: e.detail.prefix };
 		pushState();
 	}
 
 	function handleLineSelect(e: CustomEvent<{ selection: LineSelection }>) {
-		fileSelection = e.detail.selection;
+		if (fileView) fileView = { ...fileView, selection: e.detail.selection };
 		syncHash();
 	}
 
@@ -371,7 +354,7 @@
 	}
 
 	async function handleBack() {
-		view = 'results';
+		fileView = null;
 		pushState();
 		await tick();
 		if (mainContent) mainContent.scrollTop = savedScrollTop;
@@ -380,15 +363,11 @@
 	// ── Command palette ──────────────────────────────────────────────────────────
 
 	function handlePaletteSelect(e: CustomEvent<{ source: string; path: string; archivePath: string | null; kind: string }>) {
-		fileSource = e.detail.source;
-		fileSelection = [];
-		view = 'file';
-		currentFile = FilePath.fromParts(e.detail.path, e.detail.archivePath);
+		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath);
 		if (e.detail.kind === 'archive') {
-			panelMode = 'dir';
-			currentDirPrefix = currentFile.full + '::';
+			fileView = { source: e.detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' };
 		} else {
-			panelMode = 'file';
+			fileView = { source: e.detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' };
 		}
 		pushState();
 	}
@@ -426,16 +405,16 @@
 	// ── Derived ──────────────────────────────────────────────────────────────────
 
 	$: sourceNames = sources.map((s) => s.name);
-	$: paletteSources = selectedSources.length ? selectedSources : fileSource ? [fileSource] : sourceNames;
+	$: paletteSources = selectedSources.length ? selectedSources : fileView?.source ? [fileView.source] : sourceNames;
 </script>
 
-<div class="page-layout" class:has-sidebar={showTree} class:file-view={view === 'file'}>
+<div class="page-layout" class:has-sidebar={showTree} class:file-view={fileView !== null}>
 	{#if showTree}
 		<aside class="global-sidebar" style="width: {sidebarWidth}px">
 			<MultiSourceTree
 				sources={sourceNames}
-				activeSource={view === 'file' ? fileSource : null}
-				activePath={view === 'file' ? (currentFile?.full ?? null) : null}
+				activeSource={fileView?.source ?? null}
+				activePath={fileView?.file.full ?? null}
 				on:open={handleOpenFileFromTree}
 			/>
 		</aside>
@@ -449,13 +428,9 @@
 	{/if}
 
 	<div class="main-content" bind:this={mainContent}>
-		{#if view === 'file'}
+		{#if fileView !== null}
 			<FileView
-				{fileSource}
-				{currentFile}
-				{fileSelection}
-				{panelMode}
-				{currentDirPrefix}
+				{fileView}
 				{showTree}
 				{query}
 				{mode}

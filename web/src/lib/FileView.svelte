@@ -7,13 +7,9 @@
 	import FileViewer from '$lib/FileViewer.svelte';
 	import DirListing from '$lib/DirListing.svelte';
 	import type { LineSelection } from '$lib/lineSelection';
-	import type { FilePath } from '$lib/filePath';
+	import type { FileViewState } from '$lib/appState';
 
-	export let fileSource: string;
-	export let currentFile: FilePath | null;
-	export let fileSelection: LineSelection;
-	export let panelMode: 'file' | 'dir';
-	export let currentDirPrefix: string;
+	export let fileView: FileViewState;
 	export let showTree: boolean;
 	export let query: string;
 	export let mode: string;
@@ -38,7 +34,7 @@
 
 	let isTyping = false;
 
-	$: pathBarPath = panelMode === 'dir' ? currentDirPrefix : (currentFile?.outer ?? '');
+	$: pathBarPath = fileView.panelMode === 'dir' ? fileView.dirPrefix : fileView.file.outer;
 </script>
 
 <div class="topbar">
@@ -73,33 +69,33 @@
 
 <div class="viewer-wrap">
 	<PathBar
-		source={fileSource}
+		source={fileView.source}
 		path={pathBarPath}
-		archivePath={panelMode === 'file' ? currentFile?.inner ?? null : null}
+		archivePath={fileView.panelMode === 'file' ? fileView.file.inner ?? null : null}
 		on:back={() => dispatch('back')}
 		on:navigate={(e) => {
 			if (e.detail.type === 'dir') {
 				dispatch('openDir', { prefix: e.detail.prefix });
 			} else {
-				dispatch('openFileFromTree', { source: fileSource, path: e.detail.path, kind: e.detail.kind });
+				dispatch('openFileFromTree', { source: fileView.source, path: e.detail.path, kind: e.detail.kind });
 			}
 		}}
 	/>
-	{#if panelMode === 'dir'}
+	{#if fileView.panelMode === 'dir'}
 		<DirListing
-			source={fileSource}
-			prefix={currentDirPrefix}
+			source={fileView.source}
+			prefix={fileView.dirPrefix}
 			on:openFile={(e) => dispatch('openDirFile', e.detail)}
 			on:openDir={(e) => dispatch('openDir', e.detail)}
 		/>
-	{:else if currentFile}
-		{#key `${fileSource}:${currentFile.full}`}
+	{:else}
+		{#key `${fileView.source}:${fileView.file.full}`}
 			<FileViewer
-				source={fileSource}
-				path={currentFile.outer}
-				archivePath={currentFile.inner}
-				selection={fileSelection}
-				preferOriginal={fileSelection.length === 0}
+				source={fileView.source}
+				path={fileView.file.outer}
+				archivePath={fileView.file.inner}
+				selection={fileView.selection}
+				preferOriginal={fileView.selection.length === 0}
 				on:lineselect={(e) => dispatch('lineselect', e.detail)}
 				on:open={(e) => dispatch('openDirFile', e.detail)}
 				on:navigateDir={(e) => dispatch('openDir', e.detail)}

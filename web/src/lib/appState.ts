@@ -5,6 +5,17 @@ import { parseHash } from './lineSelection';
 export type View = 'results' | 'file';
 export type PanelMode = 'file' | 'dir';
 
+/** All state needed to render the file/directory viewer panel.
+ *  Bundled into one object so event handlers set all fields atomically. */
+export interface FileViewState {
+	source: string;
+	file: FilePath;
+	selection: LineSelection;
+	panelMode: PanelMode;
+	/** Only meaningful when panelMode === 'dir'. */
+	dirPrefix: string;
+}
+
 export interface AppState {
 	view: View;
 	query: string;
@@ -50,6 +61,20 @@ export function buildUrl(s: AppState): string {
 	}
 	const qs = p.toString();
 	return qs ? `?${qs}` : location.pathname;
+}
+
+/** Expand a FileViewState into the flat AppState fields. */
+export function expandFileView(fv: FileViewState | null): Pick<AppState, 'view' | 'fileSource' | 'currentFile' | 'fileSelection' | 'panelMode' | 'currentDirPrefix'> {
+	if (!fv) {
+		return { view: 'results', fileSource: '', currentFile: null, fileSelection: [], panelMode: 'file', currentDirPrefix: '' };
+	}
+	return { view: 'file', fileSource: fv.source, currentFile: fv.file, fileSelection: fv.selection, panelMode: fv.panelMode, currentDirPrefix: fv.dirPrefix };
+}
+
+/** Assemble a FileViewState from AppState fields (returns null for 'results' view). */
+export function collapseFileView(s: AppState): FileViewState | null {
+	if (s.view !== 'file' || !s.currentFile) return null;
+	return { source: s.fileSource, file: s.currentFile, selection: s.fileSelection, panelMode: s.panelMode, dirPrefix: s.currentDirPrefix };
 }
 
 export function restoreFromParams(
