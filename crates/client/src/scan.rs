@@ -69,6 +69,26 @@ pub struct ScanSource<'a> {
     pub subdir: Option<String>,
 }
 
+/// Decide whether a local file needs to be (re-)indexed, given what the server
+/// already knows about it.
+///
+/// `server_entry` is `Some((mtime, scanner_version))` if the server has a
+/// record for this path, `None` if it is new.
+///
+/// Returns `(should_index, is_new)`.
+pub(crate) fn needs_reindex(
+    server_entry: Option<(i64, u32)>,
+    local_mtime: i64,
+    upgrade: bool,
+) -> (bool, bool) {
+    match server_entry {
+        None                                                         => (true,  true),
+        Some((sm, _))  if local_mtime > sm                          => (true,  false),
+        Some((_, sv))  if upgrade && sv < SCANNER_VERSION           => (true,  false),
+        Some(_)                                                      => (false, false),
+    }
+}
+
 pub async fn run_scan(
     api: &ApiClient,
     source: &ScanSource<'_>,
@@ -188,16 +208,18 @@ pub async fn run_scan(
         let mut is_new = false; // set inside the !subdir_rescan block when server_entry is known
         if !subdir_rescan {
             let server_entry = server_files.get(rel_path.as_str()).copied();
-            let needs_index = match server_entry {
-                None => { new_files += 1; true }
-                Some((sm, _)) if mtime > sm => { modified += 1; true }
-                Some((_, sv)) if opts.upgrade && sv < SCANNER_VERSION => { upgraded += 1; true }
-                Some(_) => {
-                    skipped += 1;
-                    false
+            let (should_index, file_is_new) = needs_reindex(server_entry, mtime, opts.upgrade);
+            if file_is_new      { new_files += 1; }
+            else if should_index {
+                if server_entry.is_some_and(|(_, sv)| opts.upgrade && sv < SCANNER_VERSION) {
+                    upgraded += 1;
+                } else {
+                    modified += 1;
                 }
-            };
-            if !needs_index {
+            } else {
+                skipped += 1;
+            }
+            if !should_index {
                 if last_log.elapsed() >= log_interval {
                     let total = indexed + skipped;
                     info!("processed {total} files ({}) so far...", fmt_changes(skipped, new_files, modified, upgraded));
@@ -205,7 +227,7 @@ pub async fn run_scan(
                 }
                 continue;
             }
-            is_new = server_entry.is_none();
+            is_new = file_is_new;
         }
 
         indexed += 1;
@@ -1068,5 +1090,69 @@ mod tests {
         );
         assert!(dir_allowed(&["Users\\alice\\**"], "Users/alice/docs"));
         assert!(!dir_allowed(&["Users\\alice\\**"], "Users/bob"));
+    }
+
+    // ── needs_reindex ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn needs_reindex_new_file() {
+        // File not on server → should index, is_new = true
+        let (idx, is_new) = needs_reindex(None, 1000, false);
+        assert!(idx);
+        assert!(is_new);
+    }
+
+    #[test]
+    fn needs_reindex_mtime_newer() {
+        // Local mtime is newer than server mtime → re-index, not new
+        let (idx, is_new) = needs_reindex(Some((500, 1)), 1000, false);
+        assert!(idx);
+        assert!(!is_new);
+    }
+
+    #[test]
+    fn needs_reindex_mtime_equal() {
+        // Same mtime → skip
+        let (idx, _) = needs_reindex(Some((1000, 1)), 1000, false);
+        assert!(!idx);
+    }
+
+    #[test]
+    fn needs_reindex_mtime_older() {
+        // Local mtime is older than server (clock skew / rollback) → skip
+        let (idx, _) = needs_reindex(Some((2000, 1)), 1000, false);
+        assert!(!idx);
+    }
+
+    #[test]
+    fn needs_reindex_upgrade_outdated_scanner() {
+        // upgrade=true and server has an older scanner version → re-index
+        let (idx, is_new) = needs_reindex(Some((1000, 0)), 1000, true);
+        assert!(idx);
+        assert!(!is_new);
+    }
+
+    #[test]
+    fn needs_reindex_upgrade_current_scanner() {
+        // upgrade=true but scanner version is current → skip
+        let (idx, _) = needs_reindex(Some((1000, SCANNER_VERSION)), 1000, true);
+        assert!(!idx);
+    }
+
+    #[test]
+    fn needs_reindex_no_upgrade_flag_ignores_scanner_version() {
+        // upgrade=false → scanner version difference is ignored
+        let (idx, _) = needs_reindex(Some((1000, 0)), 1000, false);
+        assert!(!idx);
+    }
+
+    #[test]
+    fn needs_reindex_composite_path_not_special_cased() {
+        // Composite paths (archive members) are never in server_files (filtered
+        // out before building the map), so they would always arrive as None.
+        // Confirm that needs_reindex treats them as new files.
+        let (idx, is_new) = needs_reindex(None, 500, false);
+        assert!(idx);
+        assert!(is_new);
     }
 }
