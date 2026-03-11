@@ -33,11 +33,31 @@ pub struct WatchOptions {
 type SourceMap = Vec<(PathBuf, String, String, GlobSet)>;
 
 /// What to do with a path after debounce.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum AccumulatedKind {
     Create, // OS create event (file definitely new)
     Update, // OS modify event (or create→modify collapse)
     Delete,
+}
+
+/// Collapse an existing accumulated event with a newly arrived event.
+///
+/// Transition table:
+/// - `Create + Modify  → Create`  (still a new file; modifier doesn't change that)
+/// - `Create + Delete  → Delete`  (created then immediately deleted)
+/// - `Delete + Create  → Create`  (deleted then re-created)
+/// - `Update + Delete  → Delete`
+/// - `Delete + Update  → Update`  (unknown history — treat as a modify)
+/// - anything else    → `new`     (last event wins)
+fn collapse(existing: &AccumulatedKind, new: &AccumulatedKind) -> AccumulatedKind {
+    match (existing, new) {
+        (AccumulatedKind::Create, AccumulatedKind::Update) => AccumulatedKind::Create,
+        (AccumulatedKind::Create, AccumulatedKind::Delete) => AccumulatedKind::Delete,
+        (AccumulatedKind::Delete, AccumulatedKind::Create) => AccumulatedKind::Create,
+        (AccumulatedKind::Update, AccumulatedKind::Delete) => AccumulatedKind::Delete,
+        (AccumulatedKind::Delete, AccumulatedKind::Update) => AccumulatedKind::Update,
+        _                                                  => new.clone(),
+    }
 }
 
 pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()> {
@@ -321,21 +341,8 @@ fn accumulate(pending: &mut HashMap<PathBuf, AccumulatedKind>, res: notify::Resu
 
         match pending.entry(path) {
             Entry::Occupied(mut occ) => {
-                // Collapse accumulated kinds:
-                //   Create→Modify  = Create  (still a new file)
-                //   Create→Delete  = Delete  (created and immediately deleted)
-                //   Delete→Create  = Create  (deleted then re-created → new)
-                //   Update→Delete  = Delete
-                //   Delete→Update  = Update  (unknown history)
                 let existing = occ.get_mut();
-                *existing = match (&*existing, &new_kind) {
-                    (AccumulatedKind::Create, AccumulatedKind::Update) => AccumulatedKind::Create,
-                    (AccumulatedKind::Create, AccumulatedKind::Delete) => AccumulatedKind::Delete,
-                    (AccumulatedKind::Delete, AccumulatedKind::Create) => AccumulatedKind::Create,
-                    (AccumulatedKind::Update, AccumulatedKind::Delete) => AccumulatedKind::Delete,
-                    (AccumulatedKind::Delete, AccumulatedKind::Update) => AccumulatedKind::Update,
-                    _ => new_kind,
-                };
+                *existing = collapse(existing, &new_kind);
             }
             Entry::Vacant(vac) => {
                 vac.insert(new_kind);
@@ -830,4 +837,75 @@ fn mtime_of(path: &Path) -> Option<i64> {
 
 fn size_of(path: &Path) -> Option<i64> {
     path.metadata().ok().map(|m| m.len() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn c() -> AccumulatedKind { AccumulatedKind::Create }
+    fn u() -> AccumulatedKind { AccumulatedKind::Update }
+    fn d() -> AccumulatedKind { AccumulatedKind::Delete }
+
+    #[test]
+    fn create_then_modify_stays_create() {
+        assert_eq!(collapse(&c(), &u()), c());
+    }
+
+    #[test]
+    fn create_then_delete_becomes_delete() {
+        assert_eq!(collapse(&c(), &d()), d());
+    }
+
+    #[test]
+    fn delete_then_create_becomes_create() {
+        // File was deleted then re-created in the debounce window → new file.
+        assert_eq!(collapse(&d(), &c()), c());
+    }
+
+    #[test]
+    fn update_then_delete_becomes_delete() {
+        assert_eq!(collapse(&u(), &d()), d());
+    }
+
+    #[test]
+    fn delete_then_update_becomes_update() {
+        // Unknown history after delete+update — treat as a modify.
+        assert_eq!(collapse(&d(), &u()), u());
+    }
+
+    #[test]
+    fn update_then_update_stays_update() {
+        // Same event repeated — last wins (Update).
+        assert_eq!(collapse(&u(), &u()), u());
+    }
+
+    #[test]
+    fn create_then_create_stays_create() {
+        assert_eq!(collapse(&c(), &c()), c());
+    }
+
+    #[test]
+    fn delete_then_delete_stays_delete() {
+        assert_eq!(collapse(&d(), &d()), d());
+    }
+
+    #[test]
+    fn multi_step_sequence() {
+        // Simulate: Create → Modify → Modify → Delete
+        let mut k = c();
+        k = collapse(&k, &u());
+        k = collapse(&k, &u());
+        k = collapse(&k, &d());
+        assert_eq!(k, d());
+    }
+
+    #[test]
+    fn delete_recreate_modify_sequence() {
+        // File is deleted, then re-created, then modified — should end as Create.
+        let mut k = d();
+        k = collapse(&k, &c());
+        k = collapse(&k, &u());
+        assert_eq!(k, c());
+    }
 }
