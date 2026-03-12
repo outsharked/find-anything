@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.6.2] - 2026-03-11
+
 ### Added
 
 - **Text normalization** — the server now normalizes all text content before writing it to ZIP archives; minified JSON/TOML files are pretty-printed using built-in formatters; any file type can be routed through an optional external formatter binary (e.g. biome, prettier, rustfmt) configured in `server.toml`; lines exceeding `normalization.max_line_length` (default 120) are word-wrapped; markdown files are exempt (line structure is semantically meaningful); normalization runs in phase 1 and the normalized content is written to a new `.gz` in `to-archive/` so the archive phase reads pre-formatted content without re-invoking any formatter
