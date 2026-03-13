@@ -5,9 +5,8 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use tracing::{info, warn};
-use walkdir::WalkDir;
 
 use find_common::{
     api::{IndexFile, IndexLine, IndexingFailure, SCANNER_VERSION},
@@ -636,20 +635,7 @@ pub async fn scan_single_file(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn build_globset(patterns: &[String]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pat in patterns {
-        // Always use forward slashes — normalise any backslashes from Windows configs.
-        let pat = pat.replace('\\', "/");
-        builder.add(Glob::new(&pat)?);
-        // For patterns like **/node_modules/**, also add **/node_modules so that
-        // the directory entry itself is excluded and walkdir won't descend into it.
-        if let Some(dir_pat) = pat.strip_suffix("/**") {
-            builder.add(Glob::new(dir_pat)?);
-        }
-    }
-    Ok(builder.build()?)
-}
+use crate::walk::build_globset;
 
 /// Given a list of include glob patterns, return the set of **terminal**
 /// directory prefixes — the deepest safe literal directory path before any
@@ -772,135 +758,42 @@ fn walk_paths(
 
     for root_str in paths {
         let root_str = normalise_root(root_str);
-        let root_str = root_str.as_str();
-        let root = Path::new(root_str);
+        let root = PathBuf::from(&root_str);
         // When scanning a subdir, walk from root/subdir but compute rel-paths
         // relative to root so they match what the server already stores.
         let walk_start = match subdir {
-            Some(sub) => {
-                let mut p = PathBuf::from(root_str);
-                p.push(sub);
-                p
-            }
-            None => PathBuf::from(root_str),
+            Some(sub) => { let mut p = root.clone(); p.push(sub); p }
+            None => root.clone(),
         };
-        for entry in WalkDir::new(&walk_start)
-            .follow_links(scan.follow_symlinks)
-            .into_iter()
-            .filter_entry(|e| {
-                let name = e.file_name().to_str().unwrap_or("");
 
-                if e.file_type().is_dir() {
-                    // Skip hidden directories (avoid descending into .git etc.).
-                    // Hidden FILES are handled in the loop body so that control files
-                    // (.index) are always visible regardless of include_hidden.
-                    if !scan.include_hidden && name.starts_with('.') && e.depth() > 0 {
-                        return false;
-                    }
-                    // Don't descend into directories that contain a .noindex marker.
-                    // This is checked inline so the progress count is accurate and
-                    // WalkDir never collects files from excluded subtrees.
-                    if e.path().join(&scan.noindex_file).exists() {
-                        tracing::debug!("skipping {} (.noindex present)", e.path().display());
-                        return false;
-                    }
-                    // If include patterns have extractable directory prefixes, prune
-                    // directories that can't contain any matching files.
-                    if e.depth() > 0 {
-                        if let Some(terminals) = include_dirs {
-                            if let Ok(rel) = e.path().strip_prefix(root) {
-                                let rel_str = normalise_path_sep(&rel.to_string_lossy());
-                                // Allow the directory if it is a terminal, an ancestor of a
-                                // terminal (navigating toward the ** portion), or already
-                                // inside a terminal (under the ** portion).
-                                let allowed = terminals.iter().any(|t| {
-                                    t == &rel_str
-                                        || t.starts_with(&format!("{rel_str}/"))
-                                        || rel_str.starts_with(&format!("{t}/"))
-                                });
-                                if !allowed {
-                                    return false;
-                                }
-                            }
-                        }
-                    }
+        crate::walk::walk_source_tree(
+            &walk_start,
+            &root,
+            scan,
+            excludes,
+            include_dirs,
+            |item| {
+                let crate::walk::WalkItem::File { abs, rel, name, depth } = item else { return; };
+                // Hidden files (hidden directories already pruned in walk_source_tree).
+                if !scan.include_hidden && name.starts_with('.') && depth > 0 {
+                    return;
                 }
-                // Exclusion globs (match relative to root, forward-slash normalised).
-                if let Ok(rel) = e.path().strip_prefix(root) {
-                    let rel_str = normalise_path_sep(&rel.to_string_lossy());
-                    if excludes.is_match(&*rel_str) {
-                        return false;
-                    }
+                // Apply source-level include filter.
+                if !includes.is_empty() && !includes.is_match(&*rel) {
+                    return;
                 }
-                true
-            })
-        {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(e) => {
-                    let access_denied = e.io_error()
-                        .map(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
-                        .unwrap_or(false);
-                    // Paths that match an exclude glob can produce an OS error
-                    // before filter_entry gets a chance to prune them — log
-                    // those at debug since they're expected.
-                    let excluded = e.path()
-                        .and_then(|p| p.strip_prefix(root).ok())
-                        .map(|rel| excludes.is_match(&*normalise_path_sep(&rel.to_string_lossy())))
-                        .unwrap_or(false);
-                    if excluded {
-                        tracing::debug!("skipping excluded path: {e}");
-                    } else if access_denied {
-                        warn!("skipping inaccessible path: {e}");
-                    } else {
-                        warn!("walk error: {e:#}");
-                    }
-                    continue;
+                map.insert(rel, abs);
+                if last_log.elapsed() >= log_interval {
+                    info!("walking filesystem... {} files found so far", map.len());
+                    last_log = std::time::Instant::now();
                 }
-            };
-            let name = entry.file_name().to_str().unwrap_or("");
-
-            // Skip the .index control file (not a content file).
-            if name == scan.index_file {
-                continue;
-            }
-
-            if !entry.file_type().is_file() {
-                continue;
-            }
-
-            // Hidden files (hidden directories already pruned in filter_entry).
-            if !scan.include_hidden && name.starts_with('.') && entry.depth() > 0 {
-                continue;
-            }
-
-            let abs = entry.path().to_path_buf();
-            let rel = relative_path(&abs, paths);
-            // Apply include filter (empty GlobSet = no filter = include all).
-            if !includes.is_empty() && !includes.is_match(&*rel) {
-                continue;
-            }
-            map.insert(rel, abs);
-
-            if last_log.elapsed() >= log_interval {
-                info!("walking filesystem... {} files found so far", map.len());
-                last_log = std::time::Instant::now();
-            }
-        }
+            },
+        );
     }
 
     map
 }
 
-fn relative_path(abs: &Path, roots: &[String]) -> String {
-    for root in roots {
-        let root = normalise_root(root);
-        if let Ok(rel) = abs.strip_prefix(&root) {
-            return normalise_path_sep(&rel.to_string_lossy());
-        }
-    }
-    normalise_path_sep(&abs.to_string_lossy())
-}
 
 use crate::path_util::{normalise_path_sep, normalise_root};
 

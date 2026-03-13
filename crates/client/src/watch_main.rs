@@ -2,6 +2,7 @@ mod api;
 mod batch;
 mod path_util;
 mod subprocess;
+mod walk;
 mod watch;
 
 use anyhow::{Context, Result};

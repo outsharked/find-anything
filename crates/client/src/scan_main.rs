@@ -6,6 +6,7 @@ mod path_util;
 mod scan;
 mod subprocess;
 mod upload;
+mod walk;
 
 use std::path::PathBuf;
 

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Result;
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -16,7 +16,6 @@ use find_common::{
 };
 
 use walkdir::WalkDir;
-
 use crate::api::ApiClient;
 use crate::batch::build_index_files;
 use crate::subprocess;
@@ -303,18 +302,7 @@ fn find_source<'a>(path: &Path, map: &'a SourceMap) -> Option<(String, String, P
 
 // ── Exclusion ─────────────────────────────────────────────────────────────────
 
-fn build_globset(patterns: &[String]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pat in patterns {
-        // Normalise backslashes so Windows-style patterns work correctly.
-        let pat = pat.replace('\\', "/");
-        builder.add(Glob::new(&pat)?);
-        if let Some(dir_pat) = pat.strip_suffix("/**") {
-            builder.add(Glob::new(dir_pat)?);
-        }
-    }
-    Ok(builder.build()?)
-}
+use crate::walk::build_globset;
 
 fn is_excluded(abs_path: &Path, source_map: &SourceMap, excludes: &GlobSet) -> bool {
     // Find the root for this path and check relative path against excludes.
@@ -331,25 +319,13 @@ fn is_excluded(abs_path: &Path, source_map: &SourceMap, excludes: &GlobSet) -> b
 
 use crate::path_util::{normalise_path_sep, normalise_root};
 
-/// Walk `root` with `WalkDir` and register a `NonRecursive` inotify watch for
-/// every accessible, non-excluded directory, pruning branches that can't
-/// contain included files.  Returns the number of directories successfully
-/// registered.
+/// Walk `root` registering a `NonRecursive` inotify watch for every accessible,
+/// non-excluded directory.  Returns the number of directories registered.
 ///
-/// `terminals` mirrors the `include_dir_prefixes` result from scan: when
-/// `Some`, only directories that are a terminal, an ancestor of one, or inside
-/// one are visited.  `None` means no terminal pruning — traverse everything
-/// (e.g. when called for a newly-created directory already inside the include
-/// area).
-///
-/// `excludes` is the compiled global exclude globset from `[scan] exclude`.
-/// Directories matching an exclude pattern are skipped entirely, matching the
-/// behaviour of the `find-scan` walk and avoiding exhausting the inotify limit
-/// with large excluded trees (node_modules, target, .git, etc.).
-///
-/// Using per-directory `NonRecursive` watches means individual inaccessible
-/// subdirectories don't abort the entire setup.  New directories are handled
-/// dynamically: the event loop calls `watch_tree` again when it sees a `Create`
+/// Delegates all filtering to [`crate::walk::walk_source_tree`] so the rules
+/// are identical to `find-scan`.  Per-directory `NonRecursive` watches mean
+/// individual inaccessible subdirectories don't abort the entire setup.  New
+/// directories are handled dynamically when the event loop sees a `Create`
 /// event on a directory path.
 fn watch_tree(
     watcher: &mut RecommendedWatcher,
@@ -359,71 +335,26 @@ fn watch_tree(
     scan: &find_common::config::ScanConfig,
 ) -> usize {
     let mut count = 0usize;
-    for entry in WalkDir::new(root)
-        .follow_links(scan.follow_symlinks)
-        .into_iter()
-        .filter_entry(|e| {
-            if e.depth() == 0 { return true; }
-            // Skip hidden entries (names starting with '.') when include_hidden is false.
-            if !scan.include_hidden {
-                if let Some(name) = e.path().file_name() {
-                    if name.as_encoded_bytes().first() == Some(&b'.') {
-                        return false;
-                    }
-                }
+    crate::walk::walk_source_tree(root, root, scan, excludes, terminals, |item| {
+        let crate::walk::WalkItem::Dir(dir_path) = item else { return; };
+        match watcher.watch(&dir_path, RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                tracing::debug!("watch: registered {:?}", dir_path);
+                count += 1;
             }
-            // Don't descend into directories that contain a .noindex marker.
-            if e.file_type().is_dir() && e.path().join(&scan.noindex_file).exists() {
-                tracing::debug!("watch: skipping {} (.noindex present)", e.path().display());
-                return false;
-            }
-            if let Ok(rel) = e.path().strip_prefix(root) {
-                let rel_str = normalise_path_sep(&rel.to_string_lossy());
-                // Skip directories that match an exclude glob.
-                if excludes.is_match(&*rel_str) {
-                    return false;
-                }
-                // Apply the same three-way terminal pruning used by find-scan.
-                if let Some(terms) = terminals {
-                    if e.file_type().is_dir() {
-                        return terms.iter().any(|t| {
-                            t == &rel_str
-                                || t.starts_with(&format!("{rel_str}/"))
-                                || rel_str.starts_with(&format!("{t}/"))
-                        });
-                    }
-                }
-            }
-            true
-        })
-    {
-        match entry {
-            Ok(e) if e.file_type().is_dir() => {
-                let dir_path = e.into_path();
-                match watcher.watch(&dir_path, RecursiveMode::NonRecursive) {
-                    Ok(()) => {
-                        tracing::debug!("watch: registered {:?}", dir_path);
-                        count += 1;
-                    }
-                    Err(e) => {
-                        let is_denied = matches!(
-                            &e.kind,
-                            notify::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied
-                        );
-                        if is_denied {
-                            warn!("watch: skipping inaccessible directory {:?}", dir_path);
-                        } else {
-                            warn!("watch: could not register {:?}: {e:#}", dir_path);
-                        }
-                    }
-                }
-            }
-            Ok(_) => {}  // not a directory — no watch needed
             Err(e) => {
-                warn!("watch: walk error during setup: {e}");
+                let is_denied = matches!(
+                    &e.kind,
+                    notify::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied
+                );
+                if is_denied {
+                    warn!("watch: skipping inaccessible directory {:?}", dir_path);
+                } else {
+                    warn!("watch: could not register {:?}: {e:#}", dir_path);
+                }
             }
         }
-    }
+    });
     count
 }
 

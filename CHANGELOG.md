@@ -29,6 +29,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- **Shared walk module for `find-scan` and `find-watch`** — `build_globset` and the full directory-traversal logic (hidden-file pruning, `.noindex` detection, exclude-glob matching, terminal pruning) are extracted into a new `crates/client/src/walk.rs` module (`walk_source_tree`, `build_globset`); both `find-scan` and `find-watch` now delegate to the same code path, guaranteeing identical filtering behaviour across scan and watch operations
+
 - **`max_file_size_mb` renamed to `max_content_size_mb`** — all documentation, example configs, and installer templates updated; the old key is still accepted as an alias for backward compatibility
 - **`mise dev` creates `web/build/` if missing** — `mkdir -p web/build` runs before `cargo-watch` starts so the `#[derive(RustEmbed)]` folder check doesn't abort the build when the web UI hasn't been built yet
 - **`mise dev` enables debug logging** — server started with `RUST_LOG=debug` in the dev task
