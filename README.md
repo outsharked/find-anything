@@ -199,7 +199,7 @@ include = ["documents/**", "projects/**"]
 
 [scan]
 exclude = ["**/.git/**", "**/node_modules/**", "**/target/**"]
-max_file_size_mb = 10
+max_content_size_mb = 10
 ```
 
 ### 3. Run an initial scan
@@ -313,9 +313,9 @@ name     = "home"
 paths    = ["/home/alice/documents", "/home/alice/projects"]
 
 [scan]
-exclude          = ["**/.git/**", "**/node_modules/**", "**/target/**"]
-max_file_size_mb = 10
-follow_symlinks  = false
+exclude             = ["**/.git/**", "**/node_modules/**", "**/target/**"]
+max_content_size_mb = 10
+follow_symlinks     = false
 include_hidden   = false
 noindex_file     = ".noindex"   # place this file in a dir to skip it entirely
 index_file       = ".index"     # place this TOML file in a dir to override scan settings for that subtree

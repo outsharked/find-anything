@@ -11,6 +11,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **`find-watch` crash on inaccessible directories** — replaced single `RecursiveMode::Recursive` watch (which aborts the entire tree on the first permission error) with a `WalkDir`-based setup that calls `watcher.watch(dir, NonRecursive)` per directory, skipping inaccessible ones with a warning
+- **`find-watch` respects `[scan]` config during watch setup** — `watch_tree` now mirrors `find-scan`'s walk behaviour: honours `include_hidden` (skips dot-files/dot-directories when `false`), `follow_symlinks`, `.noindex` markers, and `exclude` glob patterns; previously these settings were ignored during watch registration, causing e.g. `.cargo` and `.oh-my-zsh` to be needlessly traversed
+- **`find-watch` applies terminal pruning** — `include_dir_prefixes` (previously only used in `find-scan`) is now shared via `path_util` and applied during watch setup; only directories on the path to an `include` pattern terminal are registered, avoiding registering watches for irrelevant subtrees
+- **`find-scan` logs inaccessible paths at WARN** — permission-denied walk errors during the one-time scan now log at `warn` (was `debug`) so users can see why paths are being skipped; excluded paths that surface an OS error before `filter_entry` runs still log at `debug`
+- **`find-watch` registers new directories dynamically** — `Create` events on directories trigger `watch_tree` for the new subtree so files added inside a freshly created directory are detected
+
 - **Scan progress counters** — `new`, `modified`, and `upgraded` counts in progress log lines now only reflect files that were actually indexed; previously they were pre-incremented before `process_file` ran, so files later excluded by a filter or missing extractor were incorrectly counted as "new" in intermediate logs
 - **`excluded` shown in progress logs** — excluded file count is now included in the periodic progress line (`N unchanged, M excluded`) so it's visible during a scan, not just in the final summary
 - **`foreign_keys = ON` per connection** — `PRAGMA foreign_keys` is now re-enabled on every SQLite connection open; previously it was only set once at schema creation time and had no effect on subsequent connections
@@ -23,6 +29,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- **`max_file_size_mb` renamed to `max_content_size_mb`** — all documentation, example configs, and installer templates updated; the old key is still accepted as an alias for backward compatibility
 - **`mise dev` creates `web/build/` if missing** — `mkdir -p web/build` runs before `cargo-watch` starts so the `#[derive(RustEmbed)]` folder check doesn't abort the build when the web UI hasn't been built yet
 - **`mise dev` enables debug logging** — server started with `RUST_LOG=debug` in the dev task
 - **Normalization formatter paths use shims** — local `config/server.toml` updated to use `~/.local/bin/biome` and the pnpm global `prettier` shim instead of version-pinned mise install paths

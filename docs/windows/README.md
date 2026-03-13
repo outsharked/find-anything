@@ -35,7 +35,7 @@ path = "C:"
 include = "code/**", "project/**"
 
 [scan]
-max_file_size_mb = 10
+max_content_size_mb = 10
 exclude = ["**/.git/**", "**/node_modules/**", "**/target/**"]
 
 [watch]

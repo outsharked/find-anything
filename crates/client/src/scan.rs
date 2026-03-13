@@ -673,43 +673,7 @@ fn build_globset(patterns: &[String]) -> Result<GlobSet> {
 /// everything).
 ///
 /// Example: `["Users/alice/**", "data/**"]` → `{"Users/alice", "data"}`
-fn include_dir_prefixes(patterns: &[String]) -> Option<std::collections::HashSet<String>> {
-    let mut terminals = std::collections::HashSet::new();
-    for pat in patterns {
-        let pat = pat.replace('\\', "/");
-
-        // Negation patterns (e.g. `!some/path/**`) — fall back to no pruning.
-        if pat.starts_with('!') {
-            return None;
-        }
-
-        // Find the first wildcard. Include `{` for alternations like {a,b}/**.
-        let wildcard_pos = pat.find(['*', '?', '[', '{']);
-
-        // Determine the safe literal directory prefix: everything before the
-        // last `/` that precedes the first wildcard. This prevents cutting a
-        // directory component in half (e.g. `Users/Administrat?r` → `Users`).
-        let literal = match wildcard_pos {
-            None => pat.as_str(),       // no wildcard — whole pattern is literal
-            Some(0) => return None,     // wildcard at root — can't prune anything
-            Some(i) => {
-                let before = &pat[..i]; // e.g. "Users/Administrat" or "Users/"
-                match before.rfind('/') {
-                    None => return None, // wildcard in the first component — can't prune
-                    Some(slash) => &pat[..slash], // safe: last complete dir before wildcard
-                }
-            }
-        };
-
-        let literal = literal.trim_end_matches('/');
-        if literal.is_empty() {
-            return None;
-        }
-
-        terminals.insert(literal.to_string());
-    }
-    Some(terminals)
-}
+pub(crate) use crate::path_util::include_dir_prefixes;
 
 /// Walk ancestor directories from `file_path` up to the nearest source root,
 /// applying any `.index` override files found. Returns the effective `ScanConfig`
@@ -874,20 +838,20 @@ fn walk_paths(
             let entry = match entry {
                 Ok(e) => e,
                 Err(e) => {
-                    // Access-denied errors are expected on Windows for protected
-                    // directories (e.g. C:\Users\Administrator). Log at debug so
-                    // they don't spam the output; the same applies to paths that
-                    // match an exclude glob but whose OS error surfaced before
-                    // filter_entry could prevent the descent.
                     let access_denied = e.io_error()
                         .map(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
                         .unwrap_or(false);
+                    // Paths that match an exclude glob can produce an OS error
+                    // before filter_entry gets a chance to prune them — log
+                    // those at debug since they're expected.
                     let excluded = e.path()
                         .and_then(|p| p.strip_prefix(root).ok())
                         .map(|rel| excludes.is_match(&*normalise_path_sep(&rel.to_string_lossy())))
                         .unwrap_or(false);
-                    if access_denied || excluded {
-                        tracing::debug!("skipping inaccessible path: {e}");
+                    if excluded {
+                        tracing::debug!("skipping excluded path: {e}");
+                    } else if access_denied {
+                        warn!("skipping inaccessible path: {e}");
                     } else {
                         warn!("walk error: {e:#}");
                     }

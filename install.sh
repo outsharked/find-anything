@@ -241,7 +241,7 @@ path = "$DIR_ESC"
 # include  = []   # Glob patterns to limit indexing (e.g. ["docs/**", "src/**"])
 
 [scan]
-# max_file_size_mb = 10   # Skip files larger than this (MB)
+# max_content_size_mb = 10   # Skip files larger than this (MB)
 # max_line_length  = 120    # Wrap long lines at this column (0 = disable)
 # follow_symlinks  = false
 # include_hidden   = false  # Index dot-files and dot-directories

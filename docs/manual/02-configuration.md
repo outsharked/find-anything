@@ -57,9 +57,9 @@ paths = ["/home/alice/documents", "/home/alice/projects"]
 
 [scan]
 exclude          = ["**/.git/**", "**/node_modules/**", "**/target/**"]
-max_file_size_mb = 10
-follow_symlinks  = false
-include_hidden   = false
+max_content_size_mb = 10
+follow_symlinks     = false
+include_hidden      = false
 
 [scan.archives]
 enabled               = true
@@ -103,18 +103,18 @@ paths = ["/home/alice/Documents"]
 
 ```toml
 [scan]
-exclude          = ["**/.git/**", "**/node_modules/**"]
-max_file_size_mb = 10
-follow_symlinks  = false
-include_hidden   = false
-noindex_file     = ".noindex"
-index_file       = ".index"
+exclude             = ["**/.git/**", "**/node_modules/**"]
+max_content_size_mb = 10
+follow_symlinks     = false
+include_hidden      = false
+noindex_file        = ".noindex"
+index_file          = ".index"
 ```
 
 | Setting | Default | Description |
 |---|---|---|
 | `exclude` | `[]` | Glob patterns (relative to source root) of paths to skip |
-| `max_file_size_mb` | `10` | Skip files larger than this size. Does not apply to archives — archive members are filtered individually after extraction. |
+| `max_content_size_mb` | `10` | Skip files larger than this size. Does not apply to archives — archive members are filtered individually after extraction. |
 | `follow_symlinks` | `false` | Follow symbolic links during the filesystem walk |
 | `include_hidden` | `false` | Include dot-files and dot-directories |
 | `noindex_file` | `.noindex` | Filename that marks a directory as excluded (see below) |
@@ -175,7 +175,7 @@ Place a `.index` file in any directory to override scan settings for that subtre
 # .index — place in a directory to override scan settings for this subtree
 
 # Override the file size limit
-max_file_size_mb = 100
+max_content_size_mb = 100
 
 # Add extra excludes (relative to this directory)
 exclude = ["build/**", "*.tmp"]

@@ -85,7 +85,7 @@ The file may be excluded by:
 - `scan.exclude` glob patterns in `client.toml`
 - A `.noindex` file in a parent directory
 - `scan.include_hidden = false` (the default) — dot-files and dot-directories are skipped
-- `scan.max_file_size_mb` — files above this limit are skipped
+- `scan.max_content_size_mb` — files above this limit are skipped
 
 **Check for extraction errors:**
 
@@ -148,9 +148,9 @@ cargo build --release --target armv7-unknown-linux-musleabihf
 
 **`find-scan` memory spike during a scan:**
 
-`find-scan` holds extracted content in memory before sending it to the server. For very large files (near `max_file_size_mb`) or large archives, this can be significant. If memory is constrained:
+`find-scan` holds extracted content in memory before sending it to the server. For very large files (near `max_content_size_mb`) or large archives, this can be significant. If memory is constrained:
 
-- Lower `scan.max_file_size_mb` (default: 10)
+- Lower `scan.max_content_size_mb` (default: 10)
 - Lower `scan.archives.max_7z_solid_block_mb` (default: 256)
 - Lower `scan.archives.max_temp_file_mb` (default: 500)
 

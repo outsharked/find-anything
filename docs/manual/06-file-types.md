@@ -22,7 +22,7 @@ Plain text files and source code are indexed by content. Any file whose content 
 
 **Content detection** — Files without a recognized extension are sniffed for text content using byte-pattern analysis. UTF-8, Latin-1, and other encodings are detected automatically. Binary files that appear to be text are indexed; binary files that are clearly binary (high non-printable byte ratio) are skipped.
 
-**Max file size** — Files larger than `scan.max_file_size_mb` (default: 10 MB) are indexed by filename only, without content.
+**Max file size** — Files larger than `scan.max_content_size_mb` (default: 10 MB) are indexed by filename only, without content.
 
 ---
 

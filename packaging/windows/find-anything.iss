@@ -210,7 +210,7 @@ begin
     'include = ["' + UserHomeRelativePath() + '/**"]' + NL +
     NL +
     '[scan]' + NL +
-    '# max_file_size_mb = 10   # Skip files larger than this (MB)' + NL +
+    '# max_content_size_mb = 10   # Skip files larger than this (MB)' + NL +
     '# max_line_length  = 120  # Wrap long lines at this column (0 = disable)' + NL +
     '# follow_symlinks  = false' + NL +
     '# include_hidden   = false  # Index dot-files and dot-directories' + NL +

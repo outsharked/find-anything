@@ -298,7 +298,7 @@ exclude = [
     "**/target/**",
     "**/__pycache__/**",
 ]
-max_file_size_mb = 10     # Skip files larger than this (does not apply to archives)
+max_content_size_mb = 10  # Skip files larger than this (does not apply to archives)
 follow_symlinks  = false  # Follow symbolic links during filesystem walk
 include_hidden   = false  # Include dot-files and dot-directories
 
