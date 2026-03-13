@@ -22,6 +22,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **`foreign_keys = ON` per connection** — `PRAGMA foreign_keys` is now re-enabled on every SQLite connection open; previously it was only set once at schema creation time and had no effect on subsequent connections
 - **Stale path entry after rename** — `get_file_lines` and `get_metadata_context` now fix the `line_number=0` path entry inline when it doesn't match `files.path` (caused by a rename without re-indexing); guards against accumulated `line_number=0` duplicates from historical data missing the FK cascade
 - **"Refresh results" banner not dismissing** — clicking "refresh results" re-triggered the `$liveEvent` reactive block (Svelte tracks `deletedPaths` as a dependency when `doSearch` resets it with `new Set()`), immediately re-setting `resultsStale = true`; fixed by tracking the last handled event by object reference and skipping re-processing of already-handled events
+- **FTS5 syntax error on queries containing `.`** — `build_fts_query` now splits on any non-alphanumeric/non-underscore character (not just whitespace) so e.g. `plan.index` yields tokens `plan` and `index` instead of the bare `plan.index` token that caused `fts5: syntax error near "."`
+- **Filename highlight missing tokens split by `.`** — `highlightPath` in `SearchResult.svelte` now mirrors the backend tokenisation (splitting on `\W+`) so both parts of e.g. `img.jpg` are highlighted in filename-match results
+- **Pointer cursor on `:line` badge** — the non-interactive line-number badge in search result headers now shows a default cursor instead of inheriting the pointer cursor from the clickable header
 
 ### Added
 

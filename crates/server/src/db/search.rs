@@ -65,11 +65,13 @@ pub(crate) fn build_fts_query(query: &str, phrase: bool) -> Option<String> {
         // than a phrase query.  Quoted phrases require ≥3 trigrams to match
         // (i.e. the term must be ≥5 chars), which breaks short-word searches
         // like "test" (4 chars, 2 trigrams).  Unquoted token queries have no
-        // such minimum.  Strip FTS5 syntax characters to avoid query errors.
+        // such minimum.  Split on any non-alphanumeric character (except `_`)
+        // so that e.g. "plan.index" yields ["plan", "index"] rather than a
+        // single token that FTS5 cannot parse.
         let terms: Vec<String> = query
-            .split_whitespace()
-            .map(|w| w.chars().filter(|c| !matches!(c, '"' | '*' | '(' | ')' | '^')).collect::<String>())
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
             .filter(|w| w.len() >= 3)
+            .map(|w| w.to_string())
             .collect();
         if terms.is_empty() {
             return None;
@@ -577,9 +579,20 @@ mod tests {
     }
 
     #[test]
-    fn fts_fuzzy_strips_special_chars() {
+    fn fts_fuzzy_splits_on_dot() {
+        // "plan.index" should yield two tokens joined with AND, not a bare "plan.index"
+        // that causes an FTS5 syntax error.
+        let q = build_fts_query("plan.index", false).unwrap();
+        assert!(!q.contains('.'));
+        assert!(q.contains("plan") && q.contains("index"));
+    }
+
+    #[test]
+    fn fts_fuzzy_splits_on_special_chars() {
+        // Non-alphanumeric chars other than _ are treated as separators.
         let q = build_fts_query("test^query", false).unwrap();
         assert!(!q.contains('^'));
-        assert!(q.contains("testquery") || q.contains("test"));
+        // Both sides are long enough to survive the >=3 filter
+        assert!(q.contains("test") && q.contains("query"));
     }
 }

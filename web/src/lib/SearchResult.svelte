@@ -120,7 +120,10 @@
 
 	/** Return HTML with query terms wrapped in <mark> for filename-only results. */
 	function highlightPath(path: string, q: string): string {
-		const terms = q.trim().split(/\s+/).filter(Boolean);
+		// Split on whitespace and any non-alphanumeric/non-underscore character,
+		// mirroring the backend's build_fts_query tokenisation so that e.g.
+		// "img.jpg" highlights both "img" and "jpg" in the filename.
+		const terms = q.trim().split(/[\s\W]+/).filter(t => t.length >= 3);
 		if (terms.length === 0) return escapeHtml(path);
 		const pattern = new RegExp(
 			terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
@@ -299,6 +302,7 @@
 		font-family: var(--font-mono);
 		font-size: 12px;
 		flex-shrink: 0;
+		cursor: default;
 	}
 
 	.hit-nav {

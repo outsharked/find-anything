@@ -3,24 +3,19 @@
 Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
-[ ] CHORE: Integration tests
+
 [ ] CHORE: Code quality analysis on file scanning/walking/filtering pipeline
-[ ] BUG: When files added/removed, tree view does not update. (websockets?)
+
 [ ] FEAT: metrics - log start/end time of critical proceses to an external service - Grafana LGTM?
 [ ] FEAT: With [sources.nas-data] path = "/mnt/nas-data" missing from server, need to handle inline displaye better
 [ ] FEAT: In image detail split view, should be able to move divider/resize window
 [ ] FEAT: Create short URL to link
 [ ] FEAT: use video player for video files
 [ ] Look at debug logs during e.g. a simple delete - seems to do a lot of stuff it doesn't need to, e.g. passing off to archving. We should pre-filter the gz file - if only delete/small adds, no need to go to archiving. Check szie of text content, file types.
-
-[ ] Arrow Up/Down while an item is selected in left nav should move to next/previous item
 [ ] BUG: pictures/2014/Jamie Phone 2014/20140410_074302.jpg - no metadata available - why?
 
-
-[ ] BUG: Hand pointer shows when hovering over :line in search results page when there are no "next/prev" line arrows
 [ ] find-reindex -- can this only operate against previously-not-reindexed content?
 [ ] FEAT: Guard against low disk space
-[ ] BUG: "WARN find_server::routes::search: search source error: fts5: syntax error near ".": Error code 1: SQL logic error"
 [ ] BUG: Fetching existing file list seems to not be targeted to a particular tree (e.g. find-scan /path/to/dir)
 [ ] BUG: Monhegan Lighthouse DOry 2005.tif can't be shown
 [ ] FEAT: Add query syntax "type: image" with intellisense
@@ -37,18 +32,15 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] FEAT: Add "format json' button
 [ ] Searching on ".png" doesn't work is that improvable
 [ ] Include **/AppData/**, **/bin/**, **/obj/**, **/\*.log by default, "**/pnpm/\*\*", vscode-remote-wsl
-[ ] Unit test for handling of retrieveal duplicated items in index
-[ ] Duplicate file link missing from one file?
+[ ] CHORE: Unit test for handling of retrieveal duplicated items in index
 [ ] Do we actually want to recode innner archives?
 [ ] Do we actually want to index inner archives?
-[ ] refactor front end to split svg assets out into files, etc
-[ ] Server install should also be able to chain client install
-[ ] Add providing uname/password for share to config for each source
-[ ] find-watch should buffer changes for some configurable # of seconds before sending the update
-[ ] Inline extraction of safe file types instread of making subporocesses
-[ ] 2026-03-05T04:36:02.219180Z WARN find_scan::scan: walk error: IO error for operation on C:/Users\Administrator: Access is denied. (os error 5)
-[ ] Code quality: avoid optional typescript parameters; default values should be set at as high a level as possible and propagated conclusively. Add to claude.md
-[ ] Custom protocol handler (chrome) to allow exploring the file location. Requires client config for roots.
+[ ] CHORE: refactor front end to split svg assets out into files, etc
+[ ] CHORE: Server install should also be able to chain client install
+[ ] FEAT: Add providing uname/password for share to config for each source
+[ ] CHORE: Inline extraction of safe file types instread of making subporocesses
+[ ] CHORE: Code quality: avoid optional typescript parameters; default values should be set at as high a level as possible and propagated conclusively. Add to claude.md
+[ ] FEAT: Custom protocol handler (chrome) to allow exploring the file location. Requires client config for roots.
 
 ### Major features/Integration
 
@@ -58,6 +50,12 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ### Completed Items
 
+[x] BUG: "WARN find_server::routes::search: search source error: fts5: syntax error near ".": Error code 1: SQL logic error"
+[x] BUG: Hand pointer shows when hovering over :line in search results page when there are no "next/prev" line arrows
+[x] FEAT: Arrow Up/Down while an item is selected in left nav should move to next/previous item
+[x] FEAT: find-watch should buffer changes for some configurable # of seconds before sending the update
+[x] FEAT: When files added/removed, tree view does not update. (sse)
+[x] CHORE: Integration tests
 [x] CHORE: find-scan and find-watch should follow all the same rules and configuration during their walk of the tree. The only thing they do differenltly is register a watcher, or call the indexer. Can we reuse this code, and have each client pass in an callback that gets called for each file that is accepted by the walk, and can then either register a watch or do the indexing?
 [x] BUG: Create a file, then rename it, it has a duplicate pointing to original
 [x] BUG: Don't emit this like a log, this should be user-facing: ❯ find-admin status > 2026-03-12T20:32:11.451925Z  WARN find_common::config: unknown config key: sources.0.base_url
