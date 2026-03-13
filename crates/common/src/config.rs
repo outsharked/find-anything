@@ -509,11 +509,38 @@ pub struct ServerAppConfig {
     #[serde(default)]
     pub normalization: NormalizationSettings,
     #[serde(default)]
+    pub compaction: CompactionConfig,
+    #[serde(default)]
     pub log: LogConfig,
     /// Per-source server configuration (e.g. filesystem root for raw file serving).
     #[serde(default)]
     pub sources: std::collections::HashMap<String, ServerSourceConfig>,
 }
+
+/// Configuration for automatic archive compaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    /// Minimum percentage of orphaned bytes required to trigger compaction.
+    /// If the orphaned fraction is below this threshold, compaction is skipped.
+    /// Set to 0.0 to always compact, or 100.0 to effectively disable.
+    #[serde(default = "default_compaction_threshold_pct")]
+    pub threshold_pct: f64,
+    /// Local time (HH:MM, 24-hour) at which the daily compaction window runs.
+    #[serde(default = "default_compaction_start_time")]
+    pub start_time: String,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            threshold_pct: default_compaction_threshold_pct(),
+            start_time: default_compaction_start_time(),
+        }
+    }
+}
+
+fn default_compaction_threshold_pct() -> f64 { 10.0 }
+fn default_compaction_start_time() -> String { "02:00".to_string() }
 
 /// Server-side configuration for a named source.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -749,13 +776,22 @@ pub fn default_config_path() -> String {
 
 // ── Config loaders with unknown-field warnings ─────────────────────────────
 
-/// Parse a client `client.toml` string, emitting `warn!` for any unrecognised keys.
-pub fn parse_client_config(toml_str: &str) -> Result<ClientConfig> {
+/// Parse a client `client.toml` string.
+///
+/// Returns `(config, warnings)` where `warnings` is a list of human-readable
+/// warning strings for unknown or deprecated keys.  Callers are responsible for
+/// displaying these to the user (e.g. `eprintln!`) rather than routing them
+/// through the tracing subscriber.
+pub fn parse_client_config(toml_str: &str) -> Result<(ClientConfig, Vec<String>)> {
     let value: toml::Value = toml::from_str(toml_str).context("invalid TOML")?;
-    // Detect deprecated key before deserialisation so we can emit a warning.
+    let mut warnings = Vec::new();
+    // Detect deprecated key before deserialisation.
     if let Some(scan) = value.get("scan") {
         if scan.get("max_file_size_mb").is_some() {
-            warn!("max_file_size_mb is deprecated; rename to max_content_size_mb in your client.toml");
+            warnings.push(
+                "max_file_size_mb is deprecated; rename to max_content_size_mb in your client.toml"
+                    .to_string(),
+            );
         }
     }
     let mut unknown = Vec::new();
@@ -764,26 +800,31 @@ pub fn parse_client_config(toml_str: &str) -> Result<ClientConfig> {
     })
     .context("parsing client config")?;
     for key in &unknown {
-        warn!("unknown config key: {key}");
+        warnings.push(format!("unknown config key: \"{key}\""));
     }
     // Merge exclude_extra into exclude so the rest of the codebase only
     // needs to look at one field.
     cfg.scan.exclude.extend(std::mem::take(&mut cfg.scan.exclude_extra));
-    Ok(cfg)
+    Ok((cfg, warnings))
 }
 
-/// Parse a server `server.toml` string, emitting `warn!` for any unrecognised keys.
-pub fn parse_server_config(toml_str: &str) -> Result<ServerAppConfig> {
+/// Parse a server `server.toml` string.
+///
+/// Returns `(config, warnings)` where `warnings` is a list of human-readable
+/// warning strings for unknown keys.  The server passes these through `warn!`
+/// since it runs as a daemon; CLI tools should print them to stderr directly.
+pub fn parse_server_config(toml_str: &str) -> Result<(ServerAppConfig, Vec<String>)> {
     let value: toml::Value = toml::from_str(toml_str).context("invalid TOML")?;
     let mut unknown = Vec::new();
     let cfg = serde_ignored::deserialize(value, |path| {
         unknown.push(path.to_string());
     })
     .context("parsing server config")?;
-    for key in &unknown {
-        warn!("unknown config key: {key}");
-    }
-    Ok(cfg)
+    let warnings = unknown
+        .into_iter()
+        .map(|key| format!("unknown config key: \"{key}\""))
+        .collect();
+    Ok((cfg, warnings))
 }
 
 #[cfg(test)]
@@ -896,7 +937,7 @@ token = "t"
 [scan]
 exclude_extra = ["**/my-build/**", "*.tmp"]
 "#;
-        let cfg = parse_client_config(toml).unwrap();
+        let (cfg, _) = parse_client_config(toml).unwrap();
         // exclude_extra is merged into exclude; the built-in defaults come first
         let defaults = default_excludes();
         assert!(cfg.scan.exclude.starts_with(&defaults));
@@ -916,7 +957,7 @@ token = "t"
 [scan]
 exclude = ["*.only"]
 "#;
-        let cfg = parse_client_config(toml).unwrap();
+        let (cfg, _) = parse_client_config(toml).unwrap();
         assert_eq!(cfg.scan.exclude, vec!["*.only"]);
     }
 
@@ -943,7 +984,7 @@ token = "t"
 [scan]
 max_file_size_mb = 50
 "#;
-        let cfg = parse_client_config(toml).unwrap();
+        let (cfg, _) = parse_client_config(toml).unwrap();
         assert_eq!(cfg.scan.max_content_size_mb, 50);
     }
 

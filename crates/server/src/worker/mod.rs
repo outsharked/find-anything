@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use find_common::api::{BulkRequest, IndexingFailure, RecentFile, WorkerStatus};
 use find_common::config::NormalizationSettings;
@@ -76,8 +76,6 @@ pub struct WorkerHandles {
     pub status: StatusHandle,
     pub archive_state: Arc<SharedArchiveState>,
     pub inbox_paused: Arc<AtomicBool>,
-    pub deleted_bytes_since_scan: Arc<AtomicU64>,
-    pub delete_notify: Arc<tokio::sync::Notify>,
     /// Broadcast channel for live activity events sent to SSE subscribers.
     pub recent_tx: tokio::sync::broadcast::Sender<RecentFile>,
 }
@@ -128,7 +126,7 @@ pub async fn start_inbox_worker(
     cfg: WorkerConfig,
     handles: WorkerHandles,
 ) -> Result<()> {
-    let WorkerHandles { status, archive_state: shared_archive_state, inbox_paused, deleted_bytes_since_scan, delete_notify, recent_tx } = handles;
+    let WorkerHandles { status, archive_state: shared_archive_state, inbox_paused, recent_tx } = handles;
     let inbox_dir = data_dir.join("inbox");
     let failed_dir = inbox_dir.join("failed");
     let to_archive_dir = inbox_dir.join("to-archive");
@@ -185,8 +183,6 @@ pub async fn start_inbox_worker(
         let data_dir = data_dir.clone();
         let to_archive_dir = to_archive_dir.clone();
         let shared = Arc::clone(&shared_archive_state);
-        let deleted_bytes = Arc::clone(&deleted_bytes_since_scan);
-        let notify = Arc::clone(&delete_notify);
         let archive_notify = Arc::clone(&archive_notify);
 
         tokio::spawn(async move {
@@ -207,11 +203,9 @@ pub async fn start_inbox_worker(
                     let to_archive = to_archive_dir.clone();
                     let data = data_dir.clone();
                     let sh = Arc::clone(&shared);
-                    let db = Arc::clone(&deleted_bytes);
-                    let dn = Arc::clone(&notify);
                     let cfg_clone = cfg.clone();
                     let batch_result = tokio::task::spawn_blocking(move || {
-                        archive_batch::run_archive_batch(&data, &to_archive, cfg_clone, &sh, &db, &dn)
+                        archive_batch::run_archive_batch(&data, &to_archive, cfg_clone, &sh)
                     })
                     .await;
 
@@ -445,7 +439,7 @@ fn process_request_phase1(
             .map_err(|_| anyhow::anyhow!("source lock poisoned for {}", request.source))?
     });
 
-    // Process deletes (SQLite only — queues chunk refs to pending_chunk_removes).
+    // Process deletes (SQLite only — orphaned ZIP chunks cleaned up by compaction).
     if !request.delete_paths.is_empty() {
         if let Ok(mut guard) = status.lock() {
             *guard = WorkerStatus::Processing {
@@ -621,6 +615,12 @@ fn process_request_phase1(
             elapsed_secs, n_files, n_deletes, n_renames, total_content_lines,
             content_kb, compressed_kb,
         );
+    }
+
+    // Skip the archive phase entirely when there is nothing to write.
+    if normalized_files.is_empty() && request.rename_paths.is_empty() {
+        tracing::debug!("{tag} skipping archive phase (no chunks to write)");
+        return Ok(());
     }
 
     // Write a normalized BulkRequest as a .gz to to-archive/ so the archive

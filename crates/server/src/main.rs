@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use tracing::warn;
 use axum::{
     extract::{DefaultBodyLimit, State},
     http::{header, StatusCode},
@@ -23,7 +24,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicBool;
 use find_common::api::{RecentFile, WorkerStatus};
 use find_common::config::{default_server_config_path, parse_server_config, ServerAppConfig};
 use archive::SharedArchiveState;
@@ -106,13 +107,6 @@ pub struct AppState {
     /// background scanner completes its first run.  Populated from
     /// `data_dir/server.db` on startup and refreshed after each delete batch.
     pub compaction_stats: Arc<std::sync::RwLock<Option<compaction::CompactionStats>>>,
-    /// Compressed bytes deleted from archives since the last compaction scan.
-    /// Reset to zero after each scan.  Combined with `compaction_stats` to
-    /// estimate current wasted space without re-scanning.
-    pub deleted_bytes_since_scan: Arc<AtomicU64>,
-    /// Notified by workers after each `remove_chunks` call to trigger a
-    /// deferred compaction scan (60 s after the last delete).
-    pub delete_notify: Arc<tokio::sync::Notify>,
     /// True when running under systemd (INVOCATION_ID is set).
     pub under_systemd: bool,
     /// Cached result of the last GitHub update check (refreshed at most once per hour).
@@ -135,7 +129,8 @@ async fn main() -> Result<()> {
 
     let config_str = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading config: {config_path}"))?;
-    let config = parse_server_config(&config_str)?;
+    let (config, config_warnings) = parse_server_config(&config_str)?;
+    for w in &config_warnings { warn!("{w}"); }
 
     if let Err(e) = find_common::logging::set_ignore_patterns(&config.log.ignore) {
         tracing::warn!("invalid log ignore pattern: {e}");
@@ -161,8 +156,6 @@ async fn main() -> Result<()> {
     // a value immediately after restart rather than waiting for the first scan.
     let initial_compaction_stats = compaction::load_cached_stats(&data_dir);
     let compaction_stats = Arc::new(std::sync::RwLock::new(initial_compaction_stats));
-    let deleted_bytes_since_scan = Arc::new(AtomicU64::new(0));
-    let delete_notify = Arc::new(tokio::sync::Notify::new());
     // Broadcast channel for live activity events.  Capacity 256: if all
     // subscribers are slow we drop old events rather than blocking the worker.
     let (recent_tx, _) = tokio::sync::broadcast::channel::<RecentFile>(256);
@@ -173,8 +166,6 @@ async fn main() -> Result<()> {
         archive_state: Arc::clone(&archive_state),
         inbox_paused: Arc::clone(&inbox_paused),
         compaction_stats: Arc::clone(&compaction_stats),
-        deleted_bytes_since_scan: Arc::clone(&deleted_bytes_since_scan),
-        delete_notify: Arc::clone(&delete_notify),
         under_systemd,
         update_cache: tokio::sync::RwLock::new(None),
         recent_tx,
@@ -202,8 +193,6 @@ async fn main() -> Result<()> {
         status: worker_status,
         archive_state,
         inbox_paused,
-        deleted_bytes_since_scan,
-        delete_notify,
         recent_tx: state.recent_tx.clone(),
     };
     tokio::spawn(async move {
@@ -222,12 +211,12 @@ async fn main() -> Result<()> {
         upload::start_cleanup_task(cleanup_data_dir).await;
     });
 
-    // Spawn the compaction stats background scanner.
+    // Spawn the compaction stats background scanner / daily compactor.
     compaction::start_compaction_scanner(
         data_dir.clone(),
         compaction_stats,
-        Arc::clone(&state.deleted_bytes_since_scan),
-        Arc::clone(&state.delete_notify),
+        Arc::clone(&state.archive_state),
+        state.config.compaction.clone(),
     );
 
     // Upload routes are mounted WITHOUT the DefaultBodyLimit so that large files

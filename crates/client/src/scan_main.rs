@@ -63,7 +63,8 @@ async fn main() -> Result<()> {
     let config_path = args.config.unwrap_or_else(default_config_path);
     let config_str = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading config {config_path}"))?;
-    let config = parse_client_config(&config_str)?;
+    let (config, config_warnings) = parse_client_config(&config_str)?;
+    for w in &config_warnings { eprintln!("Warning: {w}"); }
 
     if let Err(e) = find_common::logging::set_ignore_patterns(&config.log.ignore) {
         tracing::warn!("invalid log ignore pattern: {e}");

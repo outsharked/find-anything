@@ -82,3 +82,13 @@ args = ["format", "--stdin-file-path", "{name}", "-"]
 path = "/home/jamiet/.local/share/pnpm/prettier"
 extensions = ["html", "vue", "svelte", "scss", "less", "yaml", "yml"]
 args = ["--stdin-filepath", "{name}"]
+
+# ── Compaction ────────────────────────────────────────────────────────────────
+# find-server accumulates orphaned chunks in ZIP archives over time as files are
+# deleted or re-indexed. Compaction rewrites archives to reclaim that space.
+# A scan runs at startup (after 30 s) and then daily at `start_time`.
+# Compaction only runs if orphaned data exceeds `threshold_pct` percent of total.
+
+# [compaction]
+# threshold_pct = 10.0   # Run compaction when ≥ this % of archive bytes are orphaned
+# start_time    = "02:00" # Local time (HH:MM) for the daily scan/compact run

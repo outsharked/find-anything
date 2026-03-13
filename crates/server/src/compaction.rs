@@ -1,8 +1,8 @@
 //! Archive compaction: identify and remove orphaned chunks from ZIP archives.
 //!
 //! A chunk is "orphaned" when its `(chunk_archive, chunk_name)` pair no longer
-//! appears in any `lines` row in any source database — for example, after the
-//! server was killed between the DB commit and the subsequent ZIP rewrite.
+//! appears in any `lines` row in any source database — because the file was
+//! deleted or re-indexed since it was written.
 //!
 //! The scan is cheap: `ZipArchive::new()` reads only the Central Directory
 //! (a compact index at the end of the file), and `by_index_raw(i).compressed_size()`
@@ -12,13 +12,13 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use zip::ZipArchive;
 
 use find_common::api::CompactResponse;
+use find_common::config::CompactionConfig;
 
 use crate::archive::SharedArchiveState;
 use crate::db;
@@ -149,9 +149,6 @@ pub fn scan_wasted_space(data_dir: &Path) -> Result<CompactionStats> {
                 Err(_) => continue,
             };
             for i in 0..zip.len() {
-                // by_index seeks to the local file header (tiny) and exposes
-                // compressed_size() from the cached Central Directory — no
-                // content is ever decompressed.
                 if let Ok(entry) = zip.by_index_raw(i) {
                     let size = entry.compressed_size();
                     total_bytes += size;
@@ -226,18 +223,15 @@ pub fn compact_archives(
 
             chunks_removed += orphaned.len();
             bytes_freed    += orphaned_size;
-            archives_rewritten += 1; // counts archives *affected* (would be rewritten or were rewritten)
+            archives_rewritten += 1;
 
             if dry_run { continue; }
 
-            // Acquire the per-archive rewrite lock and rewrite.
             let lock = shared.rewrite_lock_for(&path);
             let _guard = lock.lock().unwrap();
 
-            // Build the archive's chunk→size map for logging and rewriting.
             if let Err(e) = rewrite_without(&path, &orphaned) {
                 tracing::error!("compaction: failed to rewrite {}: {e:#}", path.display());
-                // Undo counts for this archive on error.
                 archives_rewritten -= 1;
                 chunks_removed -= orphaned.len();
                 bytes_freed    -= orphaned_size;
@@ -283,73 +277,220 @@ fn rewrite_without(archive_path: &Path, to_remove: &HashSet<String>) -> Result<(
     Ok(())
 }
 
-// ── Background scanner ────────────────────────────────────────────────────────
+// ── Background scanner / scheduler ───────────────────────────────────────────
 
-/// Spawn a background task that computes wasted-space statistics and caches
-/// the results in `data_dir/server.db` and in `stats_slot`.
+/// Parse an "HH:MM" string into (hours, minutes). Returns `None` on bad input.
+fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.split_once(':')?;
+    let h: u32 = h.trim().parse().ok()?;
+    let m: u32 = m.trim().parse().ok()?;
+    if h > 23 || m > 59 { return None; }
+    Some((h, m))
+}
+
+/// Compute the duration until the next occurrence of `(hour, minute)` in local
+/// time, using `chrono`. Returns at least 1 second (never zero/negative).
+fn duration_until_next(hour: u32, minute: u32) -> std::time::Duration {
+    use chrono::{Local, Timelike};
+
+    let now = Local::now();
+    let today_target = now
+        .with_hour(hour).unwrap()
+        .with_minute(minute).unwrap()
+        .with_second(0).unwrap()
+        .with_nanosecond(0).unwrap();
+
+    let target = if today_target > now {
+        today_target
+    } else {
+        today_target + chrono::Duration::days(1)
+    };
+
+    let secs = (target - now).num_seconds().max(1) as u64;
+    std::time::Duration::from_secs(secs)
+}
+
+/// Spawn the background compaction scheduler.
 ///
-/// Scans run at two points:
-/// - Once at startup (after a 30 s settle delay).
-/// - 60 s after the last delete operation, provided no new delete has started
-///   in that window.  Every time the worker calls `notify_one()` the 60 s
-///   timer resets, so rapid back-to-back deletes coalesce into a single scan.
-///
-/// After each scan `deleted_since_scan` is reset to zero.  Between scans,
-/// callers can estimate current wasted bytes as
-/// `last_scan.orphaned_bytes + deleted_since_scan`.
+/// Behaviour:
+/// - Runs a wasted-space scan at startup (after a 30 s settle delay) and logs
+///   the result with elapsed timing.
+/// - Daily at `cfg.start_time` (local time, HH:MM): runs the scan, then
+///   compacts if orphaned bytes ≥ `cfg.threshold_pct` percent of total.
+///   If `start_time` cannot be parsed, falls back to 02:00.
 pub fn start_compaction_scanner(
     data_dir: PathBuf,
     stats_slot: Arc<std::sync::RwLock<Option<CompactionStats>>>,
-    deleted_since_scan: Arc<AtomicU64>,
-    delete_notify: Arc<tokio::sync::Notify>,
+    shared: Arc<SharedArchiveState>,
+    cfg: CompactionConfig,
 ) {
+    let (hour, minute) = parse_hhmm(&cfg.start_time).unwrap_or_else(|| {
+        tracing::warn!(
+            "compaction: invalid start_time {:?} — falling back to 02:00",
+            cfg.start_time
+        );
+        (2, 0)
+    });
+
     tokio::spawn(async move {
-        // Initial delay: let the server fully start before the first scan.
+        // Initial startup scan: let the server settle first.
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        run_and_save_scan(&data_dir, &stats_slot, &deleted_since_scan).await;
+        run_scan_and_log(&data_dir, &stats_slot).await;
 
-        // Event-driven: scan 60 s after the last delete, deferring on each
-        // new delete that arrives within the window.
+        // Daily loop: wait until the configured time, scan, then compact if needed.
         loop {
-            delete_notify.notified().await;
+            let wait = duration_until_next(hour, minute);
+            tracing::debug!(
+                "compaction: next run in {:.0}h {:.0}m",
+                wait.as_secs() / 3600,
+                (wait.as_secs() % 3600) / 60,
+            );
+            tokio::time::sleep(wait).await;
 
-            while tokio::time::timeout(
-                std::time::Duration::from_secs(60),
-                delete_notify.notified(),
-            ).await.is_ok() {
-                // another delete arrived — reset the 60 s timer
+            let stats = run_scan_and_log(&data_dir, &stats_slot).await;
+
+            if let Some(stats) = stats {
+                let pct = if stats.total_bytes > 0 {
+                    stats.orphaned_bytes as f64 / stats.total_bytes as f64 * 100.0
+                } else {
+                    0.0
+                };
+
+                if pct >= cfg.threshold_pct {
+                    tracing::info!(
+                        "compaction: {:.1}% orphaned ≥ threshold {:.1}% — starting compaction",
+                        pct, cfg.threshold_pct,
+                    );
+                    let data = data_dir.clone();
+                    let sh = Arc::clone(&shared);
+                    let t0 = std::time::Instant::now();
+                    let result = tokio::task::spawn_blocking(move || {
+                        compact_archives(&data, &sh, false)
+                    }).await;
+                    match result {
+                        Ok(Ok(resp)) => tracing::info!(
+                            "compaction: done in {:.1}s — {} archives rewritten, {} chunks removed, {} bytes freed",
+                            t0.elapsed().as_secs_f64(),
+                            resp.archives_rewritten,
+                            resp.chunks_removed,
+                            resp.bytes_freed,
+                        ),
+                        Ok(Err(e)) => tracing::error!("compaction: failed: {e:#}"),
+                        Err(e)     => tracing::error!("compaction: task panicked: {e}"),
+                    }
+                } else {
+                    tracing::info!(
+                        "compaction: {:.1}% orphaned < threshold {:.1}% — skipping",
+                        pct, cfg.threshold_pct,
+                    );
+                }
             }
-            // 60 s of silence — scan now
-
-            run_and_save_scan(&data_dir, &stats_slot, &deleted_since_scan).await;
         }
     });
 }
 
-async fn run_and_save_scan(
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use find_common::config::CompactionConfig;
+
+    // ── parse_hhmm ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_hhmm_valid() {
+        assert_eq!(parse_hhmm("02:00"), Some((2, 0)));
+        assert_eq!(parse_hhmm("00:00"), Some((0, 0)));
+        assert_eq!(parse_hhmm("23:59"), Some((23, 59)));
+        assert_eq!(parse_hhmm("12:30"), Some((12, 30)));
+        // leading/trailing whitespace around components is accepted
+        assert_eq!(parse_hhmm(" 3 : 5 "), Some((3, 5)));
+    }
+
+    #[test]
+    fn parse_hhmm_invalid() {
+        assert_eq!(parse_hhmm(""),        None); // empty
+        assert_eq!(parse_hhmm("0200"),    None); // no colon
+        assert_eq!(parse_hhmm("24:00"),   None); // hour out of range
+        assert_eq!(parse_hhmm("23:60"),   None); // minute out of range
+        assert_eq!(parse_hhmm("abc:00"),  None); // non-numeric hour
+        assert_eq!(parse_hhmm("00:xyz"),  None); // non-numeric minute
+        assert_eq!(parse_hhmm(":30"),     None); // missing hour
+        assert_eq!(parse_hhmm("10:"),     None); // missing minute
+    }
+
+    // ── CompactionConfig defaults ─────────────────────────────────────────────
+
+    #[test]
+    fn compaction_config_defaults() {
+        let cfg = CompactionConfig::default();
+        assert_eq!(cfg.threshold_pct, 10.0);
+        assert_eq!(cfg.start_time, "02:00");
+    }
+
+    #[test]
+    fn compaction_config_parses_from_toml() {
+        let toml = r#"
+            threshold_pct = 25.0
+            start_time = "03:30"
+        "#;
+        let cfg: CompactionConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.threshold_pct, 25.0);
+        assert_eq!(cfg.start_time, "03:30");
+    }
+
+    #[test]
+    fn compaction_config_partial_toml_uses_defaults() {
+        // Only override one field — the other should come from serde defaults.
+        let toml = r#"threshold_pct = 5.0"#;
+        let cfg: CompactionConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.threshold_pct, 5.0);
+        assert_eq!(cfg.start_time, "02:00"); // default
+    }
+
+    // ── duration_until_next ───────────────────────────────────────────────────
+
+    #[test]
+    fn duration_until_next_is_positive_and_at_most_one_day() {
+        // For any valid (hour, minute) the result must be in (0, 24h].
+        for &(h, m) in &[(0u32, 0u32), (2, 0), (12, 30), (23, 59)] {
+            let d = duration_until_next(h, m);
+            assert!(d.as_secs() >= 1,        "duration should be ≥ 1 s for {h}:{m:02}");
+            assert!(d.as_secs() <= 24 * 3600, "duration should be ≤ 24 h for {h}:{m:02}");
+        }
+    }
+}
+
+/// Run a wasted-space scan, log the result with timing, update `stats_slot`,
+/// persist to disk, and return the stats.
+async fn run_scan_and_log(
     data_dir: &Path,
     stats_slot: &Arc<std::sync::RwLock<Option<CompactionStats>>>,
-    deleted_since_scan: &Arc<AtomicU64>,
-) {
+) -> Option<CompactionStats> {
     let data_dir2 = data_dir.to_path_buf();
+    let t0 = std::time::Instant::now();
     let result = tokio::task::spawn_blocking(move || scan_wasted_space(&data_dir2)).await;
+    let elapsed = t0.elapsed();
     match result {
         Ok(Ok(stats)) => {
+            let pct = if stats.total_bytes > 0 {
+                stats.orphaned_bytes as f64 / stats.total_bytes as f64 * 100.0
+            } else {
+                0.0
+            };
             tracing::info!(
-                "compaction scan: {}/{} bytes orphaned ({:.1}%)",
-                stats.orphaned_bytes, stats.total_bytes,
-                if stats.total_bytes > 0 {
-                    stats.orphaned_bytes as f64 / stats.total_bytes as f64 * 100.0
-                } else { 0.0 },
+                "compaction scan: {}/{} bytes orphaned ({:.1}%) in {:.1}s",
+                stats.orphaned_bytes, stats.total_bytes, pct,
+                elapsed.as_secs_f64(),
             );
-            deleted_since_scan.store(0, Ordering::Relaxed);
             if let Ok(mut slot) = stats_slot.write() {
                 *slot = Some(stats);
             }
             let _ = save_stats(data_dir, &stats);
+            Some(stats)
         }
-        Ok(Err(e)) => tracing::warn!("compaction scan failed: {e:#}"),
-        Err(e)     => tracing::warn!("compaction scan task panicked: {e}"),
+        Ok(Err(e)) => { tracing::warn!("compaction scan failed: {e:#}"); None }
+        Err(e)     => { tracing::warn!("compaction scan task panicked: {e}"); None }
     }
 }
-

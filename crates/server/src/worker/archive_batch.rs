@@ -9,7 +9,6 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
@@ -40,8 +39,6 @@ pub(super) fn run_archive_batch(
     to_archive_dir: &Path,
     cfg: WorkerConfig,
     shared_archive_state: &Arc<SharedArchiveState>,
-    deleted_bytes_since_scan: &Arc<AtomicU64>,
-    delete_notify: &Arc<tokio::sync::Notify>,
 ) -> Result<usize> {
     // Scan to-archive/ for .gz files sorted by mtime.
     let mut gz_files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
@@ -67,7 +64,7 @@ pub(super) fn run_archive_batch(
         .collect();
     let processed = batch.len();
 
-    process_archive_batch(data_dir, &batch, shared_archive_state, deleted_bytes_since_scan, delete_notify)?;
+    process_archive_batch(data_dir, &batch, shared_archive_state)?;
 
     Ok(processed)
 }
@@ -77,15 +74,13 @@ pub(super) fn run_archive_batch(
 /// Process a batch of .gz files through the archive phase.
 ///
 /// Write serialisation: the archive thread holds the per-source
-/// `source_lock` only during SQLite write transactions (take_pending_chunk_removes
-/// and the UPDATE lines commit).  The lock is explicitly released before ZIP I/O
-/// so the indexing thread is not blocked during expensive disk work.
+/// `source_lock` only during SQLite write transactions (the UPDATE lines commit).
+/// The lock is explicitly released before ZIP I/O so the indexing thread is not
+/// blocked during expensive disk work.
 fn process_archive_batch(
     data_dir: &Path,
     gz_paths: &[PathBuf],
     shared_archive_state: &Arc<SharedArchiveState>,
-    deleted_bytes_since_scan: &Arc<AtomicU64>,
-    delete_notify: &Arc<tokio::sync::Notify>,
 ) -> Result<()> {
     struct ParsedRequest {
         gz_path: PathBuf,
@@ -120,8 +115,6 @@ fn process_archive_batch(
         by_source.entry(pr.request.source.clone()).or_default().push(pr);
     }
 
-    let mut total_bytes_freed: u64 = 0;
-
     for (source, requests) in &by_source {
         let db_path = data_dir.join("sources").join(format!("{source}.db"));
         let conn = match db::open(&db_path) {
@@ -132,49 +125,8 @@ fn process_archive_batch(
             }
         };
 
-        // --- SQLite write segment 1: drain pending_chunk_removes ---
-        // Hold source_lock only for this write transaction; release before ZIP I/O.
         let src_tag = format!("[archive:{source}]");
         let source_lock = shared_archive_state.source_lock(source);
-        let chunk_removes = timed!(src_tag, "take pending chunk removes", {
-            let _guard = source_lock.lock()
-                .map_err(|_| anyhow::anyhow!("source lock poisoned for {source}"))?;
-            match db::take_pending_chunk_removes(&conn) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("Archive batch: failed to take pending_chunk_removes for {source}: {e:#}");
-                    vec![]
-                }
-            }
-        }); // _guard dropped here — lock released before ZIP I/O
-
-        // Rewrite ZIPs for pending removes (group by archive_name).
-        let chunk_removes_count = chunk_removes.len();
-        if !chunk_removes.is_empty() {
-            let mut by_archive: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
-            for (archive_name, chunk_name) in chunk_removes {
-                by_archive.entry(archive_name).or_default().insert(chunk_name);
-            }
-
-            // Use a temporary ArchiveManager for rewrite operations.
-            let archive_mgr = ArchiveManager::new(Arc::clone(shared_archive_state));
-            let chunk_refs: Vec<ChunkRef> = by_archive.iter()
-                .flat_map(|(archive_name, chunk_names)| {
-                    chunk_names.iter().map(move |chunk_name| ChunkRef {
-                        archive_name: archive_name.clone(),
-                        chunk_name: chunk_name.clone(),
-                    })
-                })
-                .collect();
-
-            let n_chunk_refs = chunk_refs.len();
-            timed!(src_tag, format!("remove {n_chunk_refs} chunks from ZIPs"), {
-                match archive_mgr.remove_chunks(chunk_refs) {
-                    Ok(freed) => total_bytes_freed += freed,
-                    Err(e) => tracing::error!("Archive batch: failed to remove chunks for {source}: {e:#}"),
-                }
-            });
-        }
 
         // Coalesce upserts: last-writer-wins by submission order (mtime sort).
         // Build a map: path → last IndexFile; also track delete_paths.
@@ -321,12 +273,11 @@ fn process_archive_batch(
             }); // timed! update line refs
         }
 
-        if !archived_files.is_empty() || chunk_removes_count > 0 {
+        if !archived_files.is_empty() {
             tracing::info!(
-                "[archive:{source}] {} requests: archived {} files, removed {} chunks",
+                "[archive:{source}] {} requests: archived {} files",
                 requests.len(),
                 archived_files.len(),
-                chunk_removes_count,
             );
         }
     }
@@ -336,11 +287,6 @@ fn process_archive_batch(
         if let Err(e) = std::fs::remove_file(&pr.gz_path) {
             tracing::error!("Archive batch: failed to delete {}: {e}", pr.gz_path.display());
         }
-    }
-
-    if total_bytes_freed > 0 {
-        deleted_bytes_since_scan.fetch_add(total_bytes_freed, Ordering::Relaxed);
-        delete_notify.notify_one();
     }
 
     Ok(())

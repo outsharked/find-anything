@@ -4,9 +4,8 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+[ ] FEAT: metrics - log start/end time of critical proceses to an external service - Grafana LGTM?
 [ ] FEAT: With [sources.nas-data] path = "/mnt/nas-data" missing from server, need to handle inline displaye better
-[ ] BUG: With no config, it should only format things it can do with builtins: 2026-03-12T21:19:19.932699Z  WARN find_server::normalize: normalize: failed to spawn formatter formatter=/home/jamiet/.local/share/mise/installs/node/24.13.1/bin/prettier file=home/jamiet/code/dvd-upscale/bin/ffmpeg/doc/ffmpeg-scaler.html error=No such file or directory (os error 2)
-[ ] BUG: Don't emit this like a log, this should be user-facing: ❯ find-admin status > 2026-03-12T20:32:11.451925Z  WARN find_common::config: unknown config key: sources.0.base_url
 [ ] FEAT: In image detail split view, should be able to move divider/resize window
 [ ] FEAT: Create short URL to link
 [ ] FEAT: use video player for video files
@@ -19,7 +18,6 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] BUG: Hand pointer shows when hovering over :line in search results page when there are no "next/prev" line arrows
 [ ] find-reindex -- can this only operate against previously-not-reindexed content?
 [ ] FEAT: Guard against low disk space
-[ ] BUG: Create a file, then rename it, it has a duplicate pointing to original
 [ ] BUG: "WARN find_server::routes::search: search source error: fts5: syntax error near ".": Error code 1: SQL logic error"
 [ ] BUG: Fetching existing file list seems to not be targeted to a particular tree (e.g. find-scan /path/to/dir)
 [ ] BUG: Monhegan Lighthouse DOry 2005.tif can't be shown
@@ -58,6 +56,8 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ### Completed Items
 
+[x] BUG: Create a file, then rename it, it has a duplicate pointing to original
+[x] BUG: Don't emit this like a log, this should be user-facing: ❯ find-admin status > 2026-03-12T20:32:11.451925Z  WARN find_common::config: unknown config key: sources.0.base_url
 [x] BUG: Duplicate shows many copies : pictures/2020/takeout-20200507T101645Z-001.zip::Takeout/Google Photos/Naomi_s iPhone 4s/IMG_0576.JPG
 [x] BUG: When typing in a search query while detail page is showing (left nav selected), after it reverts to search results, focus is lost from search bar
 [x] What does this mean? No files actually were indexed - find_scan::scan: processed 32312 files (22283 unchanged, 10029 new) so far... -find_scan::scan: scan complete — 10029 indexed (10029 new, 0 modified, 0 upgraded), 77402 unchanged, 0 deleted

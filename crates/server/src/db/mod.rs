@@ -62,13 +62,10 @@ pub fn open(db_path: &Path) -> Result<Connection> {
         "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);"
     ).context("creating mtime index")?;
 
-    // Idempotent table additions for schema migrations.
+    // Idempotent table additions / removals for schema migrations.
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS pending_chunk_removes (
-            id           INTEGER PRIMARY KEY,
-            archive_name TEXT NOT NULL,
-            chunk_name   TEXT NOT NULL
-        );
+        // pending_chunk_removes was removed in favour of periodic compaction.
+        "DROP TABLE IF EXISTS pending_chunk_removes;
         CREATE TABLE IF NOT EXISTS activity_log (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             occurred_at INTEGER NOT NULL,
@@ -672,13 +669,11 @@ fn delete_fts_for_file(
     Ok(())
 }
 
-// ── Phase-1 delete (deferred archive writer) ──────────────────────────────────
+// ── Delete ────────────────────────────────────────────────────────────────────
 
-/// Phase-1 delete: remove files from SQLite and queue their chunk refs for
-/// later removal by the archive thread. No ZIP I/O is performed here.
+/// Delete files from SQLite. Orphaned ZIP chunks are cleaned up by periodic
+/// compaction rather than immediately rewriting archives.
 ///
-/// - Collects non-NULL chunk refs from `lines` and writes them to
-///   `pending_chunk_removes` so the archive thread can rewrite ZIPs later.
 /// - Handles canonical promotion (simplified: only re-inserts FTS for
 ///   `line_number=0` of the promoted alias; content lines stay stale but
 ///   are invisible to search via the JOIN with `lines`).
@@ -699,39 +694,6 @@ pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Queue chunk refs from all files matching a LIKE pattern into pending_chunk_removes.
-fn queue_chunk_removes_for_pattern(
-    tx: &rusqlite::Transaction,
-    like_pat: &str,
-) -> Result<()> {
-    // Collect file IDs matching the pattern.
-    let file_ids: Vec<i64> = {
-        let mut stmt = tx.prepare("SELECT id FROM files WHERE path LIKE ?1")?;
-        let ids: Vec<i64> = stmt.query_map(params![like_pat], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        ids
-    };
-    for fid in file_ids {
-        queue_chunk_removes_for_file(tx, fid)?;
-    }
-    Ok(())
-}
-
-/// Queue chunk refs for a single file_id into pending_chunk_removes.
-fn queue_chunk_removes_for_file(
-    tx: &rusqlite::Transaction,
-    file_id: i64,
-) -> Result<()> {
-    tx.execute(
-        "INSERT INTO pending_chunk_removes (archive_name, chunk_name)
-         SELECT DISTINCT chunk_archive, chunk_name
-         FROM lines
-         WHERE file_id = ?1 AND chunk_archive IS NOT NULL",
-        params![file_id],
-    )?;
-    Ok(())
-}
-
 fn delete_one_path_phase1(
     tx: &rusqlite::Transaction,
     path: &str,
@@ -747,16 +709,15 @@ fn delete_one_path_phase1(
         return Ok(()); // nothing to delete
     };
 
-    // Queue chunk refs for inner archive members, then delete them.
+    // Delete inner archive members first.
     let inner_like = format!("{}::%", path);
-    queue_chunk_removes_for_pattern(tx, &inner_like)?;
     tx.execute(
         "DELETE FROM files WHERE path LIKE ?1",
         params![inner_like],
     )?;
 
     if outer_canonical_id.is_some() {
-        // Outer file is an alias — cheap deletion, no chunks to queue.
+        // Outer file is an alias — cheap deletion.
         tx.execute("DELETE FROM files WHERE id = ?1", params![outer_id])?;
     } else {
         // Outer file is canonical — check for aliases that need promotion.
@@ -770,16 +731,11 @@ fn delete_one_path_phase1(
         };
 
         if aliases.is_empty() {
-            // No aliases — queue chunk refs for this canonical, then delete.
-            queue_chunk_removes_for_file(tx, outer_id)?;
             tx.execute("DELETE FROM files WHERE id = ?1", params![outer_id])?;
         } else {
             // Canonical promotion: promote the first alias.
             let (new_canonical_id, new_canonical_path) = &aliases[0];
             let new_canonical_id = *new_canonical_id;
-
-            // Queue old canonical's chunk refs for removal (archive thread will rewrite ZIPs).
-            queue_chunk_removes_for_file(tx, outer_id)?;
 
             // Delete the old canonical (CASCADE removes its lines).
             tx.execute("DELETE FROM files WHERE id = ?1", params![outer_id])?;
@@ -798,8 +754,6 @@ fn delete_one_path_phase1(
             }
 
             // Insert FTS entry for line_number=0 of the promoted canonical.
-            // This is the only FTS entry we re-insert; content lines are stale
-            // but invisible to search via the JOIN with lines table.
             let line0_id: Option<i64> = tx.query_row(
                 "SELECT id FROM lines WHERE file_id = ?1 AND line_number = 0",
                 params![new_canonical_id],
@@ -815,23 +769,6 @@ fn delete_one_path_phase1(
     }
 
     Ok(())
-}
-
-/// Read and atomically delete all rows from `pending_chunk_removes`.
-/// Returns `(archive_name, chunk_name)` pairs.
-pub fn take_pending_chunk_removes(conn: &Connection) -> Result<Vec<(String, String)>> {
-    let tx = conn.unchecked_transaction()?;
-    let rows: Vec<(String, String)> = {
-        let mut stmt = tx.prepare(
-            "SELECT archive_name, chunk_name FROM pending_chunk_removes",
-        )?;
-        let v: Vec<(String, String)> = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        v
-    };
-    tx.execute_batch("DELETE FROM pending_chunk_removes")?;
-    tx.commit()?;
-    Ok(rows)
 }
 
 // ── Rename ────────────────────────────────────────────────────────────────────

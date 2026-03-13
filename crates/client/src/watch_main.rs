@@ -65,7 +65,7 @@ fn service_entry(args: Vec<std::ffi::OsString>) {
         let config = match config_path
             .as_ref()
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| parse_client_config(&s).ok())
+            .and_then(|s| parse_client_config(&s).map(|(c, _)| c).ok())
         {
             Some(c) => c,
             None => {
@@ -213,7 +213,8 @@ async fn main() -> Result<()> {
     // Default: run the watcher in the foreground.
     let config_str = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading config {config_path}"))?;
-    let config = parse_client_config(&config_str)?;
+    let (config, config_warnings) = parse_client_config(&config_str)?;
+    for w in &config_warnings { eprintln!("Warning: {w}"); }
 
     if let Err(e) = find_common::logging::set_ignore_patterns(&config.log.ignore) {
         tracing::warn!("invalid log ignore pattern: {e}");

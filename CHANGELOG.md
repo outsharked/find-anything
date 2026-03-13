@@ -16,11 +16,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **`foreign_keys = ON` per connection** — `PRAGMA foreign_keys` is now re-enabled on every SQLite connection open; previously it was only set once at schema creation time and had no effect on subsequent connections
 - **Stale path entry after rename** — `get_file_lines` and `get_metadata_context` now fix the `line_number=0` path entry inline when it doesn't match `files.path` (caused by a rename without re-indexing); guards against accumulated `line_number=0` duplicates from historical data missing the FK cascade
 
+### Added
+
+- **Automatic daily compaction** — the server now runs a wasted-space scan 30 s after startup and then daily at `compaction.start_time` (default `02:00` local time); compaction rewrites ZIP archives to remove orphaned chunks (content no longer referenced by any `lines` row); compaction only runs when orphaned bytes ≥ `compaction.threshold_pct` percent of total archive bytes (default 10 %); scan elapsed time and orphaned/total counts are logged at INFO
+- **`[compaction]` config section** — new `server.toml` section with `threshold_pct` (f64, default `10.0`) and `start_time` (HH:MM string, default `"02:00"`); shown in `examples/server.toml` with commented-out defaults
+
 ### Changed
 
 - **`mise dev` creates `web/build/` if missing** — `mkdir -p web/build` runs before `cargo-watch` starts so the `#[derive(RustEmbed)]` folder check doesn't abort the build when the web UI hasn't been built yet
 - **`mise dev` enables debug logging** — server started with `RUST_LOG=debug` in the dev task
 - **Normalization formatter paths use shims** — local `config/server.toml` updated to use `~/.local/bin/biome` and the pnpm global `prettier` shim instead of version-pinned mise install paths
+- **Config warnings printed to stderr** — `parse_client_config` and `parse_server_config` now return `(Config, Vec<String>)` instead of routing unknown-key warnings through the tracing logger; client tools print them with `Warning: <message>` on stderr; the server logs them via `tracing::warn!`
+- **`pending_chunk_removes` removed** — the hot-path mechanism that queued ZIP chunk refs for immediate removal during file deletes/re-indexes is removed; orphaned chunks are now reclaimed lazily by the daily compaction pass; simplifies `delete_files_phase1`, `archive_batch`, and `WorkerHandles`; the `pending_chunk_removes` table is dropped on startup via `DROP TABLE IF EXISTS`
 
 ---
 
