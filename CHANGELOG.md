@@ -30,6 +30,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Keyboard navigation in file tree** — Arrow Up/Down moves the cursor through all tree items (sources, directories, files) without opening files; Enter opens the focused item; the cursor is highlighted via a Svelte store (`keyboardCursorPath`) so keyboard and mouse selection are visually distinct; focus is restored to the tree after a file opens so navigation can continue immediately with arrow keys
+
 - **Reactive UI via SSE** — the web UI now connects to `GET /api/v1/recent/stream` on load and reacts to index changes in real time: expanded tree directories silently re-fetch when a file beneath them is added, removed, or renamed; the file detail view auto-reloads on modify, shows a "DELETED" banner on delete, and offers a "Renamed to …" navigation link on rename; search results show a dismissible "Index updated — refresh results" banner on add/modify, and deleted-file result cards are greyed out with strikethrough; uses `fetch()` streaming (not `EventSource`) to support bearer-token auth, with exponential back-off reconnection
 - **Filename match highlighting** — path-only search results (files matched by name rather than content) now highlight the matched query terms in the file path using the same `<mark>` style as line-content matches; applies only to filename matches (`line_number = 0`, non-metadata snippets)
 

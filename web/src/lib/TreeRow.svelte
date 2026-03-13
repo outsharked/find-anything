@@ -4,6 +4,7 @@
 	import type { DirEntry } from '$lib/api';
 	import { splitEntryPath, shouldExpandEntry } from '$lib/filePath';
 	import { liveEvent } from '$lib/liveUpdates';
+	import { keyboardCursorPath } from '$lib/treeStore';
 
 	export let source: string;
 	export let entry: DirEntry;
@@ -105,18 +106,30 @@
 	}
 
 	function openFile() {
+		keyboardCursorPath.set(null); // activePath takes over the highlight
 		const { path, archivePath } = splitEntryPath(entry.path);
 		dispatch('open', { source, path, kind: entry.kind ?? 'text', archivePath });
+		// Restore focus to this button after the file viewer renders, so that
+		// arrow key navigation continues to work without re-clicking the tree.
+		// Only steal it back if the user hasn't already moved focus to another tree item.
+		setTimeout(() => {
+			const tree = rowEl?.closest('[role="tree"]');
+			if (tree && !tree.contains(document.activeElement)) rowEl?.focus();
+		}, 0);
 	}
 </script>
 
 <li class="row-item">
 	{#if isExpandable}
-		<div class="row row--dir" class:active={entry.kind === 'archive' && entry.path === activePath} style="padding-left: {8 + depth * 16}px" bind:this={rowEl}>
+		<div class="row row--dir"
+			class:active={$keyboardCursorPath !== null ? $keyboardCursorPath === entry.path : entry.kind === 'archive' && entry.path === activePath}
+			style="padding-left: {8 + depth * 16}px"
+			bind:this={rowEl}
+		>
 			<button class="expand-arrow" on:click={toggleDir} title={expanded ? 'Collapse' : 'Expand'}>
 				<span class="icon">{expanded ? '▾' : '▸'}</span>
 			</button>
-			<button class="dir-name" on:click={onDirRowClick}>
+			<button class="dir-name" data-tree-nav="dir" data-tree-path={entry.path} on:click={onDirRowClick}>
 				<span class="name">{entry.name}</span>
 			</button>
 		</div>
@@ -142,8 +155,10 @@
 	{:else}
 		<button
 			class="row row--file"
-			class:active={entry.path === activePath}
+			class:active={$keyboardCursorPath !== null ? $keyboardCursorPath === entry.path : entry.path === activePath}
 			style="padding-left: {8 + depth * 16}px"
+			data-tree-nav="file"
+			data-tree-path={entry.path}
 			on:click={openFile}
 			bind:this={rowEl}
 		>
@@ -183,6 +198,7 @@
 	.row--file {
 		cursor: pointer;
 		text-align: left;
+		outline: none;
 	}
 
 	.row--file:hover {
@@ -198,7 +214,8 @@
 		position: relative;
 	}
 
-	.row--dir:hover {
+	.row--dir:hover,
+	.row--dir:focus-within {
 		background: var(--bg-hover, rgba(255, 255, 255, 0.06));
 	}
 
@@ -237,6 +254,7 @@
 		font-size: inherit;
 		text-align: left;
 		overflow: hidden;
+		outline: none;
 	}
 
 	.icon {

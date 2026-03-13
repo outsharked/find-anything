@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { createEventDispatcher } from 'svelte';
 	import DirectoryTree from './DirectoryTree.svelte';
+	import { keyboardCursorPath } from '$lib/treeStore';
 
 	export let sources: string[];
 	export let activeSource: string | null;
@@ -12,14 +13,44 @@
 
 	// Auto-expand the source that contains the active file.
 	$: if (activeSource) expanded[activeSource] = true;
+
+	// Track the last button that received focus inside the tree.
+	// This is more reliable than document.activeElement, which can be stale
+	// if focus changes between the keydown firing and the handler running.
+	let lastFocused: HTMLElement | null = null;
+
+	function handleFocusin(e: FocusEvent) {
+		const t = e.target as HTMLElement;
+		if (t.dataset.treeNav) lastFocused = t;
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+		const container = e.currentTarget as HTMLElement;
+		const items = Array.from(container.querySelectorAll<HTMLElement>('[data-tree-nav]'));
+		const active = document.activeElement as HTMLElement;
+		// Prefer document.activeElement; fall back to the last element that had focus.
+		let idx = items.indexOf(active);
+		if (idx === -1 && lastFocused) idx = items.indexOf(lastFocused);
+		if (idx === -1) return;
+		e.preventDefault();
+		const next = e.key === 'ArrowDown' ? idx + 1 : idx - 1;
+		if (next >= 0 && next < items.length) {
+			const target = items[next];
+			lastFocused = target;
+			keyboardCursorPath.set(target.dataset.treePath ?? null);
+			target.focus();
+		}
+	}
 </script>
 
-<div class="multi-tree">
+<div class="multi-tree" role="tree" tabindex="-1" on:focusin={handleFocusin} on:keydown={handleKeydown}>
 	{#each sources as source (source)}
 		<div class="source-root">
 			<button
 				class="source-header"
 				class:active={source === activeSource}
+				data-tree-nav="source"
 				on:click={() => (expanded[source] = !expanded[source])}
 			>
 				{source}
