@@ -84,8 +84,8 @@ async fn test_file_retrieval() {
         .unwrap();
 
     assert_eq!(resp.file_kind, "text");
-    // total_lines counts all indexed lines including the filename at line_number=0
-    assert_eq!(resp.total_lines, 6);
+    // total_lines counts content lines only (line_number > 0); the filename at line_number=0 is excluded
+    assert_eq!(resp.total_lines, 5);
 }
 
 #[tokio::test]

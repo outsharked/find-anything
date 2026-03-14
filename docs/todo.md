@@ -4,6 +4,8 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+
+[ ] CHORE: frontent ux tests
 [ ] BUG: "Content has changed. Reload" on a detail page doesn't clear when you hit reload, only hard refresh
 [ ] BUG: Dynamic width of ctrl+p is an issue - it should stay fixed size. Maybe we should get rid of this and have 
     file:fox theater (look at sourcegraph)

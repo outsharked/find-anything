@@ -28,6 +28,9 @@ jobs:
       - name: Create web/build stub
         run: mkdir -p web/build
 
+      - name: Build
+        run: cargo build --workspace
+
       - name: Test
         run: cargo test --workspace
 

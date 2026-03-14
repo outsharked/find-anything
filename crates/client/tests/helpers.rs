@@ -211,7 +211,7 @@ impl TestEnv {
 
     /// Run find-scan over source_dir and wait for the server to finish processing.
     pub async fn run_scan(&self) {
-        self.run_scan_with(ScanConfig::default()).await;
+        self.run_scan_with(self.scan_config()).await;
     }
 
     /// Run find-scan with a specific ScanConfig.
