@@ -486,6 +486,7 @@ pub fn extractor_config_from_scan(scan: &ScanConfig) -> ExtractorConfig {
         max_temp_file_mb: scan.archives.max_temp_file_mb,
         include_hidden: scan.include_hidden,
         max_7z_solid_block_mb: scan.archives.max_7z_solid_block_mb,
+        exclude_patterns: scan.exclude.clone(),
     }
 }
 

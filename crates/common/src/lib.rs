@@ -5,6 +5,8 @@ pub mod mem;
 pub mod path;
 pub mod subprocess;
 
+pub use find_extract_types::build_globset;
+
 /// Returns the tool version string for `--version` output.
 ///
 /// On a clean release tag build: `"0.7.0"`

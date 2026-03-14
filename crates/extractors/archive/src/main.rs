@@ -40,6 +40,9 @@ fn main() {
         max_content_kb: args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10240),
         max_depth: args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10),
         max_line_length: args.get(4).and_then(|s| s.parse().ok()).unwrap_or(120),
+        exclude_patterns: args.get(5)
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default(),
         ..Default::default()
     };
 

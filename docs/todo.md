@@ -4,6 +4,8 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+[ ] CHORE: Look at archive/costar-code.zip::code/lm/listing-manager-bff/node_modules/npm/node_modules/tar/test/fixtures.tgz::fixtures/c.tar::r/e/a/l/l/y/-/d/e/e/p/-/f/o/l/d/e/r/-/p/a/t/h/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc -- this a great stress test. Create a repo with junk data, but same basic structure for this one deep inner node, and make a test around it
+
 [ ] CHORE: Code quality analysis on file scanning/walking/filtering pipeline
 
 [ ] FEAT: metrics - log start/end time of critical proceses to an external service - Grafana LGTM?
@@ -21,7 +23,7 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] FEAT: Add query syntax "type: image" with intellisense
 [ ] FEAT:Add query syntax "path: /backups/" with intellisense
 [ ] FEAT: UX is bad when showing full context for large text documents. Use some kind of scroll pattern to not render the whole thing onscreen
-[ ] FEAT: add -f/--follow to find-recent/ /btw
+
 [ ] FEAT: make "find-admin inbox" have subcommands
 [ ] FEAT: Run compaction scan only once a day, or on demand
 [ ] BUG: App ID is not persisted, each rebuild makes it not show up in pinned taskbar items
@@ -50,6 +52,7 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ### Completed Items
 
+[x] FEAT: add -f/--follow to find-recent/ /btw
 [x] BUG: "WARN find_server::routes::search: search source error: fts5: syntax error near ".": Error code 1: SQL logic error"
 [x] BUG: Hand pointer shows when hovering over :line in search results page when there are no "next/prev" line arrows
 [x] FEAT: Arrow Up/Down while an item is selected in left nav should move to next/previous item

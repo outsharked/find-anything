@@ -5,11 +5,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use bzip2::read::BzDecoder;
 use flate2::read::GzDecoder;
+use globset::GlobSet;
 use tracing::warn;
 use xz2::read::XzDecoder;
 
 use find_extract_types::IndexLine;
-use find_extract_types::ExtractorConfig;
+use find_extract_types::{build_globset, ExtractorConfig};
 
 /// One batch of lines for a single archive member, with its content hash.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -225,6 +226,7 @@ fn zip_from_archive<R: Read + std::io::Seek>(
     callback: CB<'_>,
 ) -> Result<()> {
     let size_limit = cfg.max_content_kb * 1024;
+    let excludes = build_globset(&cfg.exclude_patterns).unwrap_or_default();
 
     for i in 0..archive.len() {
         let mut entry = match archive.by_index(i) {
@@ -237,6 +239,10 @@ fn zip_from_archive<R: Read + std::io::Seek>(
         let name = entry.name().to_string();
 
         if !cfg.include_hidden && has_hidden_component(&name) {
+            continue;
+        }
+
+        if excludes.is_match(&*name) {
             continue;
         }
 
@@ -278,6 +284,7 @@ fn zip_from_archive<R: Read + std::io::Seek>(
 
 fn tar_streaming<R: Read>(mut archive: tar::Archive<R>, display_prefix: &str, cfg: &ExtractorConfig, callback: CB<'_>) -> Result<()> {
     let size_limit = cfg.max_content_kb * 1024;
+    let excludes = build_globset(&cfg.exclude_patterns).unwrap_or_default();
 
     for entry_result in archive.entries().context("reading tar entries")? {
         let mut entry = match entry_result {
@@ -293,6 +300,10 @@ fn tar_streaming<R: Read>(mut archive: tar::Archive<R>, display_prefix: &str, cf
             .unwrap_or_default();
 
         if !cfg.include_hidden && has_hidden_component(&name) {
+            continue;
+        }
+
+        if excludes.is_match(&*name) {
             continue;
         }
 
@@ -340,6 +351,7 @@ fn sevenz_process_entry(
     display_prefix: &str,
     size_limit: usize,
     cfg: &ExtractorConfig,
+    excludes: &GlobSet,
     callback: CB<'_>,
 ) -> Result<bool, sevenz_rust2::Error> {
     if entry.is_directory() {
@@ -348,6 +360,12 @@ fn sevenz_process_entry(
     let name = entry.name().to_string();
 
     if !cfg.include_hidden && has_hidden_component(&name) {
+        // Drain so solid-block stream stays in sync.
+        let _ = std::io::copy(reader, &mut std::io::sink());
+        return Ok(true);
+    }
+
+    if excludes.is_match(&*name) {
         // Drain so solid-block stream stays in sync.
         let _ = std::io::copy(reader, &mut std::io::sink());
         return Ok(true);
@@ -410,6 +428,7 @@ fn sevenz_streaming(path: &Path, display_prefix: &str, cfg: &ExtractorConfig, ca
     use std::collections::HashSet;
 
     let size_limit = cfg.max_content_kb * 1024;
+    let excludes = build_globset(&cfg.exclude_patterns).unwrap_or_default();
 
     // Parse the archive header to inspect block sizes before any decompression.
     // The LZMA decoder allocates a dictionary buffer proportional to the block's
@@ -583,7 +602,7 @@ fn sevenz_streaming(path: &Path, display_prefix: &str, cfg: &ExtractorConfig, ca
             &mut source,
         );
         if let Err(e) = block_dec.for_each_entries(&mut |entry, reader| {
-            sevenz_process_entry(entry, reader, display_prefix, size_limit, cfg, callback)
+            sevenz_process_entry(entry, reader, display_prefix, size_limit, cfg, &excludes, callback)
         }) {
             warn!("7z: '{}': block {} error: {:#}", path.display(), block_index, e);
         }
@@ -596,7 +615,7 @@ fn sevenz_streaming(path: &Path, display_prefix: &str, cfg: &ExtractorConfig, ca
             let entry = &archive.files[file_idx];
             if !entry.is_directory() {
                 let empty: &mut dyn Read = &mut ([0u8; 0].as_slice());
-                sevenz_process_entry(entry, empty, display_prefix, size_limit, cfg, callback)
+                sevenz_process_entry(entry, empty, display_prefix, size_limit, cfg, &excludes, callback)
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
         }
@@ -669,7 +688,7 @@ fn handle_nested_archive(
 
     let inner_cfg = ExtractorConfig {
         max_depth: cfg.max_depth.saturating_sub(1),
-        ..*cfg
+        ..cfg.clone()
     };
 
     // Wrapper callback that prefixes inner archive_paths with `outer_name::`.

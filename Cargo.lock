@@ -1348,6 +1348,7 @@ dependencies = [
  "find-extract-media",
  "find-extract-types",
  "flate2",
+ "globset",
  "serde",
  "serde_json",
  "sevenz-rust2",
@@ -1479,6 +1480,8 @@ dependencies = [
 name = "find-extract-types"
 version = "0.6.1"
 dependencies = [
+ "anyhow",
+ "globset",
  "serde",
 ]
 

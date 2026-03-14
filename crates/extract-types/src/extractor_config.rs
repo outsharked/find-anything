@@ -6,7 +6,7 @@
 ///
 /// Construction sites that don't care about a particular field can use
 /// `..ExtractorConfig::default()` to forward-compatibly inherit the defaults.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ExtractorConfig {
     /// Maximum content size in KB; content is truncated at this limit.
     pub max_content_kb: usize,
@@ -27,6 +27,10 @@ pub struct ExtractorConfig {
     /// falling back to filename-only extraction.  Maps to
     /// `scan.archives.max_7z_solid_block_mb`.  Default: 256 MB.
     pub max_7z_solid_block_mb: usize,
+    /// Glob patterns (same syntax as `scan.exclude`) applied to archive member
+    /// paths.  Members whose path matches any pattern are skipped entirely —
+    /// not indexed by filename, not recursed into.  Empty = no filtering.
+    pub exclude_patterns: Vec<String>,
 }
 
 impl Default for ExtractorConfig {
@@ -38,6 +42,7 @@ impl Default for ExtractorConfig {
             max_temp_file_mb: 500,
             include_hidden: false,
             max_7z_solid_block_mb: 256,
+            exclude_patterns: vec![],
         }
     }
 }

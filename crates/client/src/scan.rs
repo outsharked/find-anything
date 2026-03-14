@@ -458,10 +458,10 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
 
             // Apply effective exclude patterns to archive members.
             // archive_path may be "inner.zip::path/to/file.js" for nested archives;
-            // take the last segment (actual file path) for glob matching.
+            // each "::" segment is checked so that e.g. node_modules/pkg.tgz::index.js
+            // is excluded when **/node_modules/** is in the exclude list.
             if let Some(ap) = member_batch.lines.first().and_then(|l| l.archive_path.as_deref()) {
-                let file_path = ap.rsplit("::").next().unwrap_or(ap);
-                if eff_excludes.is_match(file_path) {
+                if ap.split("::").any(|seg| eff_excludes.is_match(seg)) {
                     continue;
                 }
             }

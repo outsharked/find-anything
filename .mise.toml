@@ -70,8 +70,8 @@ run = [
 ]
 
 [tasks.build.env]
-GIT_HASH  = "{{exec(command='git rev-parse --short HEAD')}}"
-GIT_TAG   = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
 GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
 
 [tasks.build-arm]
@@ -83,8 +83,8 @@ run = [
 ]
 
 [tasks.build-arm.env]
-GIT_HASH  = "{{exec(command='git rev-parse --short HEAD')}}"
-GIT_TAG   = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
 GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
 
 [tasks.build-linux]
@@ -100,8 +100,8 @@ run = [
 ]
 
 [tasks.build-win.env]
-GIT_HASH  = "{{exec(command='git rev-parse --short HEAD')}}"
-GIT_TAG   = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
 GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
 
 [tasks.build-wsl-cross]
@@ -109,8 +109,8 @@ description = "Cross-compile Windows binaries via Docker/mingw and package with 
 run = "bash install/build-wsl-cross.sh"
 
 [tasks.build-wsl-cross.env]
-GIT_HASH  = "{{exec(command='git rev-parse --short HEAD')}}"
-GIT_TAG   = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
 GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
 
 # ── Checks ────────────────────────────────────────────────────────────────────

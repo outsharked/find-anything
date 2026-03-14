@@ -146,6 +146,12 @@ pub fn start_archive_subprocess(
     let max_depth = scan.archives.max_depth.to_string();
     let max_line_length = scan.max_line_length.to_string();
 
+    let exclude_patterns_json = if scan.exclude.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&scan.exclude).unwrap_or_default()
+    };
+
     let (tx, rx) = mpsc::channel(8);
 
     let handle = tokio::spawn(async move {
@@ -153,8 +159,11 @@ pub fn start_archive_subprocess(
         cmd.arg(&abs_path)
             .arg(&max_content_kb)
             .arg(&max_depth)
-            .arg(&max_line_length)
-            .stdout(Stdio::piped())
+            .arg(&max_line_length);
+        if !exclude_patterns_json.is_empty() {
+            cmd.arg(&exclude_patterns_json);
+        }
+        cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
         let mut child = match cmd.spawn() {
