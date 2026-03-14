@@ -37,6 +37,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Added
 
 - **RAR archive extraction** — `.rar` files (RAR4 and RAR5) are now indexed by `find-extract-archive` via the `unrar` crate (bindings to unrar 7.0.9); supports all compression methods, nested archives written to temp files before recursion, exclude patterns, hidden-file filtering, mtime from DOS datetime; adds +336 KB to `find-extract-archive` only (tracked in `docs/binary-sizes.md`)
+- **Upload endpoint integration tests** — `crates/server/tests/upload.rs` with 9 tests covering the three-endpoint upload protocol: init (POST → 201 + id), single-chunk, two-chunk resume, progress query (HEAD), gap detection (409), missing Content-Range (400), unknown id (404), and auth (401)
 - **Archive extractor integration tests** — `crates/extractors/archive/tests/extract.rs` with 17 tests covering all supported inner formats (tar, tgz, tar.bz2, tar.xz, zip, 7z, rar), deeply nested paths, 200-char filenames, unicode filenames, depth limiting, and exclude-pattern filtering; `fixtures.zip` (outer ZIP for streaming tests) and `fixtures.tgz` (node `tar` test suite fixture with PAX headers, hardlinks, and extreme paths) added as test fixtures; fixture generation script at `docs/misc/make_fixtures.py`
 - **Binary size tracking** — `docs/binary-sizes.md` records unstripped release binary sizes per version to catch regressions on space-constrained systems
 
