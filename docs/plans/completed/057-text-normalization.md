@@ -40,7 +40,7 @@ uploads.
 
 Normalization applies to new or re-indexed files only. Existing content in ZIP
 archives is not retroactively transformed. Users who want normalized content
-for old files can run `find-scan --reindex`. A note in the changelog will
+for old files can run `find-scan --upgrade`. A note in the changelog will
 explain this.
 
 ### Fallback chain

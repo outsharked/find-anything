@@ -4,18 +4,14 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
-[ ] FEAT: allow adding extra tools (similar to formatters) for archive extraction. Extract hardcoded into default config
-[ ] FEAT: allow adding file extension -> content type mappers. Extract all hardcoded into config
 [ ] CHORE: Code quality analysis on file scanning/walking/filtering pipeline
-[ ] FEAT: metrics - log start/end time of critical proceses to an external service - Grafana LGTM?
+
 [ ] FEAT: With [sources.nas-data] path = "/mnt/nas-data" missing from server, need to handle inline displaye better
 [ ] FEAT: In image detail split view, should be able to move divider/resize window
 [ ] FEAT: Create short URL to link
 [ ] FEAT: use video player for video files
 [ ] Look at debug logs during e.g. a simple delete - seems to do a lot of stuff it doesn't need to, e.g. passing off to archving. We should pre-filter the gz file - if only delete/small adds, no need to go to archiving. Check szie of text content, file types.
 [ ] BUG: pictures/2014/Jamie Phone 2014/20140410_074302.jpg - no metadata available - why?
-
-[ ] find-reindex -- can this only operate against previously-not-reindexed content?
 [ ] FEAT: Guard against low disk space
 [ ] BUG: Fetching existing file list seems to not be targeted to a particular tree (e.g. find-scan /path/to/dir)
 [ ] BUG: Monhegan Lighthouse DOry 2005.tif can't be shown
@@ -42,6 +38,10 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] CHORE: Inline extraction of safe file types instread of making subporocesses
 [ ] CHORE: Code quality: avoid optional typescript parameters; default values should be set at as high a level as possible and propagated conclusively. Add to claude.md
 [ ] FEAT: Custom protocol handler (chrome) to allow exploring the file location. Requires client config for roots.
+[ ] FEAT (PLANNED) metrics - log start/end time of critical proceses to an external service - Grafana LGTM?
+[ ] FEAT (PLANNED): allow adding extra tools (similar to formatters) for archive extraction. Extract hardcoded into default config
+[ ] FEAT (PLANNED): allow adding file extension -> content type mappers. Extract all hardcoded into config
+
 
 ### Major features/Integration
 
@@ -51,6 +51,7 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ### Completed Items
 
+[x] FEAT: find-reindex -- can this only operate against previously-not-reindexed content?
 [x] CHORE: Look at node-tar:fixtures.tgz -- this a great stress test. Copy fixtures.tgz
 [x] FEAT: add -f/--follow to find-recent/ /btw
 [x] BUG: "WARN find_server::routes::search: search source error: fts5: syntax error near ".": Error code 1: SQL logic error"
