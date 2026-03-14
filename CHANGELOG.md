@@ -9,7 +9,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **External pluggable extractors (`[scan.extractors]`)** — users can now wire in system tools for file formats the built-in extractors don't support; configure an extension with `mode = "stdout"` (capture tool stdout as file content) or `mode = "tempdir"` (extract to temp dir and walk members, stored as composite `outer::member` paths identical to built-in archives); the `{file}`, `{name}`, and `{dir}` placeholders are substituted in args; a `"builtin"` sentinel preserves existing behaviour for any extension; example: `rar = { mode = "tempdir", bin = "unrar", args = ["e", "-y", "{file}", "{dir}"] }` adds RAR support on platforms where the built-in `unrar_sys` crate won't compile
+
 ### Fixed
+
+- **`find-watch` ignoring `[scan.extractors]` config** — external extractor routing (`resolve_extractor`) was only wired into `find-scan`; `find-watch` called `extract_via_subprocess` directly and always used the built-in extractor; both call sites in `watch.rs` now dispatch through `resolve_extractor` so e.g. a `rar = { mode = "tempdir", ... }` config is honoured on file-change events
+- **`find-watch` tempdir-mode archives indexed as `"unknown"`** — when an external tempdir extractor returned members, the outer file was submitted with `kind = detect_kind_from_ext(ext)` which returned `"unknown"` for unrecognised extensions (e.g. `.rar`), preventing the file from being expanded as an archive in the UI; the outer file is now submitted with `kind = "archive"` whenever the extractor returned members with `archive_path` set
 
 - **Tray icon pinning lost after reinstall** — `find-tray` now registers the notification-area icon using `NIF_GUID` with a stable GUID (`{8A3F5D2C-…}`) instead of the default `uID`-based registration; Windows uses the GUID to persistently track the icon's pinned/hidden preference, so reinstalling no longer loses the tray-pin or creates duplicate entries in "Other system tray icons"; the popup window also registers for the `TaskbarCreated` broadcast (with UIPI allow) and re-registers the GUID icon if Explorer restarts
 

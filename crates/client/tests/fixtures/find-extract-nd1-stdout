@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# find-extract-nd1-stdout — variant that writes all member content to stdout.
+# Lines starting with # are comments and are ignored.
+set -euo pipefail
+while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "$line" ] && continue
+    [[ "$line" == \#* ]] && continue
+    printf '%s\n' "${line#*:}"
+done < "$1"

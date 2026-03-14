@@ -12,8 +12,12 @@ fn missing_binaries_warned() -> &'static Mutex<HashSet<String>> {
     SET.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-use find_common::{api::IndexLine, config::ScanConfig};
+use find_common::{
+    api::IndexLine,
+    config::{ExternalExtractorConfig, ExtractorConfig, ExtractorEntry, ScanConfig},
+};
 use find_extract_archive::MemberBatch;
+use find_extract_dispatch::dispatch_from_bytes;
 
 /// Outcome of a subprocess extraction attempt.
 pub enum SubprocessOutcome {
@@ -24,6 +28,248 @@ pub enum SubprocessOutcome {
     /// Extractor binary was not found; file should not be indexed at all so it
     /// is retried once the binary is correctly deployed.
     BinaryMissing,
+}
+
+/// Outcome of an external extractor run.
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub enum ExternalOutcome {
+    /// Extraction succeeded; contains extracted lines.
+    Ok(Vec<IndexLine>),
+    /// Extractor ran but failed; file should be indexed filename-only.
+    Failed(String),
+    /// Extractor binary was not found.
+    BinaryMissing,
+}
+
+/// Result of `resolve_extractor`.
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub enum ExtractorChoice {
+    /// Use built-in routing (existing code paths).
+    Builtin,
+    /// Use a user-configured external tool.
+    External(ExternalExtractorConfig),
+}
+
+/// Resolve the extractor to use for a given file path.
+/// Checks [scan.extractors] first; falls back to built-in routing.
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub fn resolve_extractor(path: &Path, scan: &ScanConfig) -> ExtractorChoice {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if let Some(entry) = scan.extractors.get(&ext) {
+        match entry {
+            ExtractorEntry::Builtin(_) => {}
+            ExtractorEntry::External(cfg) => return ExtractorChoice::External(cfg.clone()),
+        }
+    }
+    ExtractorChoice::Builtin
+}
+
+/// Substitute {file}, {name}, {dir} placeholders in extractor args.
+/// {dir} is only substituted if `dir` is Some.
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub fn substitute_args(args: &[String], file: &Path, dir: Option<&Path>) -> Vec<String> {
+    let file_str = file.to_string_lossy();
+    let name_str = file
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    args.iter()
+        .map(|a| {
+            let mut a = a.replace("{file}", &file_str);
+            a = a.replace("{name}", &name_str);
+            if let Some(d) = dir {
+                a = a.replace("{dir}", &d.to_string_lossy());
+            }
+            a
+        })
+        .collect()
+}
+
+/// Run an external extractor in stdout mode.
+/// The tool's stdout is captured and split into IndexLines.
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub async fn run_external_stdout(
+    abs_path: &Path,
+    ext_cfg: &ExternalExtractorConfig,
+    scan: &ScanConfig,
+) -> ExternalOutcome {
+    if ext_cfg.args.iter().any(|a| a.contains("{dir}")) {
+        warn!(
+            "{{dir}} placeholder in stdout-mode extractor args for {} — this is a configuration error; placeholder will not be substituted",
+            abs_path.display()
+        );
+    }
+
+    let substituted = substitute_args(&ext_cfg.args, abs_path, None);
+    let mut cmd = tokio::process::Command::new(&ext_cfg.bin);
+    for arg in &substituted {
+        cmd.arg(arg);
+    }
+    cmd.kill_on_drop(true);
+
+    let timeout = tokio::time::Duration::from_secs(scan.subprocess_timeout_secs);
+    let result = tokio::time::timeout(timeout, cmd.output()).await;
+
+    match result {
+        Err(_) => {
+            warn!(
+                "external extractor {} timed out after {}s for {}",
+                ext_cfg.bin,
+                scan.subprocess_timeout_secs,
+                abs_path.display()
+            );
+            ExternalOutcome::Failed(format!("timed out after {}s", scan.subprocess_timeout_secs))
+        }
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            error!(
+                "external extractor binary not found: {} — check your [scan.extractors] config",
+                ext_cfg.bin
+            );
+            ExternalOutcome::BinaryMissing
+        }
+        Ok(Err(e)) => {
+            warn!("failed to run external extractor {}: {:#}", ext_cfg.bin, e);
+            ExternalOutcome::Failed(e.to_string())
+        }
+        Ok(Ok(out)) => {
+            if !out.status.success() {
+                warn!(
+                    "external extractor {} exited {:?} for {}",
+                    ext_cfg.bin,
+                    out.status.code(),
+                    abs_path.display()
+                );
+                return ExternalOutcome::Failed(format!("exited {:?}", out.status.code()));
+            }
+            let text = String::from_utf8_lossy(&out.stdout);
+            let lines: Vec<IndexLine> = text
+                .lines()
+                .enumerate()
+                .map(|(i, line)| IndexLine {
+                    archive_path: None,
+                    line_number: i + 1,
+                    content: line.to_string(),
+                })
+                .collect();
+            ExternalOutcome::Ok(lines)
+        }
+    }
+}
+
+/// Run an external extractor in tempdir mode.
+/// The tool extracts into a temp directory; we walk and dispatch each extracted file.
+/// Returns lines with `archive_path` set to the member's relative path, ready for
+/// `build_member_index_files`.
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub async fn run_external_tempdir(
+    abs_path: &Path,
+    ext_cfg: &ExternalExtractorConfig,
+    scan: &ScanConfig,
+    ext_config: &ExtractorConfig,
+) -> ExternalOutcome {
+    let tmp_dir = match tempfile::TempDir::new() {
+        Ok(d) => d,
+        Err(e) => return ExternalOutcome::Failed(format!("failed to create temp dir: {e}")),
+    };
+
+    let substituted = substitute_args(&ext_cfg.args, abs_path, Some(tmp_dir.path()));
+    let mut cmd = tokio::process::Command::new(&ext_cfg.bin);
+    for arg in &substituted {
+        cmd.arg(arg);
+    }
+    cmd.kill_on_drop(true);
+
+    let timeout = tokio::time::Duration::from_secs(scan.subprocess_timeout_secs);
+    let result = tokio::time::timeout(timeout, cmd.output()).await;
+
+    match result {
+        Err(_) => {
+            warn!(
+                "external extractor {} timed out after {}s for {}",
+                ext_cfg.bin,
+                scan.subprocess_timeout_secs,
+                abs_path.display()
+            );
+            return ExternalOutcome::Failed(format!(
+                "timed out after {}s",
+                scan.subprocess_timeout_secs
+            ));
+        }
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            error!(
+                "external extractor binary not found: {} — check your [scan.extractors] config",
+                ext_cfg.bin
+            );
+            return ExternalOutcome::BinaryMissing;
+        }
+        Ok(Err(e)) => {
+            warn!("failed to run external extractor {}: {:#}", ext_cfg.bin, e);
+            return ExternalOutcome::Failed(e.to_string());
+        }
+        Ok(Ok(out)) => {
+            if !out.status.success() {
+                warn!(
+                    "external extractor {} exited {:?} for {}",
+                    ext_cfg.bin,
+                    out.status.code(),
+                    abs_path.display()
+                );
+                return ExternalOutcome::Failed(format!("exited {:?}", out.status.code()));
+            }
+        }
+    }
+
+    // Walk extracted files, dispatch each for content extraction.
+    let mut all_lines: Vec<IndexLine> = Vec::new();
+    for entry in walkdir::WalkDir::new(tmp_dir.path())
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let member_full = entry.path();
+        let member_rel = match member_full.strip_prefix(tmp_dir.path()) {
+            Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        let bytes = match std::fs::read(member_full) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    "failed to read extracted member {}: {}",
+                    member_full.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        let member_name = member_full
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let mut content_lines = dispatch_from_bytes(&bytes, &member_name, ext_config);
+        // Set archive_path to member_rel on all returned lines.
+        for line in &mut content_lines {
+            line.archive_path = Some(member_rel.clone());
+        }
+        // Add filename marker line — build_member_index_files removes this and
+        // replaces it with the composite path (outer::member).
+        content_lines.push(IndexLine {
+            archive_path: Some(member_rel.clone()),
+            line_number: 0,
+            content: member_rel,
+        });
+        all_lines.extend(content_lines);
+    }
+
+    ExternalOutcome::Ok(all_lines)
 }
 
 /// Extract content from any file via the appropriate subprocess.
@@ -351,6 +597,187 @@ mod tests {
     fn unknown_format_suppressed_if_ignored() {
         let suppress_bare = |m: &str| m.contains("bare message");
         assert!(parse_relay_line("bare message with no level", suppress_bare).is_none());
+    }
+
+    #[test]
+    fn substitute_args_replaces_all_placeholders() {
+        let args = vec!["{file}".to_string(), "{dir}".to_string(), "{name}".to_string()];
+        let file = std::path::Path::new("/tmp/my archive.zip");
+        let dir = std::path::Path::new("/tmp/out");
+        let result = super::substitute_args(&args, file, Some(dir));
+        assert_eq!(result[0], "/tmp/my archive.zip");
+        assert_eq!(result[1], "/tmp/out");
+        assert_eq!(result[2], "my archive.zip");
+    }
+
+    #[test]
+    fn substitute_args_no_dir_leaves_dir_placeholder() {
+        let args = vec!["{file}".to_string(), "{dir}".to_string()];
+        let file = std::path::Path::new("/tmp/x.zip");
+        let result = super::substitute_args(&args, file, None);
+        assert_eq!(result[0], "/tmp/x.zip");
+        assert_eq!(result[1], "{dir}"); // not substituted
+    }
+
+    #[test]
+    fn resolve_extractor_builtin_sentinel_falls_through() {
+        use find_common::config::{ExtractorEntry, ScanConfig};
+        let mut scan = ScanConfig::default();
+        scan.extractors.insert("zip".to_string(), ExtractorEntry::Builtin("builtin".to_string()));
+        let path = std::path::Path::new("archive.zip");
+        assert!(matches!(super::resolve_extractor(path, &scan), super::ExtractorChoice::Builtin));
+    }
+
+    #[test]
+    fn resolve_extractor_unknown_extension_is_builtin() {
+        use find_common::config::ScanConfig;
+        let scan = ScanConfig::default();
+        let path = std::path::Path::new("file.nd1");
+        assert!(matches!(super::resolve_extractor(path, &scan), super::ExtractorChoice::Builtin));
+    }
+
+    #[test]
+    fn resolve_extractor_external_entry_returned() {
+        use find_common::config::{ExternalExtractorConfig, ExternalExtractorMode, ExtractorEntry, ScanConfig};
+        let mut scan = ScanConfig::default();
+        scan.extractors.insert(
+            "nd1".to_string(),
+            ExtractorEntry::External(ExternalExtractorConfig {
+                mode: ExternalExtractorMode::TempDir,
+                bin: "/usr/bin/extract-nd1".to_string(),
+                args: vec!["{file}".to_string(), "{dir}".to_string()],
+            }),
+        );
+        let path = std::path::Path::new("archive.nd1");
+        assert!(matches!(
+            super::resolve_extractor(path, &scan),
+            super::ExtractorChoice::External(_)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tempdir_members_indexed() {
+        use std::path::PathBuf;
+        use find_common::config::{
+            extractor_config_from_scan, ExternalExtractorConfig, ExternalExtractorMode, ExtractorEntry,
+            ScanConfig,
+        };
+
+        let fixtures_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let bin = fixtures_dir.join("find-extract-nd1").to_string_lossy().into_owned();
+        let test_file = fixtures_dir.join("test.nd1");
+
+        let mut scan = ScanConfig::default();
+        scan.extractors.insert(
+            "nd1".to_string(),
+            ExtractorEntry::External(ExternalExtractorConfig {
+                mode: ExternalExtractorMode::TempDir,
+                bin: bin.clone(),
+                args: vec!["{file}".to_string(), "{dir}".to_string()],
+            }),
+        );
+        let ext_config = extractor_config_from_scan(&scan);
+
+        let ext_cfg = ExternalExtractorConfig {
+            mode: ExternalExtractorMode::TempDir,
+            bin,
+            args: vec!["{file}".to_string(), "{dir}".to_string()],
+        };
+
+        let outcome = super::run_external_tempdir(&test_file, &ext_cfg, &scan, &ext_config).await;
+
+        let lines = match outcome {
+            super::ExternalOutcome::Ok(l) => l,
+            _ => panic!("expected Ok"),
+        };
+
+        let member_paths: std::collections::HashSet<_> = lines.iter()
+            .filter_map(|l| l.archive_path.as_deref())
+            .collect();
+
+        // All five members should be present (comment lines are not members).
+        for name in &["readme.txt", "notes.txt", "data.json", "report.md", "empty.txt"] {
+            assert!(member_paths.contains(name), "{name} not found; paths: {:?}", member_paths);
+        }
+        assert_eq!(member_paths.len(), 5, "unexpected extra members: {:?}", member_paths);
+
+        let data_content: String = lines.iter()
+            .filter(|l| l.archive_path.as_deref() == Some("data.json"))
+            .map(|l| l.content.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(data_content.contains("hello world"), "missing 'hello world': {data_content}");
+
+        let notes_content: String = lines.iter()
+            .filter(|l| l.archive_path.as_deref() == Some("notes.txt"))
+            .map(|l| l.content.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(notes_content.contains("plain text note"), "missing 'plain text note': {notes_content}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdout_content_indexed_as_single_document() {
+        use std::path::PathBuf;
+        use find_common::config::{ExternalExtractorConfig, ExternalExtractorMode, ScanConfig};
+
+        let fixtures_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let bin = fixtures_dir.join("find-extract-nd1-stdout").to_string_lossy().into_owned();
+        let test_file = fixtures_dir.join("test.nd1");
+
+        let scan = ScanConfig::default();
+        let ext_cfg = ExternalExtractorConfig {
+            mode: ExternalExtractorMode::Stdout,
+            bin,
+            args: vec!["{file}".to_string()],
+        };
+
+        let outcome = super::run_external_stdout(&test_file, &ext_cfg, &scan).await;
+
+        let lines = match outcome {
+            super::ExternalOutcome::Ok(l) => l,
+            _ => panic!("expected Ok"),
+        };
+
+        assert!(lines.iter().all(|l| l.archive_path.is_none()), "unexpected archive_path in stdout mode");
+
+        let all_content: String = lines.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join(" ");
+        assert!(all_content.contains("hello world"), "missing 'hello world': {all_content}");
+        assert!(all_content.contains("plain text note"), "missing 'plain text note': {all_content}");
+        // Comment lines must not appear in output.
+        assert!(!all_content.contains("nd1 —"), "comment line leaked into stdout output");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn extractor_nonzero_exit_returns_failed() {
+        use std::path::PathBuf;
+        use find_common::config::{ExternalExtractorConfig, ExternalExtractorMode, ScanConfig};
+
+        let fixtures_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let test_file = fixtures_dir.join("test.nd1");
+
+        // Write a script that exits 1 into a temp file
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"#!/usr/bin/env bash\nexit 1\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let scan = ScanConfig::default();
+        let ext_cfg = ExternalExtractorConfig {
+            mode: ExternalExtractorMode::Stdout,
+            bin: tmp.path().to_string_lossy().into_owned(),
+            args: vec!["{file}".to_string()],
+        };
+
+        let outcome = super::run_external_stdout(&test_file, &ext_cfg, &scan).await;
+
+        assert!(
+            matches!(outcome, super::ExternalOutcome::Failed(_)),
+            "expected Failed"
+        );
     }
 }
 

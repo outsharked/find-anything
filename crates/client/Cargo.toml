@@ -49,9 +49,9 @@ tracing-subscriber = { workspace = true }
 chrono      = "0.4"
 colored     = "3"
 flate2      = "1"
+tempfile    = "3"
 
 [dev-dependencies]
-tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 find-windows-service = { path = "../windows/service" }

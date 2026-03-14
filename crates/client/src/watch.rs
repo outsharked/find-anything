@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use find_common::{
     api::{detect_kind_from_ext, BulkRequest, IndexFile, PathRename},
-    config::{load_dir_override, ClientConfig, ScanConfig, SourceConfig},
+    config::{extractor_config_from_scan, load_dir_override, ClientConfig, ExternalExtractorMode, ScanConfig, SourceConfig},
     path::is_composite,
 };
 
@@ -478,10 +478,31 @@ async fn handle_update(
 ) -> Result<()> {
     info!("update: {}", rel_path);
 
-    let lines = match subprocess::extract_via_subprocess(abs_path, eff_scan, extractor_dir).await {
-        subprocess::SubprocessOutcome::Ok(lines) => lines,
-        subprocess::SubprocessOutcome::BinaryMissing => return Ok(()),
-        subprocess::SubprocessOutcome::Failed => vec![],
+    let lines = match subprocess::resolve_extractor(abs_path, eff_scan) {
+        subprocess::ExtractorChoice::External(ref ext_cfg) => match ext_cfg.mode {
+            ExternalExtractorMode::Stdout => {
+                match subprocess::run_external_stdout(abs_path, ext_cfg, eff_scan).await {
+                    subprocess::ExternalOutcome::Ok(lines) => lines,
+                    subprocess::ExternalOutcome::BinaryMissing => return Ok(()),
+                    subprocess::ExternalOutcome::Failed(_) => vec![],
+                }
+            }
+            ExternalExtractorMode::TempDir => {
+                let ext_config = extractor_config_from_scan(eff_scan);
+                match subprocess::run_external_tempdir(abs_path, ext_cfg, eff_scan, &ext_config).await {
+                    subprocess::ExternalOutcome::Ok(lines) => lines,
+                    subprocess::ExternalOutcome::BinaryMissing => return Ok(()),
+                    subprocess::ExternalOutcome::Failed(_) => vec![],
+                }
+            }
+        },
+        subprocess::ExtractorChoice::Builtin => {
+            match subprocess::extract_via_subprocess(abs_path, eff_scan, extractor_dir).await {
+                subprocess::SubprocessOutcome::Ok(lines) => lines,
+                subprocess::SubprocessOutcome::BinaryMissing => return Ok(()),
+                subprocess::SubprocessOutcome::Failed => vec![],
+            }
+        }
     };
 
     let mtime = mtime_of(abs_path).unwrap_or(0);
@@ -490,7 +511,13 @@ async fn handle_update(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    let kind = detect_kind_from_ext(ext).to_string();
+    // If the extractor returned archive members, treat the outer file as "archive"
+    // regardless of extension (e.g. .rar mapped to an external tempdir extractor).
+    let kind = if lines.iter().any(|l| l.archive_path.is_some()) {
+        "archive".to_string()
+    } else {
+        detect_kind_from_ext(ext).to_string()
+    };
 
     let mut files = build_index_files(rel_path.to_string(), mtime, size, kind, lines);
     if let Some(f) = files.first_mut() {
@@ -790,20 +817,40 @@ async fn handle_dir_rename(
             delete_paths.push(old_rel);
         } else if new_included && !old_source_included {
             // Was excluded, now included → full re-extraction.
-            let lines = match subprocess::extract_via_subprocess(
-                new_abs,
-                &new_eff_scan,
-                extractor_dir,
-            )
-            .await
-            {
-                subprocess::SubprocessOutcome::Ok(lines) => lines,
-                subprocess::SubprocessOutcome::BinaryMissing | subprocess::SubprocessOutcome::Failed => vec![],
+            let lines = match subprocess::resolve_extractor(new_abs, &new_eff_scan) {
+                subprocess::ExtractorChoice::External(ref ext_cfg) => match ext_cfg.mode {
+                    ExternalExtractorMode::Stdout => {
+                        match subprocess::run_external_stdout(new_abs, ext_cfg, &new_eff_scan).await {
+                            subprocess::ExternalOutcome::Ok(lines) => lines,
+                            subprocess::ExternalOutcome::BinaryMissing
+                            | subprocess::ExternalOutcome::Failed(_) => vec![],
+                        }
+                    }
+                    ExternalExtractorMode::TempDir => {
+                        let ext_config = extractor_config_from_scan(&new_eff_scan);
+                        match subprocess::run_external_tempdir(new_abs, ext_cfg, &new_eff_scan, &ext_config).await {
+                            subprocess::ExternalOutcome::Ok(lines) => lines,
+                            subprocess::ExternalOutcome::BinaryMissing
+                            | subprocess::ExternalOutcome::Failed(_) => vec![],
+                        }
+                    }
+                },
+                subprocess::ExtractorChoice::Builtin => {
+                    match subprocess::extract_via_subprocess(new_abs, &new_eff_scan, extractor_dir).await {
+                        subprocess::SubprocessOutcome::Ok(lines) => lines,
+                        subprocess::SubprocessOutcome::BinaryMissing
+                        | subprocess::SubprocessOutcome::Failed => vec![],
+                    }
+                }
             };
             let mtime = mtime_of(new_abs).unwrap_or(0);
             let size = size_of(new_abs).unwrap_or(0);
             let ext = new_abs.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let kind = detect_kind_from_ext(ext).to_string();
+            let kind = if lines.iter().any(|l| l.archive_path.is_some()) {
+                "archive".to_string()
+            } else {
+                detect_kind_from_ext(ext).to_string()
+            };
             let mut built = build_index_files(new_rel, mtime, size, kind, lines);
             new_files.append(&mut built);
         }

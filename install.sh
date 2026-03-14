@@ -253,6 +253,24 @@ path = "$DIR_ESC"
 # enabled   = true
 # max_depth = 10   # Max nesting depth for archives-within-archives
 
+# ── External extractor overrides ──────────────────────────────────────────────
+# Omitted extensions use built-in routing automatically. Add an entry only to
+# override or extend with an external tool. Built-in extensions include:
+#   zip, tar, gz, bz2, xz, tgz, tbz2, txz, 7z  (archives)
+#   pdf, docx, xlsx, epub                         (documents)
+#   jpg, png, mp3, mp4, ...                       (media)
+#
+# [scan.extractors]
+#
+# Example: add RAR support via unrar
+# rar = { mode = "tempdir", bin = "unrar", args = ["e", "-y", "{file}", "{dir}"] }
+#
+# Example: add LZH support via lhasa
+# lzh = { mode = "tempdir", bin = "lhasa", args = ["-x", "{file}", "-C", "{dir}"] }
+#
+# Example: add LZW-compressed files via uncompress
+# lzw = { mode = "stdout", bin = "uncompress", args = ["-c", "{file}"] }
+
 [watch]
 # batch_window_secs = 5.0  # Buffer filesystem events for this many seconds before indexing
 # extractor_dir     = ""   # Path to find-extract-* binaries (default: auto-detect)

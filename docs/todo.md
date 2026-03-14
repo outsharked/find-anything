@@ -4,13 +4,14 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+[ ] BUG: "Content has changed. Reload" on a detail page doesn't clear when you hit reload, only hard refresh
+[ ] BUG: Dynamic width of ctrl+p is an issue - it should stay fixed size. Maybe we should get rid of this and have 
+    file:fox theater (look at sourcegraph)
 [ ] CHORE: Code quality analysis on file scanning/walking/filtering pipeline
-
 [ ] FEAT: With [sources.nas-data] path = "/mnt/nas-data" missing from server, need to handle inline displaye better
 [ ] FEAT: In image detail split view, should be able to move divider/resize window
 [ ] FEAT: Create short URL to link
 [ ] FEAT: use video player for video files
-
 [ ] BUG: pictures/2014/Jamie Phone 2014/20140410_074302.jpg - no metadata available - why?
 [ ] FEAT: Guard against low disk space
 [ ] BUG: Fetching existing file list seems to not be targeted to a particular tree (e.g. find-scan /path/to/dir)

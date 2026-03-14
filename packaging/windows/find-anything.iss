@@ -222,6 +222,24 @@ begin
     '# enabled   = true' + NL +
     '# max_depth = 10   # Max nesting depth for archives-within-archives' + NL +
     NL +
+    '# ── External extractor overrides ──────────────────────────────────────────────' + NL +
+    '# Omitted extensions use built-in routing automatically. Add an entry only to' + NL +
+    '# override or extend with an external tool. Built-in extensions include:' + NL +
+    '#   zip, tar, gz, bz2, xz, tgz, tbz2, txz, 7z  (archives)' + NL +
+    '#   pdf, docx, xlsx, epub                         (documents)' + NL +
+    '#   jpg, png, mp3, mp4, ...                       (media)' + NL +
+    '#' + NL +
+    '# [scan.extractors]' + NL +
+    '#' + NL +
+    '# Example: add RAR support via unrar' + NL +
+    '# rar = { mode = "tempdir", bin = "unrar", args = ["e", "-y", "{file}", "{dir}"] }' + NL +
+    '#' + NL +
+    '# Example: add LZH support via lhasa' + NL +
+    '# lzh = { mode = "tempdir", bin = "lhasa", args = ["-x", "{file}", "-C", "{dir}"] }' + NL +
+    '#' + NL +
+    '# Example: add LZW-compressed files via uncompress' + NL +
+    '# lzw = { mode = "stdout", bin = "uncompress", args = ["-c", "{file}"] }' + NL +
+    NL +
     '[watch]' + NL +
     '# batch_window_secs = 5.0  # Buffer filesystem events for this many seconds before indexing' + NL +
     '# extractor_dir     = ""   # Path to find-extract-* binaries (default: auto-detect)' + NL +

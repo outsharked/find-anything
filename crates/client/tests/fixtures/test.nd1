@@ -1,0 +1,8 @@
+# nd1 — Named Data 1, a fictional single-file archive format used for testing.
+# Format: one member per line as <filename>:<content> (first colon is separator).
+# Lines starting with # are comments.
+readme.txt:This archive contains several files of different kinds.
+notes.txt:this is a plain text note inside the archive
+data.json:{"greeting": "hello world", "count": 42}
+report.md:# Monthly Report\n\nRevenue was up 12% this quarter.
+empty.txt:

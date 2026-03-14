@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use find_common::{
     api::{IndexFile, IndexLine, IndexingFailure, SCANNER_VERSION},
-    config::{load_dir_override, ScanConfig},
+    config::{extractor_config_from_scan, load_dir_override, ExternalExtractorMode, ScanConfig},
     path::is_composite,
 };
 
@@ -365,6 +365,70 @@ impl<'a> ScanContext<'a> {
         self.last_submit = std::time::Instant::now();
         Ok(())
     }
+
+    async fn maybe_flush(&mut self) -> Result<()> {
+        if self.batch.len() >= self.batch_size
+            || self.batch_bytes >= self.batch_bytes_limit
+            || (!self.batch.is_empty() && self.last_submit.elapsed() >= self.batch_interval)
+        {
+            self.submit(vec![]).await?;
+        }
+        Ok(())
+    }
+}
+
+/// Shared post-processing for non-archive extraction (both builtin and external-stdout).
+///
+/// Applies kind refinement from `[FILE:mime]` lines, computes the content hash,
+/// builds `IndexFile`s, and pushes them into the batch.
+#[allow(clippy::too_many_arguments)]
+async fn push_non_archive_files(
+    ctx: &mut ScanContext<'_>,
+    rel_path: &str,
+    abs_path: &Path,
+    mtime: i64,
+    size: i64,
+    kind: String,
+    lines: Vec<IndexLine>,
+    extract_ms: u64,
+    is_new: bool,
+) -> Result<()> {
+    // Refine "unknown" or "text" kind using extracted content:
+    // - A [FILE:mime] line emitted by dispatch means binary → use mime_to_kind.
+    // - Text content lines (line_number > 0) present → promote to "text".
+    // - Neither → keep as-is.
+    let kind = if kind == "text" || kind == "unknown" {
+        if let Some(mime_line) = lines.iter().find(|l| l.line_number == 0 && l.content.starts_with("[FILE:mime] ")) {
+            let mime = &mime_line.content["[FILE:mime] ".len()..];
+            find_extract_dispatch::mime_to_kind(mime).to_string()
+        } else if lines.iter().any(|l| l.line_number > 0) {
+            "text".to_string()
+        } else {
+            kind
+        }
+    } else {
+        kind
+    };
+    // Hash raw file bytes for dedup (streaming to avoid OOM on large files).
+    // Skip hashing known binary extensions that no specialist extractor handles:
+    // opening these files can block indefinitely on Windows (e.g. live VHDX held by Hyper-V).
+    let content_hash = if find_extract_dispatch::is_binary_ext_path(abs_path) {
+        None
+    } else {
+        hash_file(abs_path)
+    };
+    let mut index_files = build_index_files(rel_path.to_string(), mtime, size, kind, lines);
+    if let Some(f) = index_files.first_mut() {
+        f.extract_ms = Some(extract_ms);
+        f.content_hash = content_hash;
+        f.is_new = is_new;
+    }
+    for file in index_files {
+        ctx.batch_bytes += index_file_bytes(&file);
+        ctx.batch.push(file);
+        ctx.maybe_flush().await?;
+    }
+    Ok(())
 }
 
 /// Process one file: resolve its effective config, extract content via
@@ -412,210 +476,276 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
         info!("Processing {rel_path}");
     }
 
-    if find_extract_archive::accepts(abs_path) {
-        // ── Streaming archive extraction ─────────────────────────────────────
-        // Members are processed one at a time via a bounded channel so that
-        // lines are freed after each member is converted to an IndexFile,
-        // rather than holding the entire archive's content in memory.
-        if ctx.quiet {
-            info!("extracting archive {rel_path}");
+    match subprocess::resolve_extractor(abs_path, &eff_scan) {
+        subprocess::ExtractorChoice::External(ref ext_cfg) => {
+            match ext_cfg.mode {
+                ExternalExtractorMode::Stdout => {
+                    // ── External stdout extraction ────────────────────────────────
+                    let t0 = std::time::Instant::now();
+                    if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
+                    let outcome = subprocess::run_external_stdout(abs_path, ext_cfg, &eff_scan).await;
+                    if ctx.quiet { lazy_header::clear_pending(); }
+
+                    let lines = match outcome {
+                        subprocess::ExternalOutcome::Ok(lines) => lines,
+                        subprocess::ExternalOutcome::BinaryMissing => {
+                            warn!("skipping {rel_path}: external extractor binary not found (file will be retried once configured correctly)");
+                            return Ok(false);
+                        }
+                        subprocess::ExternalOutcome::Failed(e) => {
+                            if eff_scan.server_fallback {
+                                if let Err(upload_err) = upload::upload_file(ctx.api, abs_path, rel_path, mtime, ctx.source_name).await {
+                                    warn!("server fallback upload failed for {rel_path}: {upload_err:#}");
+                                } else {
+                                    return Ok(true);
+                                }
+                            }
+                            if ctx.failures.len() < MAX_FAILURES_PER_BATCH {
+                                ctx.failures.push(IndexingFailure {
+                                    path: rel_path.to_string(),
+                                    error: truncate_error(&e, MAX_ERROR_LEN),
+                                });
+                            }
+                            vec![]
+                        }
+                    };
+
+                    let extract_ms = t0.elapsed().as_millis() as u64;
+                    push_non_archive_files(ctx, rel_path, abs_path, mtime, size, kind, lines, extract_ms, is_new).await?;
+                }
+                ExternalExtractorMode::TempDir => {
+                    // ── External tempdir extraction ───────────────────────────────
+                    if ctx.quiet {
+                        info!("extracting {rel_path} via external extractor");
+                    }
+
+                    let outer_hash = hash_file(abs_path);
+
+                    // Sentinel: mtime=0 signals server to delete stale members.
+                    let outer_start = IndexFile {
+                        path: rel_path.to_string(),
+                        mtime: 0,
+                        size: Some(size),
+                        kind: "archive".to_string(),
+                        lines: vec![IndexLine { archive_path: None, line_number: 0, content: rel_path.to_string() }],
+                        extract_ms: None,
+                        content_hash: None,
+                        scanner_version: SCANNER_VERSION,
+                        is_new,
+                    };
+                    ctx.batch.push(outer_start);
+                    ctx.submit(vec![]).await?;
+
+                    if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
+                    let ext_config = extractor_config_from_scan(&eff_scan);
+                    let outcome = subprocess::run_external_tempdir(abs_path, ext_cfg, &eff_scan, &ext_config).await;
+                    if ctx.quiet { lazy_header::clear_pending(); }
+
+                    let all_lines = match outcome {
+                        subprocess::ExternalOutcome::Ok(lines) => lines,
+                        subprocess::ExternalOutcome::BinaryMissing => {
+                            warn!("skipping {rel_path}: external extractor binary not found (file will be retried once configured correctly)");
+                            return Ok(false);
+                        }
+                        subprocess::ExternalOutcome::Failed(e) => {
+                            if ctx.failures.len() < MAX_FAILURES_PER_BATCH {
+                                ctx.failures.push(IndexingFailure {
+                                    path: rel_path.to_string(),
+                                    error: truncate_error(&e, MAX_ERROR_LEN),
+                                });
+                            }
+                            vec![]
+                        }
+                    };
+
+                    let mut members_submitted: usize = 0;
+                    for file in build_member_index_files(rel_path, mtime, size, all_lines, None) {
+                        ctx.batch_bytes += index_file_bytes(&file);
+                        members_submitted += 1;
+                        ctx.batch.push(file);
+                        ctx.maybe_flush().await?;
+                    }
+
+                    // Flush remaining members.
+                    if !ctx.batch.is_empty() {
+                        info!("submitting batch — extracting {rel_path} ({} members, {members_submitted} total)", ctx.batch.len());
+                        ctx.submit(vec![]).await?;
+                    }
+
+                    // Completion upsert: real mtime so next scan skips re-indexing.
+                    ctx.batch.push(IndexFile {
+                        path: rel_path.to_string(),
+                        mtime,
+                        size: Some(size),
+                        kind: "archive".to_string(),
+                        lines: vec![IndexLine { archive_path: None, line_number: 0, content: rel_path.to_string() }],
+                        extract_ms: None,
+                        content_hash: outer_hash,
+                        scanner_version: SCANNER_VERSION,
+                        is_new,
+                    });
+                }
+            }
         }
+        subprocess::ExtractorChoice::Builtin => {
+            if find_extract_archive::accepts(abs_path) {
+                // ── Streaming archive extraction ─────────────────────────────────────
+                // Members are processed one at a time via a bounded channel so that
+                // lines are freed after each member is converted to an IndexFile,
+                // rather than holding the entire archive's content in memory.
+                if ctx.quiet {
+                    info!("extracting archive {rel_path}");
+                }
 
-        // Hash the outer archive file for dedup (streaming to avoid OOM on large archives).
-        let outer_hash = hash_file(abs_path);
+                // Hash the outer archive file for dedup (streaming to avoid OOM on large archives).
+                let outer_hash = hash_file(abs_path);
 
-        // Submit the outer archive file with mtime=0 (sentinel: members not yet indexed).
-        // The server deletes stale inner members when it receives mtime=0 for an outer
-        // archive, so this must arrive before member batches.  Using mtime=0 means that
-        // if indexing is interrupted before the completion upsert below, the next scan
-        // will see a mtime mismatch (any real mtime > 0) and re-index the archive.
-        let outer_start = IndexFile {
-            path: rel_path.to_string(),
-            mtime: 0,
-            size: Some(size),
-            kind: kind.clone(),
-            lines: vec![IndexLine { archive_path: None, line_number: 0, content: rel_path.to_string() }],
-            extract_ms: None,
-            content_hash: None, // no hash on start sentinel — avoids premature dedup alias
-            scanner_version: SCANNER_VERSION,
-            is_new,
-        };
-        ctx.batch.push(outer_start);
-        ctx.submit(vec![]).await?;
+                // Submit the outer archive file with mtime=0 (sentinel: members not yet indexed).
+                // The server deletes stale inner members when it receives mtime=0 for an outer
+                // archive, so this must arrive before member batches.  Using mtime=0 means that
+                // if indexing is interrupted before the completion upsert below, the next scan
+                // will see a mtime mismatch (any real mtime > 0) and re-index the archive.
+                let outer_start = IndexFile {
+                    path: rel_path.to_string(),
+                    mtime: 0,
+                    size: Some(size),
+                    kind: kind.clone(),
+                    lines: vec![IndexLine { archive_path: None, line_number: 0, content: rel_path.to_string() }],
+                    extract_ms: None,
+                    content_hash: None, // no hash on start sentinel — avoids premature dedup alias
+                    scanner_version: SCANNER_VERSION,
+                    is_new,
+                };
+                ctx.batch.push(outer_start);
+                ctx.submit(vec![]).await?;
 
-        if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
-        let (mut member_rx, subprocess_task) = subprocess::start_archive_subprocess(
-            abs_path.to_path_buf(), &eff_scan, &eff_scan.extractor_dir);
+                if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
+                let (mut member_rx, subprocess_task) = subprocess::start_archive_subprocess(
+                    abs_path.to_path_buf(), &eff_scan, &eff_scan.extractor_dir);
 
-        let mut members_submitted: usize = 0;
-        while let Some(member_batch) = member_rx.recv().await {
-            // A batch with empty lines and a skip_reason is a summary failure
-            // that applies to the outer archive itself (e.g. 7z solid block too
-            // large).  Record the failure on the outer archive path and move on.
-            if member_batch.lines.is_empty() {
-                if let Some(reason) = member_batch.skip_reason {
-                    if ctx.failures.len() < MAX_FAILURES_PER_BATCH {
-                        ctx.failures.push(IndexingFailure {
-                            path: rel_path.to_string(),
-                            error: truncate_error(&reason, MAX_ERROR_LEN),
-                        });
+                let mut members_submitted: usize = 0;
+                while let Some(member_batch) = member_rx.recv().await {
+                    // A batch with empty lines and a skip_reason is a summary failure
+                    // that applies to the outer archive itself (e.g. 7z solid block too
+                    // large).  Record the failure on the outer archive path and move on.
+                    if member_batch.lines.is_empty() {
+                        if let Some(reason) = member_batch.skip_reason {
+                            if ctx.failures.len() < MAX_FAILURES_PER_BATCH {
+                                ctx.failures.push(IndexingFailure {
+                                    path: rel_path.to_string(),
+                                    error: truncate_error(&reason, MAX_ERROR_LEN),
+                                });
+                            }
+                        }
+                        continue;
                     }
-                }
-                continue;
-            }
 
-            // Apply effective exclude patterns to archive members.
-            // archive_path may be "inner.zip::path/to/file.js" for nested archives;
-            // each "::" segment is checked so that e.g. node_modules/pkg.tgz::index.js
-            // is excluded when **/node_modules/** is in the exclude list.
-            if let Some(ap) = member_batch.lines.first().and_then(|l| l.archive_path.as_deref()) {
-                if ap.split("::").any(|seg| eff_excludes.is_match(seg)) {
-                    continue;
-                }
-            }
-
-            // Record a per-member skip reason as an indexing failure.
-            if let Some(ref reason) = member_batch.skip_reason {
-                if ctx.failures.len() < MAX_FAILURES_PER_BATCH {
+                    // Apply effective exclude patterns to archive members.
+                    // archive_path may be "inner.zip::path/to/file.js" for nested archives;
+                    // each "::" segment is checked so that e.g. node_modules/pkg.tgz::index.js
+                    // is excluded when **/node_modules/** is in the exclude list.
                     if let Some(ap) = member_batch.lines.first().and_then(|l| l.archive_path.as_deref()) {
-                        ctx.failures.push(IndexingFailure {
-                            path: format!("{}::{}", rel_path, ap),
-                            error: truncate_error(reason, MAX_ERROR_LEN),
-                        });
+                        if ap.split("::").any(|seg| eff_excludes.is_match(seg)) {
+                            continue;
+                        }
+                    }
+
+                    // Record a per-member skip reason as an indexing failure.
+                    if let Some(ref reason) = member_batch.skip_reason {
+                        if ctx.failures.len() < MAX_FAILURES_PER_BATCH {
+                            if let Some(ap) = member_batch.lines.first().and_then(|l| l.archive_path.as_deref()) {
+                                ctx.failures.push(IndexingFailure {
+                                    path: format!("{}::{}", rel_path, ap),
+                                    error: truncate_error(reason, MAX_ERROR_LEN),
+                                });
+                            }
+                        }
+                    }
+
+                    let content_hash = member_batch.content_hash;
+                    let member_mtime = member_batch.mtime.unwrap_or(mtime);
+                    for file in build_member_index_files(rel_path, member_mtime, size, member_batch.lines, content_hash) {
+                        ctx.batch_bytes += index_file_bytes(&file);
+                        members_submitted += 1;
+                        ctx.batch.push(file);
+                        ctx.maybe_flush().await?;
                     }
                 }
-            }
 
-            let content_hash = member_batch.content_hash;
-            let member_mtime = member_batch.mtime.unwrap_or(mtime);
-            for file in build_member_index_files(rel_path, member_mtime, size, member_batch.lines, content_hash) {
-                ctx.batch_bytes += index_file_bytes(&file);
-                members_submitted += 1;
-                ctx.batch.push(file);
-                if ctx.batch.len() >= ctx.batch_size || ctx.batch_bytes >= ctx.batch_bytes_limit
-                    || (!ctx.batch.is_empty() && ctx.last_submit.elapsed() >= ctx.batch_interval)
-                {
-                    info!("submitting batch — extracting {rel_path} ({} members, {} total)", ctx.batch.len(), members_submitted);
+                if ctx.quiet { lazy_header::clear_pending(); }
+
+                // Check whether the subprocess exited successfully.
+                if !subprocess_task.await.unwrap_or(false) && ctx.failures.len() < MAX_FAILURES_PER_BATCH {
+                    ctx.failures.push(IndexingFailure {
+                        path: rel_path.to_string(),
+                        error: "archive extraction subprocess failed".to_string(),
+                    });
+                }
+
+                // Flush any remaining archive members (partial final batch).
+                if !ctx.batch.is_empty() {
+                    info!("submitting batch — extracting {rel_path} ({} members, {members_submitted} total)", ctx.batch.len());
                     ctx.submit(vec![]).await?;
                 }
-            }
-        }
 
-        if ctx.quiet { lazy_header::clear_pending(); }
-
-        // Check whether the subprocess exited successfully.
-        if !subprocess_task.await.unwrap_or(false) && ctx.failures.len() < MAX_FAILURES_PER_BATCH {
-            ctx.failures.push(IndexingFailure {
-                path: rel_path.to_string(),
-                error: "archive extraction subprocess failed".to_string(),
-            });
-        }
-
-        // Flush any remaining archive members (partial final batch).
-        if !ctx.batch.is_empty() {
-            info!("submitting batch — extracting {rel_path} ({} members, {members_submitted} total)", ctx.batch.len());
-            ctx.submit(vec![]).await?;
-        }
-
-        // Completion upsert: update the outer file with its real mtime now that
-        // all members have been submitted.  The server only deletes inner members
-        // when it receives mtime=0, so this upsert simply updates the mtime field
-        // without disturbing any member rows.  If indexing was interrupted before
-        // this point the outer file retains mtime=0, causing the next scan to
-        // re-index the archive from scratch.
-        ctx.batch.push(IndexFile {
-            path: rel_path.to_string(),
-            mtime,
-            size: Some(size),
-            kind,
-            lines: vec![IndexLine { archive_path: None, line_number: 0, content: rel_path.to_string() }],
-            extract_ms: None,
-            content_hash: outer_hash,
-            scanner_version: SCANNER_VERSION,
-            is_new,
-        });
-    } else {
-        // ── Non-archive extraction ────────────────────────────────────────────
-        // dispatch_from_path handles MIME detection internally: it emits a
-        // [FILE:mime] line when no extractor matched the bytes, so we check
-        // for that line below to update the kind accordingly.
-        let t0 = std::time::Instant::now();
-        if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
-        let outcome = subprocess::extract_via_subprocess(
-            abs_path, &eff_scan, &eff_scan.extractor_dir).await;
-        if ctx.quiet { lazy_header::clear_pending(); }
-
-        let lines = match outcome {
-            subprocess::SubprocessOutcome::Ok(lines) => lines,
-            subprocess::SubprocessOutcome::BinaryMissing => {
-                // Extractor binary not installed — skip this file entirely so it
-                // is re-indexed (with content) once the binary is deployed.
-                warn!("skipping {rel_path}: extractor binary not found (file will be retried once the binary is installed)");
-                return Ok(false);
-            }
-            subprocess::SubprocessOutcome::Failed => {
-                if eff_scan.server_fallback {
-                    if let Err(e) = upload::upload_file(ctx.api, abs_path, rel_path, mtime, ctx.source_name).await {
-                        warn!("server fallback upload failed for {rel_path}: {e:#}");
-                        // Fall through: index filename-only so file appears in search.
-                    } else {
-                        // Server will index it; skip local filename-only entry.
-                        return Ok(true);
-                    }
-                }
-                // Index filename-only so the file is at least findable by name.
-                vec![]
-            }
-        };
-
-        // Refine "unknown" or "text" kind using extracted content:
-        // - A [FILE:mime] line emitted by dispatch means binary → use mime_to_kind.
-        // - Text content lines (line_number > 0) present → promote to "text".
-        // - Neither → keep as-is (archive members use "unknown" when unrecognised).
-        let kind = if kind == "text" || kind == "unknown" {
-            if let Some(mime_line) = lines.iter().find(|l| l.line_number == 0 && l.content.starts_with("[FILE:mime] ")) {
-                let mime = &mime_line.content["[FILE:mime] ".len()..];
-                find_extract_dispatch::mime_to_kind(mime).to_string()
-            } else if lines.iter().any(|l| l.line_number > 0) {
-                "text".to_string()
+                // Completion upsert: update the outer file with its real mtime now that
+                // all members have been submitted.  The server only deletes inner members
+                // when it receives mtime=0, so this upsert simply updates the mtime field
+                // without disturbing any member rows.  If indexing was interrupted before
+                // this point the outer file retains mtime=0, causing the next scan to
+                // re-index the archive from scratch.
+                ctx.batch.push(IndexFile {
+                    path: rel_path.to_string(),
+                    mtime,
+                    size: Some(size),
+                    kind,
+                    lines: vec![IndexLine { archive_path: None, line_number: 0, content: rel_path.to_string() }],
+                    extract_ms: None,
+                    content_hash: outer_hash,
+                    scanner_version: SCANNER_VERSION,
+                    is_new,
+                });
             } else {
-                kind
-            }
-        } else {
-            kind
-        };
-        let extract_ms = t0.elapsed().as_millis() as u64;
-        // Hash raw file bytes for dedup (streaming to avoid OOM on large files).
-        // Skip hashing known binary extensions that no specialist extractor handles:
-        // opening these files can block indefinitely on Windows (e.g. live VHDX held by Hyper-V).
-        let content_hash = if find_extract_dispatch::is_binary_ext_path(abs_path) {
-            None
-        } else {
-            hash_file(abs_path)
-        };
-        let mut index_files = build_index_files(rel_path.to_string(), mtime, size, kind, lines);
-        if let Some(f) = index_files.first_mut() {
-            f.extract_ms = Some(extract_ms);
-            f.content_hash = content_hash;
-            f.is_new = is_new;
-        }
-        for file in index_files {
-            ctx.batch_bytes += index_file_bytes(&file);
-            ctx.batch.push(file);
-            if ctx.batch.len() >= ctx.batch_size || ctx.batch_bytes >= ctx.batch_bytes_limit
-                || (!ctx.batch.is_empty() && ctx.last_submit.elapsed() >= ctx.batch_interval)
-            {
-                ctx.submit(vec![]).await?;
+                // ── Non-archive extraction ────────────────────────────────────────────
+                // dispatch_from_path handles MIME detection internally: it emits a
+                // [FILE:mime] line when no extractor matched the bytes, so we check
+                // for that line below to update the kind accordingly.
+                let t0 = std::time::Instant::now();
+                if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
+                let outcome = subprocess::extract_via_subprocess(
+                    abs_path, &eff_scan, &eff_scan.extractor_dir).await;
+                if ctx.quiet { lazy_header::clear_pending(); }
+
+                let lines = match outcome {
+                    subprocess::SubprocessOutcome::Ok(lines) => lines,
+                    subprocess::SubprocessOutcome::BinaryMissing => {
+                        // Extractor binary not installed — skip this file entirely so it
+                        // is re-indexed (with content) once the binary is deployed.
+                        warn!("skipping {rel_path}: extractor binary not found (file will be retried once the binary is installed)");
+                        return Ok(false);
+                    }
+                    subprocess::SubprocessOutcome::Failed => {
+                        if eff_scan.server_fallback {
+                            if let Err(e) = upload::upload_file(ctx.api, abs_path, rel_path, mtime, ctx.source_name).await {
+                                warn!("server fallback upload failed for {rel_path}: {e:#}");
+                                // Fall through: index filename-only so file appears in search.
+                            } else {
+                                // Server will index it; skip local filename-only entry.
+                                return Ok(true);
+                            }
+                        }
+                        // Index filename-only so the file is at least findable by name.
+                        vec![]
+                    }
+                };
+
+                let extract_ms = t0.elapsed().as_millis() as u64;
+                push_non_archive_files(ctx, rel_path, abs_path, mtime, size, kind, lines, extract_ms, is_new).await?;
             }
         }
     }
 
-    if ctx.batch.len() >= ctx.batch_size || ctx.batch_bytes >= ctx.batch_bytes_limit
-        || (!ctx.batch.is_empty() && ctx.last_submit.elapsed() >= ctx.batch_interval)
-    {
-        ctx.submit(vec![]).await?;
-    }
-
+    ctx.maybe_flush().await?;
     Ok(true)
 }
 

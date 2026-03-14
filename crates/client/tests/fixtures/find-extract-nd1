@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# find-extract-nd1 — extract a .nd1 archive to a temp directory.
+# Usage: find-extract-nd1 <file> <outdir>
+# Each line: <member-filename>:<content>  (first colon is the separator)
+# Lines starting with # are comments and are ignored.
+set -euo pipefail
+file="$1"
+outdir="$2"
+while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "$line" ] && continue
+    [[ "$line" == \#* ]] && continue
+    name="${line%%:*}"
+    content="${line#*:}"
+    printf '%s\n' "$content" > "$outdir/$name"
+done < "$file"

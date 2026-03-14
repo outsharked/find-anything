@@ -235,6 +235,11 @@ pub struct ScanConfig {
     /// Default: 30.
     #[serde(default = "default_batch_interval_secs")]
     pub batch_interval_secs: u64,
+
+    /// Extension → extractor override map. Key = lowercase extension (without dot).
+    /// Set a value to `"builtin"` to use built-in routing, or provide an external tool config.
+    #[serde(default)]
+    pub extractors: std::collections::HashMap<String, ExtractorEntry>,
 }
 
 impl Default for ScanConfig {
@@ -256,6 +261,7 @@ impl Default for ScanConfig {
             batch_size: default_batch_size(),
             batch_bytes: default_batch_bytes(),
             batch_interval_secs: default_batch_interval_secs(),
+            extractors: std::collections::HashMap::new(),
         }
     }
 }
@@ -671,6 +677,37 @@ fn default_extraction_max_line_length() -> usize   { server_defaults().extractio
 fn default_extraction_max_archive_depth() -> usize { server_defaults().extraction.max_archive_depth }
 
 // ── Normalization settings ─────────────────────────────────────────────────────
+
+/// Controls how an external extractor is invoked.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExternalExtractorMode {
+    /// Tool writes extracted content to stdout.
+    Stdout,
+    /// Tool extracts files into a temp directory.
+    TempDir,
+}
+
+/// A single external extractor tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalExtractorConfig {
+    /// How to invoke the tool.
+    pub mode: ExternalExtractorMode,
+    /// Absolute or PATH-relative path to the binary.
+    pub bin: String,
+    /// Args with {file}, {name}, {dir} placeholders.
+    pub args: Vec<String>,
+}
+
+/// Value in the [scan.extractors] table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ExtractorEntry {
+    /// Use built-in routing. The string value is conventionally "builtin".
+    Builtin(String),
+    /// Use an external command.
+    External(ExternalExtractorConfig),
+}
 
 /// Configuration for a single external formatter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
