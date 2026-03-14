@@ -5,6 +5,7 @@
 //! it loses activation (user clicks elsewhere) or when the user presses Escape.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use find_common::api::RecentFile;
@@ -13,16 +14,12 @@ use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, 
 use windows_sys::Win32::Graphics::Gdi::CreateFontW;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IsWindowVisible,
-    MoveWindow, RegisterClassExW, SendMessageW, SetForegroundWindow, SetWindowPos,
-    ShowWindow, SystemParametersInfoW, WNDCLASSEXW,
-    CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW,
-    SW_HIDE, SW_SHOW,
-    SPI_GETWORKAREA,
-    WM_ACTIVATE, WM_KEYDOWN, WM_SIZE,
-    WS_BORDER, WS_CHILD, WS_CLIPCHILDREN, WS_POPUP, WS_VISIBLE, WS_VSCROLL,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    SWP_NOZORDER,
+    ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
+    IsWindowVisible, MoveWindow, RegisterClassExW, RegisterWindowMessageA, SendMessageW,
+    SetForegroundWindow, SetWindowPos, ShowWindow, SystemParametersInfoW, WNDCLASSEXW,
+    CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, MSGFLT_ALLOW, SW_HIDE, SW_SHOW, SPI_GETWORKAREA,
+    SWP_NOZORDER, WM_ACTIVATE, WM_KEYDOWN, WM_SIZE, WS_BORDER, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE, WS_VSCROLL,
 };
 
 const WM_COMMAND: u32 = 0x0111;
@@ -71,6 +68,17 @@ static TITLE_HWND: AtomicIsize = AtomicIsize::new(0);
 /// Command ID posted via WM_COMMAND when the user selects a context-menu item.
 /// The main thread drains this with [`take_pending_command`].
 static PENDING_COMMAND: AtomicU32 = AtomicU32::new(0);
+
+/// The "TaskbarCreated" registered message ID, initialised on first use.
+/// When Explorer restarts it broadcasts this to all top-level windows so they
+/// can re-register their notification icons.
+static S_U_TASKBAR_RESTART: OnceLock<u32> = OnceLock::new();
+
+fn taskbar_restart_msg() -> u32 {
+    *S_U_TASKBAR_RESTART.get_or_init(|| unsafe {
+        RegisterWindowMessageA(b"TaskbarCreated\0".as_ptr())
+    })
+}
 
 fn class_name_w() -> Vec<u16> {
     "FindAnythingPopup\0".encode_utf16().collect()
@@ -124,6 +132,13 @@ unsafe extern "system" fn wnd_proc(
                 MoveWindow(lb, PADDING, lb_y, w - 2 * PADDING, h - lb_y - PADDING, 1);
             }
             0
+        }
+        _ if msg == taskbar_restart_msg() => {
+            // Explorer restarted — signal the main thread to re-register the
+            // GUID-based tray icon (tray-icon will re-register its uID-based
+            // one; we follow up by replacing it with our stable GUID version).
+            crate::guid_icon::NEED_REREGISTER.store(true, Ordering::Relaxed);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
@@ -191,6 +206,18 @@ impl Popup {
         };
         if hwnd == 0 {
             anyhow::bail!("CreateWindowExW failed for popup");
+        }
+
+        // Allow the "TaskbarCreated" broadcast through UIPI so elevated apps
+        // receive it and can re-register their notification icons after
+        // Explorer restarts.
+        unsafe {
+            ChangeWindowMessageFilterEx(
+                hwnd,
+                taskbar_restart_msg(),
+                MSGFLT_ALLOW,
+                std::ptr::null_mut(),
+            );
         }
 
         // "Recent activity" title label.

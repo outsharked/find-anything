@@ -16,6 +16,8 @@ fn main() {
 }
 
 #[cfg(windows)]
+mod guid_icon;
+#[cfg(windows)]
 mod menu;
 #[cfg(windows)]
 mod poller;
@@ -27,7 +29,13 @@ mod service_ctl;
 #[cfg(windows)]
 use std::path::PathBuf;
 #[cfg(windows)]
+use std::sync::atomic::Ordering;
+#[cfg(windows)]
 use std::sync::mpsc;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::HWND;
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::HICON;
 
 #[cfg(windows)]
 use anyhow::{Context, Result};
@@ -40,10 +48,6 @@ use tray_icon::{
     TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
-// NOTE: Stable notification-area GUID (NIF_GUID / guidItem in NOTIFYICONDATA) would
-// prevent users needing to re-pin the tray icon after each update, but tray-icon 0.21
-// does not expose this API.  A future upgrade or manual Shell_NotifyIconW call would
-// be needed to implement it.
 #[cfg(windows)]
 use winit::{
     application::ApplicationHandler,
@@ -156,24 +160,39 @@ fn main() -> Result<()> {
 
     let tray_menu = menu::TrayMenu::new().context("building tray menu")?;
 
-    let active_icon = load_icon(include_bytes!("../assets/icon_active.ico"))
+    // Load HICONs for direct Shell_NotifyIconW calls via NIF_GUID.
+    let active_hicon = guid_icon::load_hicon(include_bytes!("../assets/icon_active.ico"))
         .context("loading active icon")?;
-    let stopped_icon = load_icon(include_bytes!("../assets/icon_stopped.ico"))
+    let stopped_hicon = guid_icon::load_hicon(include_bytes!("../assets/icon_stopped.ico"))
         .context("loading stopped icon")?;
 
+    // tray-icon registers the Shell icon with uID on build.  We immediately
+    // replace it with a GUID-based registration so Windows can track the icon
+    // persistently across reinstalls.  We still use tray-icon for the hidden
+    // window, event dispatch, and menu handling.
     // Do NOT attach the menu via with_menu(): tray-icon shows it on both
     // left and right click when attached.  We show it manually on right-click.
     let tray_icon = TrayIconBuilder::new()
         .with_tooltip("Find Anything")
-        .with_icon(active_icon.clone())
         .build()
         .context("building tray icon")?;
+
+    let tray_hwnd = tray_icon.window_handle() as isize;
+    // Replace the uID-based registration with our stable GUID.
+    unsafe {
+        guid_icon::reregister_with_guid(
+            tray_hwnd,
+            active_hicon,
+            "Find Anything \u{2014} Watcher Running",
+        );
+    }
 
     let mut app = TrayApp {
         tray_icon,
         tray_menu,
-        active_icon,
-        stopped_icon,
+        tray_hwnd,
+        active_hicon,
+        stopped_hicon,
         config_path,
         service_running: false,
         should_quit: false,
@@ -191,10 +210,14 @@ fn main() -> Result<()> {
 
 #[cfg(windows)]
 struct TrayApp {
+    #[allow(dead_code)] // kept for Drop — releases the tray icon on exit
     tray_icon: TrayIcon,
     tray_menu: menu::TrayMenu,
-    active_icon: tray_icon::Icon,
-    stopped_icon: tray_icon::Icon,
+    /// Hidden window handle owned by tray-icon; used for GUID Shell calls.
+    tray_hwnd: HWND,
+    /// Raw icon handles for the GUID-based Shell registration.  Process-lifetime.
+    active_hicon: HICON,
+    stopped_hicon: HICON,
     config_path: PathBuf,
     service_running: bool,
     should_quit: bool,
@@ -236,21 +259,21 @@ impl ApplicationHandler<AppEvent> for TrayApp {
                     self.popup.update_files(&self.last_recent_files);
                 }
 
-                // Swap tray icon based on service state.
-                let icon = if service_running {
-                    self.active_icon.clone()
+                // Swap tray icon and tooltip based on service state.
+                let hicon = if service_running {
+                    self.active_hicon
                 } else {
-                    self.stopped_icon.clone()
+                    self.stopped_hicon
                 };
-                let _ = self.tray_icon.set_icon(Some(icon));
-
-                // Update tooltip.
                 let tooltip = if service_running {
                     "Find Anything \u{2014} Watcher Running"
                 } else {
                     "Find Anything \u{2014} Watcher Stopped"
                 };
-                let _ = self.tray_icon.set_tooltip(Some(tooltip));
+                unsafe {
+                    guid_icon::update_icon(self.tray_hwnd, hicon);
+                    guid_icon::update_tooltip(self.tray_hwnd, tooltip);
+                }
             }
         }
 
@@ -346,6 +369,23 @@ impl ApplicationHandler<AppEvent> for TrayApp {
         if self.should_quit {
             event_loop.exit();
             return;
+        }
+
+        // Re-register the GUID icon if Explorer restarted (TaskbarCreated).
+        // tray-icon re-adds its uID=1 icon in its own wndproc first; we then
+        // replace it with our stable GUID version.
+        if guid_icon::NEED_REREGISTER.swap(false, Ordering::Relaxed) {
+            let hicon = if self.service_running {
+                self.active_hicon
+            } else {
+                self.stopped_hicon
+            };
+            let tooltip = if self.service_running {
+                "Find Anything \u{2014} Watcher Running"
+            } else {
+                "Find Anything \u{2014} Watcher Stopped"
+            };
+            unsafe { guid_icon::reregister_with_guid(self.tray_hwnd, hicon, tooltip); }
         }
 
         // Wake up every 100 ms so events feel responsive.
@@ -449,16 +489,6 @@ impl TrayApp {
             );
         }
     }
-}
-
-#[cfg(windows)]
-fn load_icon(bytes: &[u8]) -> Result<tray_icon::Icon> {
-    // Decode the ICO file and use the first (largest) image as RGBA.
-    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico)
-        .context("decoding ICO file")?;
-    let img = img.into_rgba8();
-    let (w, h) = img.dimensions();
-    tray_icon::Icon::from_rgba(img.into_raw(), w, h).context("creating tray icon from RGBA")
 }
 
 #[cfg(windows)]

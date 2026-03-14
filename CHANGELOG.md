@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tray icon pinning lost after reinstall** — `find-tray` now registers the notification-area icon using `NIF_GUID` with a stable GUID (`{8A3F5D2C-…}`) instead of the default `uID`-based registration; Windows uses the GUID to persistently track the icon's pinned/hidden preference, so reinstalling no longer loses the tray-pin or creates duplicate entries in "Other system tray icons"; the popup window also registers for the `TaskbarCreated` broadcast (with UIPI allow) and re-registers the GUID icon if Explorer restarts
+
 ### Changed
 
 - **`index_file_bytes` extracted to `batch.rs`** — the inline content-byte counting used by the scan loop's byte-budget flush check is now a named `pub fn index_file_bytes(file: &IndexFile) -> usize` in `batch.rs`, tested with unit tests covering normal, empty, and oversized files; `scan.rs` uses the shared helper

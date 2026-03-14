@@ -10,7 +10,7 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] FEAT: In image detail split view, should be able to move divider/resize window
 [ ] FEAT: Create short URL to link
 [ ] FEAT: use video player for video files
-[ ] Look at debug logs during e.g. a simple delete - seems to do a lot of stuff it doesn't need to, e.g. passing off to archving. We should pre-filter the gz file - if only delete/small adds, no need to go to archiving. Check szie of text content, file types.
+
 [ ] BUG: pictures/2014/Jamie Phone 2014/20140410_074302.jpg - no metadata available - why?
 [ ] FEAT: Guard against low disk space
 [ ] BUG: Fetching existing file list seems to not be targeted to a particular tree (e.g. find-scan /path/to/dir)
@@ -18,7 +18,6 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] FEAT: Add query syntax "type: image" with intellisense
 [ ] FEAT:Add query syntax "path: /backups/" with intellisense
 [ ] FEAT: UX is bad when showing full context for large text documents. Use some kind of scroll pattern to not render the whole thing onscreen
-
 [ ] FEAT: make "find-admin inbox" have subcommands
 [ ] FEAT: Run compaction scan only once a day, or on demand
 [ ] BUG: App ID is not persisted, each rebuild makes it not show up in pinned taskbar items
@@ -27,8 +26,8 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] FEAT: UX to retry failed scans (admin page)
 [ ] FEAT: Render SVG by default
 [ ] FEAT: Add "format json' button
-[ ] Searching on ".png" doesn't work is that improvable
-[ ] Include **/AppData/**, **/bin/**, **/obj/**, **/\*.log by default, "**/pnpm/\*\*", vscode-remote-wsl
+[ ] BUG; Searching on ".png" doesn't work is that improvable
+[ ] CHORE: Include **/AppData/**, **/bin/**, **/obj/**, **/\*.log by default, "**/pnpm/\*\*", vscode-remote-wsl
 [ ] CHORE: Unit test for handling of retrieveal duplicated items in index
 [ ] Do we actually want to recode innner archives?
 [ ] Do we actually want to index inner archives?
@@ -51,6 +50,7 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ### Completed Items
 
+[x] Look at debug logs during e.g. a simple delete - seems to do a lot of stuff it doesn't need to, e.g. passing off to archving. We should pre-filter the gz file - if only delete/small adds, no need to go to archiving. Check szie of text content, file types. (Note: we no longer delete from archives, it's garbage collected now)
 [x] FEAT: find-reindex -- can this only operate against previously-not-reindexed content?
 [x] CHORE: Look at node-tar:fixtures.tgz -- this a great stress test. Copy fixtures.tgz
 [x] FEAT: add -f/--follow to find-recent/ /btw
