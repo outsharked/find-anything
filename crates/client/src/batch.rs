@@ -173,6 +173,15 @@ pub fn build_member_index_files(
     result
 }
 
+/// Returns the total byte size of all content lines in an `IndexFile`.
+///
+/// Used by the scan loop to enforce the byte-budget flush threshold
+/// (`scan.batch_bytes`). Counts raw string bytes — not compressed size —
+/// but serves as a reliable upper-bound proxy for payload size.
+pub fn index_file_bytes(file: &IndexFile) -> usize {
+    file.lines.iter().map(|l| l.content.len()).sum()
+}
+
 pub async fn submit_batch(
     api: &ApiClient,
     source_name: &str,
@@ -296,6 +305,45 @@ mod tests {
                 .unwrap_or_else(|| panic!("member {member_name} not found"));
             assert_eq!(&member.kind, expected_kind, "member={member_name}");
         }
+    }
+
+    // ── Byte budget ────────────────────────────────────────────────────────
+
+    #[test]
+    fn index_file_bytes_counts_all_content() {
+        let lines = vec![
+            line(None, 0, "src/main.rs"),      // 11 bytes
+            line(None, 1, "hello world"),       // 11 bytes
+            line(None, 2, "foo"),               // 3 bytes
+        ];
+        let files = build_index_files("src/main.rs".into(), 0, 0, "text".into(), lines);
+        // build_index_files appends a path line (line_number=0), but "src/main.rs" was
+        // already in lines[0], so total lines = 3 + 1 = 4 after the append.
+        let total = super::index_file_bytes(&files[0]);
+        // "src/main.rs" appears twice (once from caller, once appended) = 11+11+3+11 = 36
+        assert_eq!(total, 36);
+    }
+
+    #[test]
+    fn index_file_bytes_large_file_exceeds_budget() {
+        // Synthesise a file whose content exceeds an 8 KB budget even with only 2 lines.
+        let big_line = "x".repeat(5_000);
+        let lines = vec![
+            line(None, 1, &big_line),
+            line(None, 2, &big_line),
+        ];
+        let files = build_index_files("big.txt".into(), 0, 0, "text".into(), lines);
+        let bytes = super::index_file_bytes(&files[0]);
+        // 5000 + 5000 + len("big.txt") = 10007 — exceeds an 8192-byte budget.
+        assert!(bytes > 8_192, "expected bytes > 8192, got {bytes}");
+    }
+
+    #[test]
+    fn index_file_bytes_empty_file() {
+        let files = build_index_files("empty.txt".into(), 0, 0, "text".into(), vec![]);
+        let bytes = super::index_file_bytes(&files[0]);
+        // Only the path line: len("empty.txt") = 9.
+        assert_eq!(bytes, 9);
     }
 
     #[test]

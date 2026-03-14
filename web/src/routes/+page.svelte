@@ -27,7 +27,18 @@
 	export let params: Record<string, string>;
 	const _params = params;
 
-	// ── State ──────────────────────────────────────────────────────────────────
+	// ── View state machine ────────────────────────────────────────────────────
+	//
+	// The main panel is a two-state discriminated union:
+	//   search  (fileView === null)  →  <SearchView> + pagination
+	//   file    (fileView !== null)  →  <FileView>   (file or directory)
+	//
+	// Two orthogonal overlays compose on top of either panel state:
+	//   showTree     — left sidebar (independent; persists across transitions)
+	//   showPalette  — Ctrl+P command-palette modal (independent)
+	//
+	// All transitions go through openFileView() / handleBack() so the
+	// push-history step is never forgotten.
 
 	/** Non-null when the file/directory viewer is open. */
 	let fileView: FileViewState | null = null;
@@ -345,6 +356,12 @@
 
 	// ── File viewer event handlers ───────────────────────────────────────────────
 
+	/** Transition to file/directory panel state and push a history entry. */
+	function openFileView(fv: FileViewState) {
+		fileView = fv;
+		pushState();
+	}
+
 	function openFile(e: CustomEvent<SearchResult>) {
 		const r = e.detail;
 		const file = FilePath.fromParts(r.path, r.archive_path ?? null);
@@ -355,29 +372,25 @@
 			? [r.line_number, ...extraLines]
 			: extraLines.length ? extraLines : [];
 		savedScrollTop = mainContent?.scrollTop ?? 0;
-		fileView = { source: r.source, file, selection, panelMode: 'file', dirPrefix: '' };
-		pushState();
+		openFileView({ source: r.source, file, selection, panelMode: 'file', dirPrefix: '' });
 	}
 
 	function handleOpenFileFromTree(e: CustomEvent<{ source: string; path: string; kind: string; archivePath?: string; showAsDirectory?: boolean }>) {
 		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath ?? null);
 		if (e.detail.showAsDirectory) {
-			fileView = { source: e.detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' };
+			openFileView({ source: e.detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' });
 		} else {
-			fileView = { source: e.detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' };
+			openFileView({ source: e.detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' });
 		}
-		pushState();
 	}
 
 	function handleOpenDirFile(e: CustomEvent<{ source: string; path: string; kind: string; archivePath?: string }>) {
 		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath ?? null);
-		fileView = { ...(fileView!), file, selection: [], panelMode: 'file' };
-		pushState();
+		openFileView({ ...(fileView!), file, selection: [], panelMode: 'file' });
 	}
 
 	function handleOpenDir(e: CustomEvent<{ prefix: string }>) {
-		fileView = { ...(fileView!), panelMode: 'dir', dirPrefix: e.detail.prefix };
-		pushState();
+		openFileView({ ...(fileView!), panelMode: 'dir', dirPrefix: e.detail.prefix });
 	}
 
 	function handleLineSelect(e: CustomEvent<{ selection: LineSelection }>) {
@@ -401,11 +414,10 @@
 	function handlePaletteSelect(e: CustomEvent<{ source: string; path: string; archivePath: string | null; kind: string }>) {
 		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath);
 		if (e.detail.kind === 'archive') {
-			fileView = { source: e.detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' };
+			openFileView({ source: e.detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' });
 		} else {
-			fileView = { source: e.detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' };
+			openFileView({ source: e.detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' });
 		}
-		pushState();
 	}
 
 	// ── Sidebar resize ───────────────────────────────────────────────────────────

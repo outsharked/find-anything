@@ -15,7 +15,7 @@ use find_common::{
 };
 
 use crate::api::ApiClient;
-use crate::batch::{build_index_files, build_member_index_files, submit_batch};
+use crate::batch::{build_index_files, build_member_index_files, index_file_bytes, submit_batch};
 use crate::extract;
 use crate::lazy_header;
 use crate::subprocess;
@@ -489,8 +489,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
             let content_hash = member_batch.content_hash;
             let member_mtime = member_batch.mtime.unwrap_or(mtime);
             for file in build_member_index_files(rel_path, member_mtime, size, member_batch.lines, content_hash) {
-                let file_bytes: usize = file.lines.iter().map(|l| l.content.len()).sum();
-                ctx.batch_bytes += file_bytes;
+                ctx.batch_bytes += index_file_bytes(&file);
                 members_submitted += 1;
                 ctx.batch.push(file);
                 if ctx.batch.len() >= ctx.batch_size || ctx.batch_bytes >= ctx.batch_bytes_limit
@@ -601,8 +600,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
             f.is_new = is_new;
         }
         for file in index_files {
-            let file_bytes: usize = file.lines.iter().map(|l| l.content.len()).sum();
-            ctx.batch_bytes += file_bytes;
+            ctx.batch_bytes += index_file_bytes(&file);
             ctx.batch.push(file);
             if ctx.batch.len() >= ctx.batch_size || ctx.batch_bytes >= ctx.batch_bytes_limit
                 || (!ctx.batch.is_empty() && ctx.last_submit.elapsed() >= ctx.batch_interval)

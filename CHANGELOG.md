@@ -9,6 +9,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- **`index_file_bytes` extracted to `batch.rs`** — the inline content-byte counting used by the scan loop's byte-budget flush check is now a named `pub fn index_file_bytes(file: &IndexFile) -> usize` in `batch.rs`, tested with unit tests covering normal, empty, and oversized files; `scan.rs` uses the shared helper
+- **`+page.svelte` view state machine documented and centralised** — added a comment block explaining the two-state discriminated union (`fileView === null` ↔ search, non-null ↔ file panel) and the two orthogonal overlays (`showTree`, `showPalette`); all transitions to the file panel now go through a single `openFileView(fv)` helper to prevent the push-history step being omitted
+
 ### Fixed
 
 - **Archive member exclude filter broken for nested archives** — the client-side filter in `scan.rs` was taking the _last_ `::` segment of a member's composite path for glob matching; for a member like `node_modules/npm.tgz::package/index.js` the last segment is `package/index.js`, losing the `node_modules/` prefix and allowing excluded directories to slip through; fixed to check all `::` segments — if any segment matches an exclude pattern the member is skipped
