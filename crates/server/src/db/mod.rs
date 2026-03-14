@@ -1119,3 +1119,384 @@ fn resolve_content(
         })
         .collect()
 }
+
+// ── Unit tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use find_common::api::PathRename;
+
+    /// Create an in-memory database with the full schema and scalar functions.
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(include_str!("../schema_v2.sql")).unwrap();
+        // schema_v2.sql also creates the activity_log table; run the idempotent
+        // migrations from open() so tests exercise the same state as production.
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS pending_chunk_removes;
+             CREATE TABLE IF NOT EXISTS activity_log (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 occurred_at INTEGER NOT NULL,
+                 action      TEXT    NOT NULL,
+                 path        TEXT    NOT NULL,
+                 new_path    TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_activity_log_occurred_at
+                 ON activity_log(occurred_at DESC);"
+        ).unwrap();
+        register_scalar_functions(&conn).unwrap();
+        conn
+    }
+
+    /// Insert a plain-text file using inline storage.
+    /// `lines[0]` is the path (line_number = 0); subsequent entries are content lines.
+    /// Returns the `file_id`.
+    fn insert_file(conn: &Connection, path: &str, mtime: i64, lines: &[&str]) -> i64 {
+        conn.execute(
+            "INSERT INTO files (path, mtime, kind) VALUES (?1, ?2, 'text')",
+            params![path, mtime],
+        ).unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        let content = lines.join("\n");
+        conn.execute(
+            "INSERT INTO file_content (file_id, content) VALUES (?1, ?2)",
+            params![file_id, content],
+        ).unwrap();
+
+        for (i, &line) in lines.iter().enumerate() {
+            let line_id: i64 = conn.query_row(
+                "INSERT INTO lines (file_id, line_number, line_offset_in_chunk)
+                 VALUES (?1, ?2, ?3) RETURNING id",
+                params![file_id, i as i64, i as i64],
+                |r| r.get(0),
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
+                params![line_id, line],
+            ).unwrap();
+        }
+
+        file_id
+    }
+
+    /// Count FTS matches that still have a live `lines` row (i.e. not orphaned by deletion).
+    /// Wraps the query in FTS5 phrase quotes so dots and other punctuation are treated
+    /// as literal characters rather than token separators.
+    fn fts_live_count(conn: &Connection, query: &str) -> usize {
+        let phrase = format!("\"{}\"", query);
+        conn.query_row(
+            "SELECT COUNT(*) FROM lines_fts lf
+             JOIN lines l ON l.id = lf.rowid
+             WHERE lines_fts MATCH ?1",
+            params![phrase],
+            |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) as usize
+    }
+
+    fn file_exists(conn: &Connection, path: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM files WHERE path = ?1",
+            params![path],
+            |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) > 0
+    }
+
+    fn line_count(conn: &Connection, file_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM lines WHERE file_id = ?1",
+            params![file_id],
+            |r| r.get(0),
+        ).unwrap_or(0)
+    }
+
+    // ── delete_files_phase1 ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_basic() {
+        let conn = test_conn();
+        let fid = insert_file(&conn, "docs/readme.txt", 1000, &["docs/readme.txt", "hello world"]);
+        assert!(file_exists(&conn, "docs/readme.txt"));
+        assert_eq!(line_count(&conn, fid), 2);
+
+        delete_files_phase1(&conn, &["docs/readme.txt".to_string()]).unwrap();
+
+        assert!(!file_exists(&conn, "docs/readme.txt"));
+        assert_eq!(line_count(&conn, fid), 0); // CASCADE
+    }
+
+    #[test]
+    fn test_delete_noop_missing() {
+        let conn = test_conn();
+        // Should not error when path doesn't exist.
+        delete_files_phase1(&conn, &["nonexistent.txt".to_string()]).unwrap();
+    }
+
+    #[test]
+    fn test_delete_removes_archive_members() {
+        let conn = test_conn();
+        // Insert outer archive and two inner members.
+        insert_file(&conn, "archive.zip", 1000, &["archive.zip"]);
+        insert_file(&conn, "archive.zip::a.txt", 1000, &["archive.zip::a.txt", "content a"]);
+        insert_file(&conn, "archive.zip::b.txt", 1000, &["archive.zip::b.txt", "content b"]);
+
+        delete_files_phase1(&conn, &["archive.zip".to_string()]).unwrap();
+
+        assert!(!file_exists(&conn, "archive.zip"));
+        assert!(!file_exists(&conn, "archive.zip::a.txt"));
+        assert!(!file_exists(&conn, "archive.zip::b.txt"));
+    }
+
+    #[test]
+    fn test_delete_canonical_promotion() {
+        let conn = test_conn();
+        // canonical file
+        let canonical_id = insert_file(&conn, "original.txt", 1000, &["original.txt", "shared content"]);
+        // alias pointing to canonical
+        conn.execute(
+            "INSERT INTO files (path, mtime, kind, canonical_file_id) VALUES ('alias.txt', 1000, 'text', ?1)",
+            params![canonical_id],
+        ).unwrap();
+        let alias_id: i64 = conn.last_insert_rowid();
+        // alias has a line_number=0 row; FTS entry is intentionally NOT pre-inserted here —
+        // delete_one_path_phase1 inserts it during canonical promotion.
+        conn.execute(
+            "INSERT INTO lines (file_id, line_number, line_offset_in_chunk) VALUES (?1, 0, 0)",
+            params![alias_id],
+        ).unwrap();
+
+        // Delete the canonical — alias should be promoted.
+        delete_files_phase1(&conn, &["original.txt".to_string()]).unwrap();
+
+        assert!(!file_exists(&conn, "original.txt"));
+        assert!(file_exists(&conn, "alias.txt"));
+
+        // Promoted alias must now have canonical_file_id = NULL.
+        let canon_ref: Option<i64> = conn.query_row(
+            "SELECT canonical_file_id FROM files WHERE path = 'alias.txt'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(canon_ref.is_none());
+
+        // FTS for path of promoted alias should be live.
+        assert_eq!(fts_live_count(&conn, "alias.txt"), 1);
+    }
+
+    // ── FTS round-trip ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fts_insert_then_find() {
+        let conn = test_conn();
+        insert_file(&conn, "src/main.rs", 1000, &["src/main.rs", "fn main() {}", "let x = 420;"]);
+        assert!(fts_live_count(&conn, "main") > 0);
+        // trigram requires >= 3 chars; "420" is 3 chars and indexable
+        assert!(fts_live_count(&conn, "420") > 0);
+    }
+
+    #[test]
+    fn test_fts_delete_orphans_entries() {
+        let conn = test_conn();
+        insert_file(&conn, "src/lib.rs", 1000, &["src/lib.rs", "unique_token_xyz"]);
+        assert_eq!(fts_live_count(&conn, "unique_token_xyz"), 1);
+
+        delete_files_phase1(&conn, &["src/lib.rs".to_string()]).unwrap();
+
+        // Lines are CASCADE deleted; FTS rowids are orphaned but JOIN returns nothing.
+        assert_eq!(fts_live_count(&conn, "unique_token_xyz"), 0);
+    }
+
+    // ── rename_files ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_rename_updates_path() {
+        let conn = test_conn();
+        insert_file(&conn, "old/path.txt", 1000, &["old/path.txt", "content"]);
+
+        rename_files(&conn, &[PathRename {
+            old_path: "old/path.txt".to_string(),
+            new_path: "new/path.txt".to_string(),
+        }]).unwrap();
+
+        assert!(!file_exists(&conn, "old/path.txt"));
+        assert!(file_exists(&conn, "new/path.txt"));
+    }
+
+    #[test]
+    fn test_rename_updates_archive_members() {
+        let conn = test_conn();
+        insert_file(&conn, "data.zip", 1000, &["data.zip"]);
+        insert_file(&conn, "data.zip::member.txt", 1000, &["data.zip::member.txt", "content"]);
+
+        rename_files(&conn, &[PathRename {
+            old_path: "data.zip".to_string(),
+            new_path: "renamed.zip".to_string(),
+        }]).unwrap();
+
+        assert!(file_exists(&conn, "renamed.zip"));
+        assert!(file_exists(&conn, "renamed.zip::member.txt"));
+        assert!(!file_exists(&conn, "data.zip::member.txt"));
+    }
+
+    #[test]
+    fn test_rename_updates_fts_line0() {
+        let conn = test_conn();
+        insert_file(&conn, "before.txt", 1000, &["before.txt", "hello"]);
+
+        assert_eq!(fts_live_count(&conn, "before.txt"), 1);
+        assert_eq!(fts_live_count(&conn, "after.txt"), 0);
+
+        rename_files(&conn, &[PathRename {
+            old_path: "before.txt".to_string(),
+            new_path: "after.txt".to_string(),
+        }]).unwrap();
+
+        assert_eq!(fts_live_count(&conn, "after.txt"), 1);
+        assert_eq!(fts_live_count(&conn, "before.txt"), 0);
+    }
+
+    #[test]
+    fn test_rename_skip_existing_target() {
+        let conn = test_conn();
+        insert_file(&conn, "a.txt", 1000, &["a.txt", "content a"]);
+        insert_file(&conn, "b.txt", 2000, &["b.txt", "content b"]);
+
+        // Rename a.txt → b.txt should be skipped (b.txt already exists).
+        rename_files(&conn, &[PathRename {
+            old_path: "a.txt".to_string(),
+            new_path: "b.txt".to_string(),
+        }]).unwrap();
+
+        // Both files should still exist unchanged.
+        assert!(file_exists(&conn, "a.txt"));
+        assert!(file_exists(&conn, "b.txt"));
+    }
+
+    // ── list_files ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_list_files_returns_indexed_at() {
+        let conn = test_conn();
+        insert_file(&conn, "file.txt", 1000, &["file.txt"]);
+        // Set indexed_at on the file.
+        conn.execute(
+            "UPDATE files SET indexed_at = 9999 WHERE path = 'file.txt'",
+            [],
+        ).unwrap();
+
+        let records = list_files(&conn).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, "file.txt");
+        assert_eq!(records[0].indexed_at, Some(9999));
+    }
+
+    #[test]
+    fn test_list_files_indexed_at_null() {
+        let conn = test_conn();
+        insert_file(&conn, "unindexed.txt", 1000, &["unindexed.txt"]);
+
+        let records = list_files(&conn).unwrap();
+        assert_eq!(records[0].indexed_at, None);
+    }
+
+    // ── log_activity / recent_activity ────────────────────────────────────────
+
+    #[test]
+    fn test_activity_log_round_trip() {
+        let conn = test_conn();
+
+        log_activity(
+            &conn, 1000,
+            &["new_file.txt".to_string()],
+            &[],
+            &[],
+            &[],
+            100,
+        ).unwrap();
+
+        let rows = recent_activity(&conn, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "added");
+        assert_eq!(rows[0].1, "new_file.txt");
+        assert_eq!(rows[0].2, None);
+        assert_eq!(rows[0].3, 1000);
+    }
+
+    #[test]
+    fn test_activity_log_all_actions() {
+        let conn = test_conn();
+
+        log_activity(
+            &conn, 500,
+            &["a.txt".to_string()],
+            &["b.txt".to_string()],
+            &["c.txt".to_string()],
+            &[("d.txt".to_string(), "e.txt".to_string())],
+            100,
+        ).unwrap();
+
+        let rows = recent_activity(&conn, 10).unwrap();
+        assert_eq!(rows.len(), 4);
+        let actions: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert!(actions.contains(&"added"));
+        assert!(actions.contains(&"modified"));
+        assert!(actions.contains(&"deleted"));
+        assert!(actions.contains(&"renamed"));
+
+        let rename = rows.iter().find(|r| r.0 == "renamed").unwrap();
+        assert_eq!(rename.1, "d.txt");
+        assert_eq!(rename.2.as_deref(), Some("e.txt"));
+    }
+
+    #[test]
+    fn test_activity_log_skips_composite_paths() {
+        let conn = test_conn();
+
+        log_activity(
+            &conn, 1000,
+            &["archive.zip::member.txt".to_string(), "normal.txt".to_string()],
+            &[],
+            &[],
+            &[],
+            100,
+        ).unwrap();
+
+        let rows = recent_activity(&conn, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "normal.txt");
+    }
+
+    #[test]
+    fn test_activity_log_prunes_to_max() {
+        let conn = test_conn();
+
+        for i in 0..10i64 {
+            log_activity(
+                &conn, i,
+                &[format!("file{i}.txt")],
+                &[], &[], &[],
+                5, // keep only 5
+            ).unwrap();
+        }
+
+        let rows = recent_activity(&conn, 100).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // ── update_last_scan / get_last_scan ──────────────────────────────────────
+
+    #[test]
+    fn test_last_scan_round_trip() {
+        let conn = test_conn();
+
+        assert_eq!(get_last_scan(&conn).unwrap(), None);
+
+        update_last_scan(&conn, 42000).unwrap();
+        assert_eq!(get_last_scan(&conn).unwrap(), Some(42000));
+
+        update_last_scan(&conn, 99000).unwrap();
+        assert_eq!(get_last_scan(&conn).unwrap(), Some(99000));
+    }
+}

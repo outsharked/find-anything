@@ -51,6 +51,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- **Extractor boilerplate centralised** — `find-extract-types` gains a `run` module with `run_extractor` and `init_tracing` helpers; all six extractor `main.rs` files (text, PDF, epub, office, media, html) reduced to ~10 lines each; `serde_json` and `tracing-subscriber` deps moved from the individual extractor crates to `find-extract-types`
+- **`db/mod.rs` unit tests** — 17 `#[cfg(test)]` tests added covering `delete_files_phase1` (basic delete, archive-member cascade, canonical promotion, no-op on missing), `rename_files` (path update, member rename, FTS update, skip-existing-target), FTS5 round-trip (insert→find, delete orphans entries via JOIN filter), `list_files` returning `indexed_at`, `log_activity`/`recent_activity` round-trip, and `update_last_scan`/`get_last_scan` round-trip
+
 - **Shared walk module for `find-scan` and `find-watch`** — `build_globset` and the full directory-traversal logic (hidden-file pruning, `.noindex` detection, exclude-glob matching, terminal pruning) are extracted into a new `crates/client/src/walk.rs` module (`walk_source_tree`, `build_globset`); both `find-scan` and `find-watch` now delegate to the same code path, guaranteeing identical filtering behaviour across scan and watch operations
 
 - **HTTP integration tests for `find-server`** — new `crates/server/tests/` suite (23 tests across `smoke`, `index_and_search`, `delete`, `multi_source`, `errors`) spins up a real Axum server on an ephemeral port per test and exercises the full request→worker→response cycle; server init logic extracted from `main.rs` into `lib.rs` (`create_app_state`, `build_router`) to enable in-process test server construction; `mise run test` added to run all unit and integration tests

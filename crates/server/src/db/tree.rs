@@ -2,6 +2,7 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 
 use find_common::api::DirEntry;
+use find_common::path::is_composite;
 
 // ── Directory listing ─────────────────────────────────────────────────────────
 
@@ -11,7 +12,7 @@ use find_common::api::DirEntry;
 /// For archive member listings, `prefix` ends with `"::"` (e.g. `"archive.zip::"`).
 /// An empty string means the root of the source.
 pub fn list_dir(conn: &Connection, prefix: &str) -> Result<Vec<DirEntry>> {
-    let is_archive_listing = prefix.contains("::");
+    let is_archive_listing = is_composite(prefix);
 
     let (low, high) = if prefix.is_empty() {
         (String::new(), "\u{FFFF}".to_string())
@@ -43,7 +44,7 @@ pub fn list_dir(conn: &Connection, prefix: &str) -> Result<Vec<DirEntry>> {
     if is_archive_listing {
         for (path, _, _, _) in &rows {
             let rest = path.strip_prefix(prefix).unwrap_or(path);
-            if !rest.contains("::") && !rest.contains('/') {
+            if !is_composite(rest) && !rest.contains('/') {
                 seen_files.insert(rest.to_string());
             }
         }
@@ -113,7 +114,7 @@ pub fn list_dir(conn: &Connection, prefix: &str) -> Result<Vec<DirEntry>> {
             // Regular directory listing.
             // Skip inner archive members (composite paths) — they appear only when
             // the user explicitly expands the archive.
-            if rest.contains("::") {
+            if is_composite(rest) {
                 continue;
             }
 

@@ -15,10 +15,8 @@ path = "src/main.rs"
 find-extract-types = { path = "../../extract-types" }
 anyhow = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 
 zip = "8"
 quick-xml = "0.37"
 calamine = "0.26"
 tempfile = "3"
-tracing-subscriber = { workspace = true }

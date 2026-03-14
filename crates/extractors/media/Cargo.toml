@@ -15,7 +15,6 @@ path = "src/main.rs"
 find-extract-types = { path = "../../extract-types" }
 anyhow = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 
 # Image EXIF
 kamadak-exif = "0.5"
@@ -30,4 +29,3 @@ audio-video-metadata = "0.1"
 
 # For writing archive member bytes to a temp file before extracting
 tempfile = "3"
-tracing-subscriber = { workspace = true }
