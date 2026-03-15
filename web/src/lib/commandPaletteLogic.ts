@@ -79,23 +79,21 @@ export function displayPath(path: string): string {
  * Split a path into { name, dir } for VS Code-style display:
  * filename prominent on the left, directory dimmed on the right.
  *
- * For archive members (composite paths with `::`), treats the inner member
- * filename as `name` and `outerPath → innerDir` as `dir`.
+ * Always shows the terminal filename (last segment after any `::` or `/`) as
+ * `name`, and everything before it as `dir`. For nested archive members like
+ * `outer.zip::c.tar::file.txt`, `name` = `file.txt` and `dir` = `outer.zip::c.tar`.
  */
 export function splitDisplayPath(path: string): { name: string; dir: string } {
-	const sep = path.indexOf('::');
-	if (sep >= 0) {
-		const outer = path.slice(0, sep);
-		const inner = path.slice(sep + 2);
-		const innerSlash = Math.max(inner.lastIndexOf('/'), inner.lastIndexOf('\\'));
-		const name = innerSlash >= 0 ? inner.slice(innerSlash + 1) : inner;
-		const innerDir = innerSlash >= 0 ? inner.slice(0, innerSlash) : '';
-		const dir = innerDir ? `${outer} → ${innerDir}` : outer;
-		return { name, dir };
+	const lastDoubleColon = path.lastIndexOf('::');
+	const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+
+	if (lastDoubleColon >= 0 && lastDoubleColon > lastSlash) {
+		return { name: path.slice(lastDoubleColon + 2), dir: path.slice(0, lastDoubleColon) };
 	}
-	const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-	if (slash < 0) return { name: path, dir: '' };
-	return { name: path.slice(slash + 1), dir: path.slice(0, slash) };
+	if (lastSlash >= 0) {
+		return { name: path.slice(lastSlash + 1), dir: path.slice(0, lastSlash) };
+	}
+	return { name: path, dir: '' };
 }
 
 /** For a composite path, returns the member portion; null for plain paths. */

@@ -147,9 +147,7 @@
 	}
 
 	.cp-panel {
-		width: fit-content;
-		min-width: min(640px, 90vw);
-		max-width: 90vw;
+		width: min(800px, 90vw);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: 8px;
@@ -207,8 +205,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		width: max-content;
-		min-width: min(640px, 90vw);
+		width: 100%;
 		background: none;
 		border: none;
 		text-align: left;
@@ -219,6 +216,7 @@
 		color: var(--text-muted);
 		white-space: nowrap;
 		overflow: hidden;
+		box-sizing: border-box;
 	}
 
 	.cp-item:hover,
@@ -236,7 +234,6 @@
 		flex-shrink: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		max-width: 50%;
 	}
 
 	.cp-dir {

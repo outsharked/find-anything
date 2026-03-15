@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildItems, filterItems, fuzzyScore, displayPath, archivePathOf } from './commandPaletteLogic';
+import {
+	buildItems,
+	filterItems,
+	fuzzyScore,
+	displayPath,
+	archivePathOf,
+	splitDisplayPath,
+} from './commandPaletteLogic';
 import type { FileRecord } from '$lib/api';
 
 const file = (path: string, kind = 'text'): FileRecord => ({ path, kind, mtime: 0 });
@@ -140,6 +147,44 @@ describe('displayPath', () => {
 
 	it('handles nested composite paths (only first :: is the separator)', () => {
 		expect(displayPath('outer.zip::inner.zip::file.txt')).toBe('outer.zip → inner.zip::file.txt');
+	});
+});
+
+// ── splitDisplayPath ──────────────────────────────────────────────────────────
+
+describe('splitDisplayPath', () => {
+	it('splits plain paths into name and dir', () => {
+		expect(splitDisplayPath('/home/user/file.txt')).toEqual({
+			name: 'file.txt',
+			dir: '/home/user',
+		});
+	});
+
+	it('returns name with empty dir for a bare filename', () => {
+		expect(splitDisplayPath('file.txt')).toEqual({ name: 'file.txt', dir: '' });
+	});
+
+	it('uses the inner member as name for a single-level archive member', () => {
+		expect(splitDisplayPath('/home/user/archive.zip::member.txt')).toEqual({
+			name: 'member.txt',
+			dir: '/home/user/archive.zip',
+		});
+	});
+
+	it('uses the terminal member as name for nested archive members', () => {
+		// outer.zip::c.tar::file.txt → name=file.txt, dir=outer.zip::c.tar
+		expect(splitDisplayPath('/home/user/outer.zip::c.tar::file.txt')).toEqual({
+			name: 'file.txt',
+			dir: '/home/user/outer.zip::c.tar',
+		});
+	});
+
+	it('handles a slash inside the archive member path', () => {
+		// archive.zip::subdir/file.txt → last sep is /, name=file.txt
+		expect(splitDisplayPath('/home/user/archive.zip::subdir/file.txt')).toEqual({
+			name: 'file.txt',
+			dir: '/home/user/archive.zip::subdir',
+		});
 	});
 });
 

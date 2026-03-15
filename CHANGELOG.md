@@ -9,6 +9,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ctrl+P file picker shows terminal filename for nested archive members** — `splitDisplayPath` now uses `lastIndexOf('::')` and `lastIndexOf('/')` to find the deepest path separator, so e.g. `fixtures.tgz::c.tar::200ccc.txt` displays as `200ccc.txt` on the left and `fixtures.tgz::c.tar` on the right; previously `c.tar::200ccc.txt` was shown unsplit on the left when the inner path contained nested `::` segments
+
+### Changed
+
+- **Ctrl+P panel fixed at 800 px** — panel width changed from `fit-content` (min 640 px) to `min(800 px, 90vw)`; items fill the panel width (`width: 100%`) so the directory column truncates cleanly instead of expanding the panel; filename column no longer capped at 50% so long filenames are never clipped
+
 ### Added
 
 - **Client integration test suite (`crates/client/tests/`)** — 11 `find-scan` integration tests (S1–S11) and 5 `find-watch` tests (W1–W5, `#[ignore]` by default) that drive the full round-trip: real files on disk → extraction → bulk submission → server indexing → search verification; covers basic indexing, mtime-based skip, force/upgrade modes, delete detection, exclude patterns, ZIP archive members, and external extractors in both stdout and tempdir modes; a new `[lib]` target exposes client modules so tests can call `run_scan` / `run_watch` directly without spawning subprocesses
