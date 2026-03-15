@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { createEventDispatcher } from 'svelte';
 	import { clickOutside } from '$lib/clickOutside';
+	import { KIND_OPTIONS } from '$lib/kindOptions';
+	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 
 	/** All available source names. */
 	export let sources: string[] = [];
@@ -14,22 +16,14 @@
 	export let dateTo = '';
 	/** Whether case-sensitive matching is active. */
 	export let caseSensitive = false;
+	/** Current scope selection. */
+	export let scope: SearchScope = 'line';
+	/** Current match type selection. */
+	export let matchType: SearchMatchType = 'fuzzy';
 
 	const dispatch = createEventDispatcher<{
-		change: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean };
+		change: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
 	}>();
-
-	// All supported kind values and their display labels.
-	const KIND_OPTIONS: { value: string; label: string }[] = [
-		{ value: 'pdf',      label: 'PDF' },
-		{ value: 'document', label: 'Office / eBook' },
-		{ value: 'text',     label: 'Code & Text' },
-		{ value: 'image',    label: 'Image' },
-		{ value: 'audio',    label: 'Audio' },
-		{ value: 'video',    label: 'Video' },
-		{ value: 'archive',  label: 'Archive' },
-		{ value: 'binary',   label: 'Binary' },
-	];
 
 	let isOpen = false;
 
@@ -39,6 +33,8 @@
 	let draftFrom = '';
 	let draftTo = '';
 	let draftCaseSensitive = false;
+	let draftScope: SearchScope = 'line';
+	let draftMatchType: SearchMatchType = 'fuzzy';
 
 	// Sync draft from props whenever the panel opens.
 	function openPanel() {
@@ -47,6 +43,8 @@
 		draftFrom = dateFrom;
 		draftTo = dateTo;
 		draftCaseSensitive = caseSensitive;
+		draftScope = scope;
+		draftMatchType = matchType;
 		isOpen = true;
 	}
 
@@ -63,6 +61,8 @@
 			dateFrom: isoToUnix(draftFrom),
 			dateTo: isoToUnix(draftTo),
 			caseSensitive: draftCaseSensitive,
+			scope: draftScope,
+			matchType: draftMatchType,
 		});
 		isOpen = false;
 	}
@@ -73,7 +73,9 @@
 		draftFrom = '';
 		draftTo = '';
 		draftCaseSensitive = false;
-		dispatch('change', { sources: [], kinds: [], caseSensitive: false });
+		draftScope = 'line';
+		draftMatchType = 'fuzzy';
+		dispatch('change', { sources: [], kinds: [], caseSensitive: false, scope: 'line', matchType: 'fuzzy' });
 		isOpen = false;
 	}
 
@@ -99,15 +101,19 @@
 		JSON.stringify(draftKinds.slice().sort()) !== JSON.stringify(selectedKinds.slice().sort()) ||
 		draftFrom !== dateFrom ||
 		draftTo !== dateTo ||
-		draftCaseSensitive !== caseSensitive;
+		draftCaseSensitive !== caseSensitive ||
+		draftScope !== scope ||
+		draftMatchType !== matchType;
 
 	$: sourceFiltered = selectedSources.length > 0 && selectedSources.length < sources.length;
 	$: kindFiltered = selectedKinds.length > 0;
 	$: dateFiltered = dateFrom !== '' || dateTo !== '';
-	$: anyFilter = sourceFiltered || kindFiltered || dateFiltered || caseSensitive;
+	$: scopeActive = scope !== 'line';
+	$: matchActive = matchType !== 'fuzzy';
+	$: anyFilter = sourceFiltered || kindFiltered || dateFiltered || caseSensitive || scopeActive || matchActive;
 
 	// Count badge: number of active filter dimensions
-	$: filterCount = (sourceFiltered ? 1 : 0) + (kindFiltered ? 1 : 0) + (dateFiltered ? 1 : 0) + (caseSensitive ? 1 : 0);
+	$: filterCount = (sourceFiltered ? 1 : 0) + (kindFiltered ? 1 : 0) + (dateFiltered ? 1 : 0) + (caseSensitive ? 1 : 0) + (scopeActive ? 1 : 0) + (matchActive ? 1 : 0);
 
 	function showFromPicker() {
 		(document.getElementById('adv-date-from') as HTMLInputElement)?.showPicker();
@@ -115,6 +121,17 @@
 	function showToPicker() {
 		(document.getElementById('adv-date-to') as HTMLInputElement)?.showPicker();
 	}
+
+	const SCOPE_OPTIONS: { value: SearchScope; label: string }[] = [
+		{ value: 'line', label: 'Single-line' },
+		{ value: 'file', label: 'Filename' },
+		{ value: 'doc',  label: 'Document' },
+	];
+	const MATCH_OPTIONS: { value: SearchMatchType; label: string }[] = [
+		{ value: 'fuzzy', label: 'Fuzzy' },
+		{ value: 'exact', label: 'Exact' },
+		{ value: 'regex', label: 'Regex' },
+	];
 </script>
 
 <div class="advanced-search" use:clickOutside={() => (isOpen = false)}>
@@ -210,6 +227,38 @@
 						/>
 						<button class="cal-btn" tabindex="-1" on:click={showToPicker}>📅</button>
 					</div>
+				</div>
+			</div>
+
+			<div class="section">
+				<div class="section-header">
+					<span class="section-title">Scope</span>
+				</div>
+				<div class="toggle-group">
+					{#each SCOPE_OPTIONS as opt}
+						<button
+							class="toggle-btn"
+							class:active={draftScope === opt.value}
+							on:click={() => (draftScope = opt.value)}
+							type="button"
+						>{opt.label}</button>
+					{/each}
+				</div>
+			</div>
+
+			<div class="section">
+				<div class="section-header">
+					<span class="section-title">Match type</span>
+				</div>
+				<div class="toggle-group">
+					{#each MATCH_OPTIONS as opt}
+						<button
+							class="toggle-btn"
+							class:active={draftMatchType === opt.value}
+							on:click={() => (draftMatchType = opt.value)}
+							type="button"
+						>{opt.label}</button>
+					{/each}
 				</div>
 			</div>
 
@@ -508,5 +557,34 @@
 
 	.apply-btn.dirty:hover {
 		opacity: 0.85;
+	}
+
+	.toggle-group {
+		display: flex;
+		gap: 4px;
+	}
+
+	.toggle-btn {
+		flex: 1;
+		padding: 4px 8px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: none;
+		color: var(--text-muted);
+		font-size: 12px;
+		cursor: pointer;
+		transition: all 0.15s;
+		white-space: nowrap;
+	}
+
+	.toggle-btn:hover {
+		border-color: var(--accent);
+		color: var(--text);
+	}
+
+	.toggle-btn.active {
+		border-color: var(--accent);
+		background: var(--accent);
+		color: #fff;
 	}
 </style>

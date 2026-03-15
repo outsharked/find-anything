@@ -116,7 +116,7 @@
 <style>
 	.path-bar {
 		display: flex;
-		align-items: flex-start;
+		align-items: center;
 		gap: 10px;
 		padding: 8px 16px;
 		background: var(--bg-secondary);
@@ -166,7 +166,6 @@
 		align-items: baseline;
 		gap: 0;
 		color: var(--accent);
-		padding-top: 2px;
 	}
 
 	.sep {

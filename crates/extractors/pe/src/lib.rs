@@ -30,39 +30,18 @@ pub fn extract_from_bytes(bytes: &[u8], _name: &str, _cfg: &ExtractorConfig) -> 
 /// # Returns
 /// Vector of IndexLine objects with metadata at line_number=0
 pub fn extract(path: &Path, _cfg: &ExtractorConfig) -> anyhow::Result<Vec<IndexLine>> {
-    // Read the file
     let data = fs::read(path)?;
-
-    // Parse as PE file
     let version_info = extract_version_info(&data)?;
-
-    // Always include the filename in the content so the file is searchable by name
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-
-    // Build the full metadata content
-    let full_content = if version_info.is_empty() {
-        // No metadata, just the filename
-        filename.to_string()
-    } else {
-        // Prepend filename to metadata
-        format!("{}\n{}", filename, version_info)
-    };
-
-    // Split into multiple IndexLine objects (one per line) all at line_number=0
-    // This ensures all metadata lines are displayed in the file viewer
-    let lines: Vec<IndexLine> = full_content
+    // The caller (build_index_files) adds the [PATH] line; we only emit PE metadata.
+    Ok(version_info
         .lines()
+        .filter(|l| !l.is_empty())
         .map(|line| IndexLine {
             line_number: 0,
             content: line.to_string(),
             archive_path: None,
         })
-        .collect();
-
-    Ok(lines)
+        .collect())
 }
 
 /// Check if a file is a PE executable based on extension.
@@ -129,12 +108,12 @@ fn format_version_info<'a>(version_info: &pelite::resources::version_info::Versi
         let product_ver = fixed.dwProductVersion;
 
         lines.push(format!(
-            "FileVersion: {}.{}.{}.{}",
+            "[PE:FileVersion] {}.{}.{}.{}",
             file_ver.Major, file_ver.Minor, file_ver.Patch, file_ver.Build
         ));
 
         lines.push(format!(
-            "ProductVersion: {}.{}.{}.{}",
+            "[PE:ProductVersion] {}.{}.{}.{}",
             product_ver.Major, product_ver.Minor, product_ver.Patch, product_ver.Build
         ));
     }
@@ -159,7 +138,7 @@ fn format_version_info<'a>(version_info: &pelite::resources::version_info::Versi
     if let Some(lang) = langs.first() {
         version_info.strings(*lang, |key, value| {
             if keys.contains(&key) && !value.trim().is_empty() {
-                lines.push(format!("{}: {}", key, value.trim()));
+                lines.push(format!("[PE:{}] {}", key, value.trim()));
             }
         });
     }

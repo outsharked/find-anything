@@ -264,7 +264,7 @@ pub async fn run_external_tempdir(
         content_lines.push(IndexLine {
             archive_path: Some(member_rel.clone()),
             line_number: 0,
-            content: member_rel,
+            content: format!("[PATH] {}", member_rel),
         });
         all_lines.extend(content_lines);
     }

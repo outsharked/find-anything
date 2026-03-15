@@ -5,9 +5,12 @@
 	import AdvancedSearch from '$lib/AdvancedSearch.svelte';
 	import ResultList from '$lib/ResultList.svelte';
 	import type { SearchResult } from '$lib/api';
+	import { parseSearchPrefixes } from '$lib/searchPrefixes';
+	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 
 	export let query: string;
-	export let mode: string;
+	export let scope: SearchScope = 'line';
+	export let matchType: SearchMatchType = 'fuzzy';
 	export let searching: boolean;
 	export let sources: string[];
 	export let selectedSources: string[];
@@ -29,8 +32,8 @@
 	export let deletedPaths: Set<string> = new Set();
 
 	const dispatch = createEventDispatcher<{
-		search: { query: string; mode: string };
-		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean };
+		search: { query: string };
+		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
 		clearNlpDate: void;
 		open: SearchResult;
 		treeToggle: void;
@@ -43,6 +46,20 @@
 
 	let isTyping = false;
 	$: isSearchActive = isTyping || searching;
+
+	// Compute prefix chips from the current query.
+	$: prefixResult = parseSearchPrefixes(query);
+	$: prefixTokens = prefixResult.prefixTokens;
+
+	function removePrefixToken(token: { raw: string; value: string }) {
+		// Replace the full prefix token with its bare value (the non-prefix part),
+		// so e.g. "file:extra" → "extra" rather than removing "extra" too.
+		const parts = query.split(/\s+/);
+		const newQuery = parts
+			.flatMap((t) => (t === token.raw ? (token.value ? [token.value] : []) : [t]))
+			.join(' ');
+		dispatch('search', { query: newQuery });
+	}
 
 	// Find the detected date phrase in the current query for inline highlighting.
 	// Returns undefined when typing (stale span) or when phrase no longer matches.
@@ -75,11 +92,10 @@
 		<SearchBox
 			bind:this={searchBox}
 			{query}
-			{mode}
 			searching={isSearchActive}
 			{nlpHighlightSpan}
 			bind:isTyping
-			on:change={(e) => dispatch('search', e.detail)}
+			on:change={(e) => dispatch('search', { query: e.detail.query })}
 		/>
 	</div>
 	{#if sources.length > 0}
@@ -90,11 +106,28 @@
 			{dateFrom}
 			{dateTo}
 			{caseSensitive}
+			{scope}
+			{matchType}
 			on:change={(e) => dispatch('filterChange', e.detail)}
 		/>
 	{/if}
 	<button class="gear-btn" title="Settings" on:click={() => goto('/settings')}>⚙</button>
 </div>
+
+{#if prefixTokens.length > 0}
+	<div class="nlp-bar prefix-bar">
+		{#each prefixTokens as token (token.raw)}
+			<div class="nlp-chip prefix-chip">
+				<span class="nlp-label">{[
+					token.scope === 'file' ? 'filename' : token.scope === 'doc' ? 'document' : null,
+					token.match,
+					token.kind ? `type: ${token.kind}` : null,
+				].filter(Boolean).join(' · ')}</span>
+				<button class="nlp-dismiss" on:click={() => removePrefixToken(token)} aria-label="Remove prefix">✕</button>
+			</div>
+		{/each}
+	</div>
+{/if}
 
 {#if nlpDateLabel}
 	<div class="nlp-bar">
@@ -231,6 +264,12 @@
 		padding: 6px 16px 0;
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+
+	.prefix-bar {
+		flex-wrap: wrap;
 	}
 
 	.nlp-chip {

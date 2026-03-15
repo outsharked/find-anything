@@ -30,7 +30,7 @@ pub fn build_index_files(
         all_lines.push(IndexLine {
             archive_path: None,
             line_number: 0,
-            content: rel_path.clone(),
+            content: format!("[PATH] {}", rel_path),
         });
         return vec![IndexFile { path: rel_path, mtime, size: Some(size), kind, lines: all_lines, extract_ms: None, content_hash: None, scanner_version: SCANNER_VERSION, is_new: false }];
     }
@@ -53,7 +53,7 @@ pub fn build_index_files(
     outer_lines.push(IndexLine {
         archive_path: None,
         line_number: 0,
-        content: rel_path.clone(),
+        content: format!("[PATH] {}", rel_path),
     });
     result.push(IndexFile {
         path: rel_path.clone(),
@@ -80,7 +80,7 @@ pub fn build_index_files(
         content_lines.push(IndexLine {
             archive_path: None,
             line_number: 0,
-            content: composite_path.clone(),
+            content: format!("[PATH] {}", composite_path),
         });
         // Detect the member's actual kind from its filename extension.
         let ext = Path::new(&member)
@@ -134,13 +134,14 @@ pub fn build_member_index_files(
         for l in &mut lines {
             l.archive_path = None;
         }
-        // Remove the extractor's filename line (content == member name) but keep
-        // metadata lines (EXIF, [FILE:mime], etc.) which also have line_number=0.
-        lines.retain(|l| !(l.line_number == 0 && l.content == member));
+        // Remove the extractor's filename marker line but keep metadata lines
+        // (EXIF, [FILE:mime], etc.) which also have line_number=0.
+        let path_marker = format!("[PATH] {}", member);
+        lines.retain(|l| !(l.line_number == 0 && (l.content == member || l.content == path_marker)));
         lines.push(IndexLine {
             archive_path: None,
             line_number: 0,
-            content: composite_path.clone(),
+            content: format!("[PATH] {}", composite_path),
         });
         let ext = Path::new(&member)
             .extension()
@@ -232,7 +233,7 @@ mod tests {
         // Should have exactly the path line.
         assert_eq!(f.lines.len(), 1);
         assert_eq!(f.lines[0].line_number, 0);
-        assert_eq!(f.lines[0].content, "readme.md");
+        assert_eq!(f.lines[0].content, "[PATH] readme.md");
         assert!(f.lines[0].archive_path.is_none());
     }
 
@@ -247,7 +248,7 @@ mod tests {
         let f = &files[0];
         // Content lines + the path line appended at the end.
         assert_eq!(f.lines.len(), 3);
-        assert!(f.lines.iter().any(|l| l.line_number == 0 && l.content == "src/main.rs"));
+        assert!(f.lines.iter().any(|l| l.line_number == 0 && l.content == "[PATH] src/main.rs"));
         assert!(f.lines.iter().any(|l| l.line_number == 1 && l.content == "hello"));
         assert!(f.lines.iter().any(|l| l.line_number == 2 && l.content == "world"));
     }
@@ -268,7 +269,7 @@ mod tests {
 
         let outer = files.iter().find(|f| f.path == "data.zip").unwrap();
         assert_eq!(outer.kind, "archive");
-        assert!(outer.lines.iter().any(|l| l.line_number == 0 && l.content == "data.zip"));
+        assert!(outer.lines.iter().any(|l| l.line_number == 0 && l.content == "[PATH] data.zip"));
 
         let report = files.iter().find(|f| f.path == "data.zip::report.txt").unwrap();
         assert_eq!(report.kind, "text");
@@ -277,14 +278,14 @@ mod tests {
         // archive_path stripped from member lines.
         assert!(report.lines.iter().all(|l| l.archive_path.is_none()));
         // Path line present.
-        assert!(report.lines.iter().any(|l| l.line_number == 0 && l.content == "data.zip::report.txt"));
+        assert!(report.lines.iter().any(|l| l.line_number == 0 && l.content == "[PATH] data.zip::report.txt"));
         // Content lines present.
         assert!(report.lines.iter().any(|l| l.content == "quarterly"));
         assert!(report.lines.iter().any(|l| l.content == "results"));
 
         let photo = files.iter().find(|f| f.path == "data.zip::photo.jpg").unwrap();
         assert_eq!(photo.kind, "image");
-        assert!(photo.lines.iter().any(|l| l.line_number == 0 && l.content == "data.zip::photo.jpg"));
+        assert!(photo.lines.iter().any(|l| l.line_number == 0 && l.content == "[PATH] data.zip::photo.jpg"));
     }
 
     #[test]
@@ -317,11 +318,11 @@ mod tests {
             line(None, 2, "foo"),               // 3 bytes
         ];
         let files = build_index_files("src/main.rs".into(), 0, 0, "text".into(), lines);
-        // build_index_files appends a path line (line_number=0), but "src/main.rs" was
-        // already in lines[0], so total lines = 3 + 1 = 4 after the append.
+        // build_index_files appends a [PATH] line; the manually-passed line(0, "src/main.rs")
+        // is kept as-is, so total lines = 3 + 1 = 4 after the append.
         let total = super::index_file_bytes(&files[0]);
-        // "src/main.rs" appears twice (once from caller, once appended) = 11+11+3+11 = 36
-        assert_eq!(total, 36);
+        // "src/main.rs"=11, "hello world"=11, "foo"=3, "[PATH] src/main.rs"=18 → 43
+        assert_eq!(total, 43);
     }
 
     #[test]
@@ -342,8 +343,8 @@ mod tests {
     fn index_file_bytes_empty_file() {
         let files = build_index_files("empty.txt".into(), 0, 0, "text".into(), vec![]);
         let bytes = super::index_file_bytes(&files[0]);
-        // Only the path line: len("empty.txt") = 9.
-        assert_eq!(bytes, 9);
+        // Only the path line: len("[PATH] empty.txt") = 16.
+        assert_eq!(bytes, 16);
     }
 
     #[test]

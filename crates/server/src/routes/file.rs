@@ -62,7 +62,7 @@ pub async fn get_file(
 
         let metadata: Vec<String> = all_lines.iter()
             .filter(|l| l.line_number == 0)
-            .map(|l| l.content.clone())
+            .map(|l| l.content.strip_prefix("[PATH] ").map(|s| s.to_string()).unwrap_or_else(|| l.content.clone()))
             .collect();
 
         let content_lines: Vec<_> = all_lines.into_iter()

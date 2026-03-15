@@ -9,6 +9,22 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **Search prefix shortcuts (plan 066)** — query prefixes parsed client-side override scope and match type without touching the Advanced panel: `file:` (filename search), `doc:` / `document:` (document search), `exact:` (exact match), `regex:` (regex match), `type:<kind>` (kind filter); prefixes can be compounded (`file:exact:report.pdf`); active prefixes appear as dismissible chips below the search box; dismissing a chip with a trailing value (e.g. `file:extra`) retains the value (`extra`) in the query
+- **Scope and match-type toggles in Advanced Search** — the mode `<select>` is replaced by two toggle-button groups: Scope (Single-line / Filename / Document) and Match (Fuzzy / Exact / Regex); values survive panel open/close and serialise to the URL `mode` param via `toServerMode` / `fromServerMode`
+- **New server search modes** — `file-fuzzy`, `file-exact`, `file-regex` (filename-only search), `doc-exact`, `doc-regex` (document-level exact/regex); added `group_by_file` helper in `routes/search.rs` for document-family modes
+- **`[PATH]` prefix convention for `line_number=0` path entries (plan 067)** — all path lines in the index are now stored as `[PATH] relative/path` instead of bare strings; PE version-info keys reformatted as `[PE:Key]`; enables unambiguous SQL/Rust filtering of path lines vs. EXIF/audio/MIME/PE metadata at `line_number=0`; existing indexes must be rebuilt with `find-scan --force`
+- **`searchPrefixes.ts` unit tests** — 39 vitest tests covering all prefix combinations, compound tokens, kind filters, conflict resolution, safety fallback, case insensitivity, quoted strings, and chip-removal behaviour (`value` field on `PrefixToken`)
+
+### Fixed
+
+- **`file:` search returning EXIF/audio/PE metadata rows** — `file-*` modes now post-filter candidates in Rust (`c.content.starts_with("[PATH] ")`) after `fts_candidates` reads ZIP content, excluding non-path `line_number=0` rows; the SQL-level `AND l.line_number = 0` filter remains (content is not a column in `lines`)
+- **`[PATH]` prefix shown in file viewer header** — `/api/v1/file` now strips the `[PATH] ` prefix before returning the `metadata` array so `FileViewer.svelte`'s `s === compositePath` check correctly suppresses the path line
+- **`[PATH]` prefix shown in search result snippets** — `make_result` in `routes/search.rs` strips the prefix from the snippet before returning
+- **Source badge ("projects") not vertically centred in PathBar** — `align-items: flex-start` changed to `align-items: center`; compensating `padding-top: 2px` on `.path-plain` removed
+- **Dismissing a prefix chip also removed trailing search term** — `file:extra components` → clicking ✕ on the "filename" chip now produces `extra components`; `PrefixToken` gains a `value` field (non-prefix remainder) and `removePrefixToken` replaces rather than deletes the raw token
+
 ### Fixed
 
 - **Ctrl+P file picker shows terminal filename for nested archive members** — `splitDisplayPath` now uses `lastIndexOf('::')` and `lastIndexOf('/')` to find the deepest path separator, so e.g. `fixtures.tgz::c.tar::200ccc.txt` displays as `200ccc.txt` on the left and `fixtures.tgz::c.tar` on the right; previously `c.tar::200ccc.txt` was shown unsplit on the left when the inner path contained nested `::` segments

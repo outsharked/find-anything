@@ -20,6 +20,8 @@
 	import { profile } from '$lib/profile';
 	import { parseNlpQuery } from '$lib/nlpQuery';
 	import type { NlpResult } from '$lib/nlpQuery';
+	import { parseSearchPrefixes, toServerMode, fromServerMode } from '$lib/searchPrefixes';
+	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 
 	// SvelteKit passes params to every layout/page component. Declare it to avoid
 	// the runtime "unknown prop" warning. Assigned to _params to signal that it
@@ -44,7 +46,8 @@
 	let fileView: FileViewState | null = null;
 	let searchView: SearchView;
 	let query = '';
-	let mode = 'fuzzy';
+	let scope: SearchScope = 'line';
+	let matchType: SearchMatchType = 'fuzzy';
 
 	let sources: SourceInfo[] = [];
 	let selectedSources: string[] = [];
@@ -132,7 +135,7 @@
 	// ── History ─────────────────────────────────────────────────────────────────
 
 	function captureState(): AppState {
-		return { query, mode, selectedSources, ...expandFileView(fileView) };
+		return { query, mode: toServerMode(scope, matchType), selectedSources, ...expandFileView(fileView) };
 	}
 
 	function pushState() {
@@ -160,9 +163,11 @@
 	function applyState(s: AppState) {
 		fileView = collapseFileView(s);
 		query = s.query;
-		mode = s.mode;
+		const restored = fromServerMode(s.mode);
+		scope = restored.scope;
+		matchType = restored.matchType;
 		selectedSources = s.selectedSources;
-		if (s.query) doSearch(s.query, s.mode, s.selectedSources, false);
+		if (s.query) doSearch(s.query, s.selectedSources, false);
 	}
 
 	// ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -247,7 +252,12 @@
 		if (loadingMore || noMoreResults || query.trim().length < 3) return;
 		loadingMore = true;
 		try {
-			const resp = await search({ q: nlpResult?.query ?? query, mode, sources: selectedSources, kinds: selectedKinds, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
+			const prefixResult = parseSearchPrefixes(query);
+			const effectiveScope = prefixResult.scopeOverride ?? scope;
+			const effectiveMatch = prefixResult.matchOverride ?? matchType;
+			const effectiveKindsLoad = prefixResult.kindsOverride ?? selectedKinds;
+			const serverMode = toServerMode(effectiveScope, effectiveMatch);
+			const resp = await search({ q: nlpResult?.query ?? prefixResult.query, mode: serverMode, sources: selectedSources, kinds: effectiveKindsLoad, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
 			if (resp.results.length === 0) {
 				noMoreResults = true;
 			} else {
@@ -276,7 +286,7 @@
 
 	// ── Search ──────────────────────────────────────────────────────────────────
 
-	async function doSearch(q: string, m: string, srcs: string[], push = true) {
+	async function doSearch(q: string, srcs: string[], push = true) {
 		resultsStale = false;
 		deletedPaths = new Set();
 		if (q.trim().length < 3) {
@@ -284,12 +294,20 @@
 			return;
 		}
 
+		// Parse query prefixes; prefixes override Advanced panel settings for this call.
+		const prefixResult = parseSearchPrefixes(q);
+		const effectiveScope = prefixResult.scopeOverride ?? scope;
+		const effectiveMatch = prefixResult.matchOverride ?? matchType;
+		const effectiveKinds = prefixResult.kindsOverride ?? selectedKinds;
+		const serverMode = toServerMode(effectiveScope, effectiveMatch);
+		const baseQuery = prefixResult.query;
+
 		// NLP parse: extract dates + clean stop words. Skip if user dismissed.
-		nlpResult = nlpSuppressed ? null : parseNlpQuery(q, m);
+		nlpResult = nlpSuppressed ? null : parseNlpQuery(baseQuery, serverMode);
 		// Manual date range always wins; NLP fills in when no manual range is set.
 		effectiveDateFrom = dateFromTs ?? nlpResult?.dateFrom;
 		effectiveDateTo = dateToTs ?? nlpResult?.dateTo;
-		const apiQuery = nlpResult?.query ?? q;
+		const apiQuery = nlpResult?.query ?? baseQuery;
 
 		searching = true;
 		searchError = null;
@@ -302,7 +320,7 @@
 			window.scrollTo(0, 0);
 		}
 		try {
-			const resp = await search({ q: apiQuery, mode: m, sources: srcs, kinds: selectedKinds, limit: 50, offset: 0, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
+			const resp = await search({ q: apiQuery, mode: serverMode, sources: srcs, kinds: effectiveKinds, limit: 50, offset: 0, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
 			if (mySearchId !== searchId) return;
 			results = resp.results;
 			totalResults = resp.total;
@@ -326,12 +344,11 @@
 
 	// ── Search event handlers ────────────────────────────────────────────────────
 
-	function handleSearch(e: CustomEvent<{ query: string; mode: string }>) {
+	function handleSearch(e: CustomEvent<{ query: string }>) {
 		// New query text = fresh NLP parse (clear any prior suppression).
 		if (e.detail.query !== query) nlpSuppressed = false;
 		query = e.detail.query;
-		mode = e.detail.mode;
-		doSearch(query, mode, selectedSources);
+		doSearch(query, selectedSources);
 	}
 
 	function handleClearNlpDate() {
@@ -339,19 +356,21 @@
 		nlpResult = null;
 		effectiveDateFrom = dateFromTs;
 		effectiveDateTo = dateToTs;
-		doSearch(query, mode, selectedSources);
+		doSearch(query, selectedSources);
 	}
 
-	function handleFilterChange(e: CustomEvent<{ sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean }>) {
+	function handleFilterChange(e: CustomEvent<{ sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType }>) {
 		selectedSources = e.detail.sources;
 		selectedKinds = e.detail.kinds;
 		caseSensitive = e.detail.caseSensitive;
+		scope = e.detail.scope;
+		matchType = e.detail.matchType;
 		dateFromTs = e.detail.dateFrom;
 		dateToTs = e.detail.dateTo;
 		// Keep ISO strings in sync so AdvancedSearch inputs remain controlled.
 		dateFromStr = dateFromTs != null ? new Date(dateFromTs * 1000).toISOString().slice(0, 10) : '';
 		dateToStr = dateToTs != null ? new Date(dateToTs * 1000).toISOString().slice(0, 10) : '';
-		if (query.trim()) doSearch(query, mode, selectedSources);
+		if (query.trim()) doSearch(query, selectedSources);
 	}
 
 	// ── File viewer event handlers ───────────────────────────────────────────────
@@ -481,7 +500,8 @@
 				{fileView}
 				{showTree}
 				{query}
-				{mode}
+				{scope}
+				{matchType}
 				{searching}
 				sources={sourceNames}
 				{selectedSources}
@@ -502,7 +522,8 @@
 			<SearchView
 				bind:this={searchView}
 				{query}
-				{mode}
+				{scope}
+				{matchType}
 				{searching}
 				sources={sourceNames}
 				{selectedSources}
@@ -527,7 +548,7 @@
 				on:treeToggle={handleTreeToggle}
 				{resultsStale}
 				{deletedPaths}
-				on:refreshResults={() => { doSearch(query, mode, selectedSources); }}
+				on:refreshResults={() => { doSearch(query, selectedSources); }}
 				on:dismissStale={() => { resultsStale = false; }}
 			/>
 			<div bind:this={sentinel}></div>

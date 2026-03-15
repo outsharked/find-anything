@@ -364,9 +364,25 @@ find-extract-archive <file-path> [max-size-kb] [max-depth]  → JSON array of In
 ```
 
 **IndexLine** fields:
-- `line_number` — 0 = filename/metadata; 1+ = content lines
+- `line_number` — 0 = metadata (see convention below); 1+ = content lines
 - `content` — text content of the line
 - `archive_path` — member path within archive (None for regular files)
+
+**`line_number=0` prefix convention**: every metadata row must begin with a bracketed
+tag so entries are unambiguously identifiable. The standard tags are:
+
+| Prefix | Produced by | Example |
+|--------|-------------|---------|
+| `[PATH] ` | all (scan.rs / batch.rs) | `[PATH] photos/vacation.jpg` |
+| `[EXIF:tag] ` | find-extract-media (images) | `[EXIF:Make] Canon` |
+| `[IMAGE:key] ` | find-extract-media (basic image header) | `[IMAGE:width] 1920` |
+| `[IMAGE] ` | find-extract-media (fallback) | `[IMAGE] no metadata available` |
+| `[TAG:key] ` | find-extract-media (audio tags) | `[TAG:title] Hey Jude` |
+| `[PE:key] ` | find-extract-pe | `[PE:ProductName] Notepad` |
+| `[FILE:mime] ` | find-extract-dispatch (MIME fallback) | `[FILE:mime] image/jpeg` |
+
+The `[PATH]` row is always present and is the canonical "findable by filename" entry.
+Consumers that need only the path row filter on `content LIKE '[PATH] %'`.
 
 ---
 
@@ -491,8 +507,11 @@ content is returned verbatim in the JSON response.
 
 ## Key Invariants
 
-- **`line_number = 0`** is always the file's relative path, indexed so every file is
-  findable by name even if content extraction yields nothing.
+- **`line_number = 0`** rows are metadata. Every such row carries a bracketed prefix
+  tag (`[PATH]`, `[EXIF:…]`, `[TAG:…]`, `[PE:…]`, `[IMAGE:…]`, `[FILE:mime]`) that
+  identifies its type. The `[PATH] <relative-path>` row is always present, ensuring
+  every file is findable by name even if content extraction yields nothing. Consumers
+  that need only the path row filter `content LIKE '[PATH] %'`.
 - **FTS5 index is contentless** (`content=''`); content lives only in ZIPs. FTS5 is
   populated manually by the worker at insert time. The `lines` table stores only
   `(chunk_archive, chunk_name, line_offset_in_chunk)` — no content column in SQLite.

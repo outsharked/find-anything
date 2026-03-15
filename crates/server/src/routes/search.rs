@@ -116,18 +116,51 @@ fn regex_to_fts_terms(pattern: &str) -> String {
     terms.join(" ")
 }
 
+/// Group line-level candidates by file, returning one result per file.
+/// The first occurrence per file (highest-ranked by FTS) is the representative;
+/// additional occurrences on different lines become `extra_matches`.
+fn group_by_file(
+    candidates: Vec<CandidateRow>,
+    source_name: &str,
+) -> Vec<(SearchResult, i64)> {
+    use std::collections::HashMap;
+    let mut file_order: Vec<i64> = Vec::new();
+    // (representative SearchResult, extras Vec, file_id)
+    let mut file_reps: HashMap<i64, (SearchResult, Vec<ContextLine>, i64)> = HashMap::new();
+
+    for c in candidates {
+        let file_id = c.file_id;
+        if let Some((_, extras, _)) = file_reps.get_mut(&file_id) {
+            if c.line_number > 0 {
+                extras.push(ContextLine { line_number: c.line_number, content: c.content });
+            }
+        } else {
+            file_order.push(file_id);
+            let result = make_result(source_name, &c, 0, vec![]);
+            file_reps.insert(file_id, (result, vec![], file_id));
+        }
+    }
+
+    file_order.into_iter().filter_map(|id| {
+        let (mut result, extras, file_id) = file_reps.remove(&id)?;
+        result.extra_matches = extras;
+        Some((result, file_id))
+    }).collect()
+}
+
 fn make_result(
     source: &str,
     c: &CandidateRow,
     score: u32,
     extra_matches: Vec<ContextLine>,
 ) -> SearchResult {
+    let snippet = c.content.strip_prefix("[PATH] ").map(|s| s.to_string()).unwrap_or_else(|| c.content.clone());
     SearchResult {
         source: source.to_string(),
         path: c.file_path.clone(),
         archive_path: c.archive_path.clone(),
         line_number: c.line_number,
-        snippet: c.content.clone(),
+        snippet,
         score,
         kind: c.file_kind.clone(),
         mtime: c.mtime,
@@ -173,7 +206,7 @@ pub async fn search(
 
     let data_dir = state.data_dir.clone();
     let offset = params.offset;
-    let date_filter = DateFilter { from: params.date_from, to: params.date_to, kinds: params.kinds };
+    let date_filter = DateFilter { from: params.date_from, to: params.date_to, kinds: params.kinds, filename_only: false };
     let case_sensitive = params.case_sensitive;
 
     // Only score enough candidates to fill this page plus a buffer for fuzzy
@@ -194,52 +227,106 @@ pub async fn search(
                 let conn = db::open(&db_path)?;
                 let archive_mgr = ArchiveManager::new_for_reading(data_dir);
 
-                // Document mode has its own query path (one result per file).
-                if mode == "document" {
-                    let (doc_total, candidates) = db::document_candidates(&conn, &archive_mgr, &query, scoring_limit, date_filter, case_sensitive)?;
-                    let mut scorer = FuzzyScorer::new(&query, case_sensitive);
-                    let result_pairs: Vec<(SearchResult, i64)> = candidates
-                        .into_iter()
-                        .map(|(rep, extras)| {
-                            let file_id = rep.file_id;
-                            let score = scorer.score(&rep.content).unwrap_or(0);
-                            let extra_matches = extras.into_iter()
-                                .map(|e| ContextLine { line_number: e.line_number, content: e.content })
-                                .collect();
-                            (make_result(&source_name, &rep, score, extra_matches), file_id)
-                        })
-                        .collect();
-                    let canonical_ids: Vec<i64> = result_pairs.iter().map(|(_, id)| *id).collect();
-                    let aliases_map = db::fetch_aliases_for_canonical_ids(&conn, &canonical_ids)?;
-                    let results: Vec<SearchResult> = result_pairs
-                        .into_iter()
-                        .map(|(mut r, id)| {
-                            if let Some(aliases) = aliases_map.get(&id) { r.aliases = aliases.clone(); }
-                            r
-                        })
-                        .collect();
-                    return Ok((doc_total, results));
+                // Document-family modes: one result per file.
+                match mode.as_str() {
+                    "document" => {
+                        let (doc_total, candidates) = db::document_candidates(&conn, &archive_mgr, &query, scoring_limit, date_filter, case_sensitive)?;
+                        let mut scorer = FuzzyScorer::new(&query, case_sensitive);
+                        let result_pairs: Vec<(SearchResult, i64)> = candidates
+                            .into_iter()
+                            .map(|(rep, extras)| {
+                                let file_id = rep.file_id;
+                                let score = scorer.score(&rep.content).unwrap_or(0);
+                                let extra_matches = extras.into_iter()
+                                    .map(|e| ContextLine { line_number: e.line_number, content: e.content })
+                                    .collect();
+                                (make_result(&source_name, &rep, score, extra_matches), file_id)
+                            })
+                            .collect();
+                        let canonical_ids: Vec<i64> = result_pairs.iter().map(|(_, id)| *id).collect();
+                        let aliases_map = db::fetch_aliases_for_canonical_ids(&conn, &canonical_ids)?;
+                        let results: Vec<SearchResult> = result_pairs
+                            .into_iter()
+                            .map(|(mut r, id)| {
+                                if let Some(aliases) = aliases_map.get(&id) { r.aliases = aliases.clone(); }
+                                r
+                            })
+                            .collect();
+                        return Ok((doc_total, results));
+                    }
+                    "doc-exact" => {
+                        // Phrase FTS pre-filter → fts_candidates → group by file → exact post-filter.
+                        let candidates = db::fts_candidates(&conn, &archive_mgr, &query, scoring_limit, true, date_filter)?;
+                        let filtered: Vec<CandidateRow> = candidates.into_iter()
+                            .filter(|c| if case_sensitive { c.content.contains(query.as_str()) } else { c.content.to_lowercase().contains(&query.to_lowercase()) })
+                            .collect();
+                        let source_total = filtered.len();
+                        let result_pairs = group_by_file(filtered, &source_name);
+                        let canonical_ids: Vec<i64> = result_pairs.iter().map(|(_, id)| *id).collect();
+                        let aliases_map = db::fetch_aliases_for_canonical_ids(&conn, &canonical_ids)?;
+                        let results: Vec<SearchResult> = result_pairs
+                            .into_iter()
+                            .map(|(mut r, id)| {
+                                if let Some(aliases) = aliases_map.get(&id) { r.aliases = aliases.clone(); }
+                                r
+                            })
+                            .collect();
+                        return Ok((source_total, results));
+                    }
+                    "doc-regex" => {
+                        // Literal fragments FTS pre-filter → fts_candidates → group by file → regex post-filter.
+                        let fts_terms = regex_to_fts_terms(&query);
+                        let re = regex::RegexBuilder::new(&query).case_insensitive(!case_sensitive).build()?;
+                        let candidates = db::fts_candidates(&conn, &archive_mgr, &fts_terms, scoring_limit, false, date_filter)?;
+                        let filtered: Vec<CandidateRow> = candidates.into_iter()
+                            .filter(|c| re.is_match(&c.content))
+                            .collect();
+                        let source_total = filtered.len();
+                        let result_pairs = group_by_file(filtered, &source_name);
+                        let canonical_ids: Vec<i64> = result_pairs.iter().map(|(_, id)| *id).collect();
+                        let aliases_map = db::fetch_aliases_for_canonical_ids(&conn, &canonical_ids)?;
+                        let results: Vec<SearchResult> = result_pairs
+                            .into_iter()
+                            .map(|(mut r, id)| {
+                                if let Some(aliases) = aliases_map.get(&id) { r.aliases = aliases.clone(); }
+                                r
+                            })
+                            .collect();
+                        return Ok((source_total, results));
+                    }
+                    _ => {}
                 }
+
+                // Line-family and file-family modes.
+                // file-* modes restrict matches to line_number = 0 (filename rows).
+                let filename_only = mode.starts_with("file-");
+                let date_filter = DateFilter { filename_only, ..date_filter };
 
                 // For regex mode, extract literal character sequences from the pattern
                 // for FTS5 pre-filtering, then apply the full regex as a post-filter.
                 // For exact mode, treat the whole query as a phrase (literal substring).
                 // For fuzzy mode, AND individual words.
                 let (fts_phrase, fts_query) = match mode.as_str() {
-                    "fuzzy" => (false, query.clone()),
-                    "regex" => (false, regex_to_fts_terms(&query)),
-                    _ /* "exact" */ => (true, query.clone()),
+                    "fuzzy" | "file-fuzzy" => (false, query.clone()),
+                    "regex" | "file-regex" => (false, regex_to_fts_terms(&query)),
+                    _ /* "exact" | "file-exact" */ => (true, query.clone()),
                 };
 
                 // Fast count via FTS5 only — no ZIP reads, no JOINs.
                 let source_total = db::fts_count(&conn, &fts_query, fts_limit, fts_phrase, date_filter.clone())?;
 
                 // Score only as many candidates as needed for this page.
-                let candidates = db::fts_candidates(&conn, &archive_mgr, &fts_query, scoring_limit, fts_phrase, date_filter)?;
+                let mut candidates = db::fts_candidates(&conn, &archive_mgr, &fts_query, scoring_limit, fts_phrase, date_filter)?;
+
+                // For file-* modes, remove any line_number=0 rows that are not path lines
+                // (e.g. EXIF, audio tags, PE metadata). Content is available after ZIP reads.
+                if filename_only {
+                    candidates.retain(|c| c.content.starts_with("[PATH] "));
+                }
 
                 // Build (SearchResult, file_id) pairs for alias lookup.
                 let result_pairs: Vec<(SearchResult, i64)> = match mode.as_str() {
-                    "exact" => {
+                    "exact" | "file-exact" => {
                         // FTS5 trigram is case-insensitive pre-filter; for case-sensitive mode
                         // add a post-filter to discard candidates that don't literally contain the query.
                         candidates.into_iter()
@@ -247,14 +334,14 @@ pub async fn search(
                             .map(|c| (make_result(&source_name, &c, 0, vec![]), c.file_id))
                             .collect()
                     }
-                    "regex" => {
+                    "regex" | "file-regex" => {
                         let re = regex::RegexBuilder::new(&query).case_insensitive(!case_sensitive).build()?;
                         candidates.into_iter()
                             .filter(|c| re.is_match(&c.content))
                             .map(|c| (make_result(&source_name, &c, 0, vec![]), c.file_id))
                             .collect()
                     }
-                    _ /* "fuzzy" */ => {
+                    _ /* "fuzzy" | "file-fuzzy" */ => {
                         let query_terms: Vec<&str> = if case_sensitive {
                             query.split_whitespace().collect()
                         } else {

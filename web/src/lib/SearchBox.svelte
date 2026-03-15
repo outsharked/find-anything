@@ -2,13 +2,12 @@
 	import { createEventDispatcher } from 'svelte';
 
 	export let query = '';
-	export let mode = 'fuzzy';
 	export let searching = false;
 	export let isTyping = false;
 	export let nlpHighlightSpan: [number, number] | undefined = undefined;
 
 	const dispatch = createEventDispatcher<{
-		change: { query: string; mode: string };
+		change: { query: string };
 	}>();
 
 	let debounceTimer: ReturnType<typeof setTimeout>;
@@ -18,20 +17,15 @@
 		clearTimeout(debounceTimer);
 		debounceTimer = setTimeout(() => {
 			isTyping = false;
-			dispatch('change', { query, mode });
+			dispatch('change', { query });
 		}, 500);
-	}
-
-	function handleModeChange() {
-		isTyping = false;
-		dispatch('change', { query, mode });
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') {
 			clearTimeout(debounceTimer);
 			isTyping = false;
-			dispatch('change', { query, mode });
+			dispatch('change', { query });
 		}
 	}
 
@@ -39,7 +33,7 @@
 		query = '';
 		isTyping = false;
 		clearTimeout(debounceTimer);
-		dispatch('change', { query: '', mode });
+		dispatch('change', { query: '' });
 		inputEl?.focus();
 	}
 
@@ -67,12 +61,6 @@
 </script>
 
 <div class="search-box">
-	<select bind:value={mode} on:change={handleModeChange} class="mode-select">
-		<option value="fuzzy">Fuzzy</option>
-		<option value="document">Document</option>
-		<option value="exact">Exact</option>
-		<option value="regex">Regex</option>
-	</select>
 	<div class="input-wrap">
 		{#if nlpHighlightSpan}
 			<div class="backdrop" bind:this={backdropEl} aria-hidden="true">{hlBefore}<span class="date-hl">{hlMiddle}</span>{hlAfter}</div>
@@ -165,20 +153,6 @@
 	.date-hl {
 		background: color-mix(in srgb, #3fb950 30%, transparent);
 		border-radius: 2px;
-	}
-
-	.mode-select {
-		padding: 8px 10px;
-		background: var(--bg-hover);
-		border: none;
-		border-right: 1px solid var(--border);
-		color: var(--text-muted);
-		cursor: pointer;
-		outline: none;
-	}
-
-	.mode-select:hover {
-		color: var(--text);
 	}
 
 	.spinner {

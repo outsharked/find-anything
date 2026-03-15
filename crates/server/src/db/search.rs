@@ -8,13 +8,16 @@ use crate::archive::ArchiveManager;
 use super::read_chunk_lines;
 use super::split_composite_path;
 
-/// Combined search filter: optional date range (mtime) and optional kind allowlist.
+/// Combined search filter: optional date range (mtime), optional kind allowlist,
+/// and optional filename-only restriction.
 #[derive(Debug, Clone, Default)]
 pub struct DateFilter {
     pub from: Option<i64>,
     pub to: Option<i64>,
     /// Allowlist of `files.kind` values (e.g. "pdf", "image"). Empty = any kind.
     pub kinds: Vec<String>,
+    /// When true, restrict matches to line_number = 0 (filename-only search).
+    pub filename_only: bool,
 }
 
 impl DateFilter {
@@ -81,12 +84,12 @@ pub(crate) fn build_fts_query(query: &str, phrase: bool) -> Option<String> {
 }
 
 /// Count FTS5 matches, capped at `limit`.
-/// When `date` is active, adds a JOIN to `files` and filters by mtime (slower but bounded).
+/// When `date` is active or `filename_only` is set, adds JOINs and WHERE clauses.
 pub fn fts_count(conn: &Connection, query: &str, limit: usize, phrase: bool, date: DateFilter) -> Result<usize> {
     let Some(fts_query) = build_fts_query(query, phrase) else {
         return Ok(0);
     };
-    if !date.is_active() {
+    if !date.is_active() && !date.filename_only {
         // Fast path: pure FTS5, no ZIP reads, no JOINs.
         let count: i64 = conn.query_row(
             "SELECT count(*) FROM (SELECT 1 FROM lines_fts WHERE lines_fts MATCH ?1 LIMIT ?2)",
@@ -95,10 +98,11 @@ pub fn fts_count(conn: &Connection, query: &str, limit: usize, phrase: bool, dat
         )?;
         return Ok(count as usize);
     }
-    // Date/kind filter active: need JOIN to files.
+    // Date/kind/filename filter active: need JOIN to lines and files.
     let from = date.from.unwrap_or(i64::MIN);
     let to = date.to.unwrap_or(i64::MAX);
     let kind_clause = kind_in_clause(date.kinds.len(), 5);
+    let filename_clause = if date.filename_only { "AND l.line_number = 0" } else { "" };
     let sql = format!(
         "SELECT count(*) FROM (
              SELECT 1
@@ -108,6 +112,7 @@ pub fn fts_count(conn: &Connection, query: &str, limit: usize, phrase: bool, dat
              WHERE lines_fts MATCH ?1
                AND f.mtime BETWEEN ?3 AND ?4
                {kind_clause}
+               {filename_clause}
              LIMIT ?2
          )"
     );
@@ -167,7 +172,9 @@ pub fn fts_candidates(
         })
     };
 
-    let raw: Vec<RawRow> = if date.is_active() {
+    let filename_clause = if date.filename_only { "AND l.line_number = 0" } else { "" };
+
+    let raw: Vec<RawRow> = if date.is_active() || date.filename_only {
         let from = date.from.unwrap_or(i64::MIN);
         let to = date.to.unwrap_or(i64::MAX);
         let kind_clause = kind_in_clause(date.kinds.len(), 5);
@@ -181,6 +188,7 @@ pub fn fts_candidates(
              WHERE lines_fts MATCH ?1
                AND f.mtime BETWEEN ?3 AND ?4
                {kind_clause}
+               {filename_clause}
              LIMIT ?2"
         );
         let mut dyn_params: Vec<Box<dyn rusqlite::ToSql>> = vec![

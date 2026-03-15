@@ -8,11 +8,13 @@
 	import DirListing from '$lib/DirListing.svelte';
 	import type { LineSelection } from '$lib/lineSelection';
 	import type { FileViewState } from '$lib/appState';
+	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 
 	export let fileView: FileViewState;
 	export let showTree: boolean;
 	export let query: string;
-	export let mode: string;
+	export let scope: SearchScope = 'line';
+	export let matchType: SearchMatchType = 'fuzzy';
 	export let searching: boolean;
 	export let sources: string[];
 	export let selectedSources: string[];
@@ -23,8 +25,8 @@
 
 	const dispatch = createEventDispatcher<{
 		back: void;
-		search: { query: string; mode: string };
-		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean };
+		search: { query: string };
+		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
 		treeToggle: void;
 		openFileFromTree: { source: string; path: string; kind: string; archivePath?: string; showAsDirectory?: boolean };
 		openDirFile: { source: string; path: string; kind: string; archivePath?: string };
@@ -49,10 +51,9 @@
 	<div class="search-wrap">
 		<SearchBox
 			{query}
-			{mode}
 			{searching}
 			bind:isTyping
-			on:change={(e) => dispatch('search', e.detail)}
+			on:change={(e) => dispatch('search', { query: e.detail.query })}
 		/>
 	</div>
 	{#if sources.length > 0}
@@ -63,6 +64,8 @@
 			{dateFrom}
 			{dateTo}
 			{caseSensitive}
+			{scope}
+			{matchType}
 			on:change={(e) => dispatch('filterChange', e.detail)}
 		/>
 	{/if}
