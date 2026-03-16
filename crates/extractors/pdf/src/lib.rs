@@ -171,4 +171,25 @@ mod tests {
             "unencrypted PDF must not produce 'Content encrypted'"
         );
     }
+
+    /// A malformed PDF (valid header, corrupt body) must not panic and must return Ok.
+    ///
+    /// This exercises the `catch_unwind` safety net in `extract_from_bytes` that
+    /// guards against panics in `pdf-extract` when parsing corrupt Type1 font data
+    /// or other malformed structures. The result may be an empty Vec or any content —
+    /// what matters is that the function returns `Ok(_)` rather than panicking.
+    #[test]
+    fn malformed_pdf_does_not_panic() {
+        // A PDF header followed by garbage — triggers the error/panic-handling path.
+        let malformed = b"%PDF-1.4\n% malformed content that will confuse the parser\n\
+                          1 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+                          /Encoding << /Type /Encoding /Differences [ 0 /A.notdef ] >> >> endobj\n\
+                          xref\n0 0\ntrailer << /Root 999 0 R >>\n%%EOF";
+        let result = extract_from_bytes(malformed, "malformed.pdf", &test_cfg());
+        assert!(
+            result.is_ok(),
+            "malformed PDF must not panic or return Err: {:?}",
+            result
+        );
+    }
 }
