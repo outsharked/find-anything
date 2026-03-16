@@ -1,11 +1,7 @@
 [tools]
 node = "24"
+pnpm = "10.29.3"
 "cargo:cargo-watch" = "latest"
-
-[hooks]
-# Enable corepack after mise installs node
-# The pnpm version is managed by package.json's packageManager field
-postinstall = "corepack enable"
 
 [settings]
 experimental = true # Enables hook support

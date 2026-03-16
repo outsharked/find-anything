@@ -28,11 +28,10 @@ This document tracks the development roadmap for find-anything, from completed f
 - Live fuzzy search with syntax highlighting
 - File preview and context display
 - Source filtering
-- Development tooling (mise, pnpm, corepack)
+- Development tooling (mise manages node + pnpm versions, cargo-watch)
 
 ### ✅ Advanced Features (v0.4)
 
-- **Resource base URLs** — Hyperlinkable search results (file://, http://, smb://)
 - **Smart context retrieval** — File-type-aware context (metadata for images/audio, paragraph extracts for PDFs)
 
 ### ✅ ZIP Content Storage & Async Indexing (v0.1.1)
