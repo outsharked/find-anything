@@ -8,7 +8,7 @@
 | Phase 2 | ✅ Complete | Route handler test harness (extend existing `TestServer` in `tests/helpers/`) |
 | Phase 3 | ✅ Complete | Worker pipeline (`request.rs`, `pipeline.rs`, `archive_batch.rs`) |
 | Phase 4 | ✅ Complete | TypeScript/component layer (`ResultList` dedup, `FuzzyScorer`) |
-| Phase 5 | ⬜ Not started | Upload TUS, PDF panic-path, external formatter, compaction |
+| Phase 5 | ✅ Complete | Upload TUS, PDF panic-path, external formatter, compaction, lineSelection.ts |
 
 ---
 
