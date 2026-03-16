@@ -116,6 +116,16 @@ is the existing fallback for all text/code types and has no dedicated
 single-purpose library. (`dispatch_from_bytes` is infallible but requires
 pre-read content; `dispatch_from_path` is the path-based API.)
 
+`dispatch_from_path` internally checks whether any specialist extractor (html,
+media, office, pdf, etc.) claims the file. This is safe because the resolver's
+ordering ensures no specialist-claimed extension ever reaches `InlineKind::Text`
+— html, media, office, pdf, and archive are all matched earlier in resolution
+order.
+
+`extract_inline` is synchronous. CPU-bound extraction called directly from the
+async `process_file()` will block the Tokio executor thread. This is an accepted
+trade-off for this change; `spawn_blocking` wrapping is out of scope.
+
 ### process_file() Dispatch (scan.rs)
 
 The existing three-way match becomes a five-arm match on `ExtractorRoute`:
