@@ -6,7 +6,7 @@
 |-------|--------|-------------|
 | Phase 1 | ✅ Complete | CI vitest, archive write-path, `process_file_phase1`, `fts_candidates`/`fts_count` SQL tests |
 | Phase 2 | ✅ Complete | Route handler test harness (extend existing `TestServer` in `tests/helpers/`) |
-| Phase 3 | ⬜ Not started | Worker pipeline (`request.rs`, `pipeline.rs`, `archive_batch.rs`) |
+| Phase 3 | ✅ Complete | Worker pipeline (`request.rs`, `pipeline.rs`, `archive_batch.rs`) |
 | Phase 4 | ⬜ Not started | TypeScript/component layer (`ResultList` dedup, `FuzzyScorer`) |
 | Phase 5 | ⬜ Not started | Upload TUS, PDF panic-path, external formatter, compaction |
 
