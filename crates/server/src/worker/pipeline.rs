@@ -264,3 +264,160 @@ pub(super) fn outer_archive_stub(file: &IndexFile) -> IndexFile {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use find_common::api::IndexLine;
+    use rusqlite::Connection;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(include_str!("../schema_v2.sql")).unwrap();
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS pending_chunk_removes;
+             CREATE TABLE IF NOT EXISTS activity_log (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 occurred_at INTEGER NOT NULL,
+                 action      TEXT    NOT NULL,
+                 path        TEXT    NOT NULL,
+                 new_path    TEXT
+             );",
+        ).unwrap();
+        crate::db::register_scalar_functions(&conn).unwrap();
+        conn
+    }
+
+    fn make_file(path: &str, mtime: i64, content: &str) -> IndexFile {
+        IndexFile {
+            path: path.to_string(),
+            mtime,
+            size: Some(content.len() as i64),
+            kind: "text".to_string(),
+            scanner_version: 1,
+            lines: vec![
+                IndexLine { archive_path: None, line_number: 0, content: path.to_string() },
+                IndexLine { archive_path: None, line_number: 1, content: content.to_string() },
+            ],
+            extract_ms: None,
+            content_hash: None,
+            is_new: true,
+        }
+    }
+
+    fn stored_mtime(conn: &Connection, path: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT mtime FROM files WHERE path = ?1",
+            rusqlite::params![path],
+            |r| r.get(0),
+        ).ok()
+    }
+
+    fn line_count(conn: &Connection, path: &str) -> usize {
+        let file_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            rusqlite::params![path],
+            |r| r.get(0),
+        ).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM lines WHERE file_id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get::<_, i64>(0),
+        ).unwrap() as usize
+    }
+
+    #[test]
+    fn new_file_returns_new_outcome() {
+        let mut conn = test_conn();
+        let file = make_file("docs/readme.txt", 1000, "hello world");
+        let outcome = process_file_phase1(&mut conn, &file, 0).unwrap();
+        assert!(matches!(outcome, Phase1Outcome::New));
+        assert_eq!(stored_mtime(&conn, "docs/readme.txt"), Some(1000));
+        assert_eq!(line_count(&conn, "docs/readme.txt"), 2); // line 0 + line 1
+    }
+
+    #[test]
+    fn re_index_newer_mtime_returns_modified() {
+        let mut conn = test_conn();
+        process_file_phase1(&mut conn, &make_file("readme.txt", 1000, "v1"), 0).unwrap();
+        let outcome = process_file_phase1(&mut conn, &make_file("readme.txt", 2000, "v2"), 0).unwrap();
+        assert!(matches!(outcome, Phase1Outcome::Modified));
+        assert_eq!(stored_mtime(&conn, "readme.txt"), Some(2000));
+    }
+
+    #[test]
+    fn stale_mtime_is_skipped() {
+        let mut conn = test_conn();
+        process_file_phase1(&mut conn, &make_file("readme.txt", 2000, "current"), 0).unwrap();
+        let outcome = process_file_phase1(&mut conn, &make_file("readme.txt", 1000, "stale"), 0).unwrap();
+        assert!(matches!(outcome, Phase1Outcome::Skipped));
+        assert_eq!(stored_mtime(&conn, "readme.txt"), Some(2000));
+    }
+
+    #[test]
+    fn content_hash_dedup_registers_alias() {
+        let mut conn = test_conn();
+
+        let mut file_a = make_file("original.txt", 1000, "shared content");
+        file_a.content_hash = Some("abc123".to_string());
+        let outcome_a = process_file_phase1(&mut conn, &file_a, 0).unwrap();
+        assert!(matches!(outcome_a, Phase1Outcome::New));
+
+        let canonical_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = 'original.txt'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+
+        let mut file_b = make_file("duplicate.txt", 1100, "shared content");
+        file_b.content_hash = Some("abc123".to_string());
+        let outcome_b = process_file_phase1(&mut conn, &file_b, 0).unwrap();
+        assert!(matches!(outcome_b, Phase1Outcome::New));
+
+        let alias_canonical: Option<i64> = conn.query_row(
+            "SELECT canonical_file_id FROM files WHERE path = 'duplicate.txt'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(alias_canonical, Some(canonical_id));
+    }
+
+    #[test]
+    fn inline_storage_used_when_below_threshold() {
+        let mut conn = test_conn();
+        process_file_phase1(&mut conn, &make_file("small.txt", 1000, "tiny"), 10_000).unwrap();
+
+        let file_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = 'small.txt'", [], |r| r.get(0),
+        ).unwrap();
+        let inline: Option<String> = conn.query_row(
+            "SELECT content FROM file_content WHERE file_id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        ).ok();
+        assert!(inline.is_some(), "small file should be stored inline");
+    }
+
+    #[test]
+    fn deferred_storage_when_threshold_zero() {
+        let mut conn = test_conn();
+        process_file_phase1(&mut conn, &make_file("big.txt", 1000, "some content"), 0).unwrap();
+
+        let file_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = 'big.txt'", [], |r| r.get(0),
+        ).unwrap();
+        let inline: Option<String> = conn.query_row(
+            "SELECT content FROM file_content WHERE file_id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        ).ok();
+        assert!(inline.is_none(), "deferred file should not be stored inline");
+
+        let null_chunk_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM lines WHERE file_id = ?1 AND chunk_archive IS NULL",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(null_chunk_count, 2);
+    }
+}

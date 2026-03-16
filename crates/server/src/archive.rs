@@ -526,12 +526,105 @@ pub fn chunk_lines(file_id: i64, file_path: &str, lines: &[(usize, String)]) -> 
 mod tests {
     use super::*;
 
+    fn make_state(dir: &std::path::Path) -> Arc<SharedArchiveState> {
+        SharedArchiveState::new(dir.to_path_buf()).unwrap()
+    }
+
+    fn make_chunk(file_id: i64, chunk_number: usize, content: &str) -> Chunk {
+        Chunk {
+            file_id,
+            file_path: format!("test/file_{file_id}.txt"),
+            chunk_number,
+            content: content.to_string(),
+        }
+    }
+
     #[test]
-    fn test_subfolder_calculation() {
-        assert_eq!(0 / 1000, 0);
-        assert_eq!(999 / 1000, 0);
-        assert_eq!(1000 / 1000, 1);
-        assert_eq!(12345 / 1000, 12);
+    fn archive_path_for_number_correct_subfolders() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path());
+
+        let p = state.archive_path_for_number(0);
+        assert!(p.ends_with("content/0000/content_00000.zip"), "{}", p.display());
+
+        let p = state.archive_path_for_number(999);
+        assert!(p.ends_with("content/0000/content_00999.zip"), "{}", p.display());
+
+        let p = state.archive_path_for_number(1000);
+        assert!(p.ends_with("content/0001/content_01000.zip"), "{}", p.display());
+
+        let p = state.archive_path_for_number(12345);
+        assert!(p.ends_with("content/0012/content_12345.zip"), "{}", p.display());
+    }
+
+    #[test]
+    fn append_then_read_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path());
+        let mut mgr = ArchiveManager::new(Arc::clone(&state));
+
+        let refs = mgr.append_chunks(vec![
+            make_chunk(1, 0, "hello world\nline 2"),
+            make_chunk(2, 0, "another file"),
+        ]).unwrap();
+
+        assert_eq!(refs.len(), 2);
+        assert_eq!(mgr.read_chunk(&refs[0]).unwrap(), "hello world\nline 2");
+        assert_eq!(mgr.read_chunk(&refs[1]).unwrap(), "another file");
+    }
+
+    #[test]
+    fn remove_chunks_deletes_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path());
+        let mut mgr = ArchiveManager::new(Arc::clone(&state));
+
+        let refs = mgr.append_chunks(vec![
+            make_chunk(1, 0, "keep me"),
+            make_chunk(2, 0, "delete me"),
+        ]).unwrap();
+
+        mgr.remove_chunks(vec![refs[1].clone()]).unwrap();
+
+        // First chunk still readable via a fresh reader.
+        let reader = ArchiveManager::new_for_reading(dir.path().to_path_buf());
+        assert_eq!(reader.read_chunk(&refs[0]).unwrap(), "keep me");
+        assert!(reader.read_chunk(&refs[1]).is_err(), "removed chunk should not be readable");
+    }
+
+    #[test]
+    fn rewrite_preserves_other_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path());
+        let mut mgr = ArchiveManager::new(Arc::clone(&state));
+
+        let refs = mgr.append_chunks(vec![
+            make_chunk(10, 0, "alpha"),
+            make_chunk(20, 0, "beta"),
+            make_chunk(30, 0, "gamma"),
+        ]).unwrap();
+
+        mgr.remove_chunks(vec![refs[1].clone()]).unwrap();
+
+        let reader = ArchiveManager::new_for_reading(dir.path().to_path_buf());
+        assert_eq!(reader.read_chunk(&refs[0]).unwrap(), "alpha");
+        assert_eq!(reader.read_chunk(&refs[2]).unwrap(), "gamma");
+        assert!(reader.read_chunk(&refs[1]).is_err());
+    }
+
+    #[test]
+    fn stale_chunk_append_is_idempotent() {
+        // Appending the same entry name twice (e.g. after a crash/retry) should
+        // succeed: the stale entry is removed first and the new content wins.
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path());
+        let mut mgr = ArchiveManager::new(Arc::clone(&state));
+
+        mgr.append_chunks(vec![make_chunk(1, 0, "original")]).unwrap();
+        let refs = mgr.append_chunks(vec![make_chunk(1, 0, "updated")]).unwrap();
+
+        // Both chunk refs point to the same name; the updated content must win.
+        assert_eq!(mgr.read_chunk(&refs[0]).unwrap(), "updated");
     }
 
     #[test]

@@ -546,6 +546,185 @@ pub fn fetch_aliases_for_canonical_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::archive::ArchiveManager;
+    use rusqlite::Connection;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(include_str!("../schema_v2.sql")).unwrap();
+        conn.execute_batch("DROP TABLE IF EXISTS pending_chunk_removes;").unwrap();
+        crate::db::register_scalar_functions(&conn).unwrap();
+        conn
+    }
+
+    /// Insert a file with inline content and FTS entries. Returns the file_id.
+    /// `lines` is `(line_number, content)` pairs in order; the position in the
+    /// slice is used as `line_offset_in_chunk` for the inline path.
+    fn insert_inline_file(conn: &Connection, path: &str, mtime: i64, kind: &str, lines: &[(usize, &str)]) -> i64 {
+        conn.execute(
+            "INSERT INTO files (path, mtime, kind) VALUES (?1, ?2, ?3)",
+            rusqlite::params![path, mtime, kind],
+        ).unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        let content: String = lines.iter().map(|(_, c)| *c).collect::<Vec<_>>().join("\n");
+        conn.execute(
+            "INSERT INTO file_content (file_id, content) VALUES (?1, ?2)",
+            rusqlite::params![file_id, content],
+        ).unwrap();
+
+        for (offset, (line_number, line_content)) in lines.iter().enumerate() {
+            let line_id: i64 = conn.query_row(
+                "INSERT INTO lines (file_id, line_number, line_offset_in_chunk)
+                 VALUES (?1, ?2, ?3) RETURNING id",
+                rusqlite::params![file_id, *line_number as i64, offset as i64],
+                |r| r.get(0),
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
+                rusqlite::params![line_id, line_content],
+            ).unwrap();
+        }
+
+        file_id
+    }
+
+    fn dummy_mgr() -> (tempfile::TempDir, ArchiveManager) {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ArchiveManager::new_for_reading(dir.path().to_path_buf());
+        (dir, mgr)
+    }
+
+    // ── fts_candidates SQL tests ─────────────────────────────────────────────
+
+    #[test]
+    fn fts_candidates_finds_matching_content() {
+        let conn = test_conn();
+        let (_dir, mgr) = dummy_mgr();
+
+        insert_inline_file(&conn, "docs/readme.txt", 1000, "text", &[
+            (0, "[PATH] docs/readme.txt"),
+            (1, "hello world information here"),
+        ]);
+        insert_inline_file(&conn, "docs/other.txt", 1000, "text", &[
+            (0, "[PATH] docs/other.txt"),
+            (1, "unrelated content"),
+        ]);
+
+        let results = fts_candidates(&conn, &mgr, "hello world", 100, false, DateFilter::default()).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_path, "docs/readme.txt");
+        assert_eq!(results[0].line_number, 1);
+        assert!(results[0].content.contains("hello"));
+    }
+
+    #[test]
+    fn fts_candidates_no_match_returns_empty() {
+        let conn = test_conn();
+        let (_dir, mgr) = dummy_mgr();
+
+        insert_inline_file(&conn, "file.txt", 1000, "text", &[
+            (0, "[PATH] file.txt"),
+            (1, "some content here"),
+        ]);
+
+        let results = fts_candidates(&conn, &mgr, "xyznonexistent", 100, false, DateFilter::default()).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn fts_count_matches_candidate_count() {
+        let conn = test_conn();
+        let (_dir, mgr) = dummy_mgr();
+
+        insert_inline_file(&conn, "a.txt", 1000, "text", &[
+            (0, "[PATH] a.txt"),
+            (1, "searchable term here"),
+        ]);
+        insert_inline_file(&conn, "b.txt", 1000, "text", &[
+            (0, "[PATH] b.txt"),
+            (1, "searchable term there"),
+        ]);
+
+        let count = fts_count(&conn, "searchable term", 100, false, DateFilter::default()).unwrap();
+        let candidates = fts_candidates(&conn, &mgr, "searchable term", 100, false, DateFilter::default()).unwrap();
+        assert_eq!(count, candidates.len());
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn fts_candidates_date_filter_restricts_by_mtime() {
+        let conn = test_conn();
+        let (_dir, mgr) = dummy_mgr();
+
+        insert_inline_file(&conn, "old.txt", 100, "text", &[
+            (0, "[PATH] old.txt"),
+            (1, "matching content here"),
+        ]);
+        insert_inline_file(&conn, "new.txt", 9000, "text", &[
+            (0, "[PATH] new.txt"),
+            (1, "matching content here"),
+        ]);
+
+        let filter = DateFilter { from: Some(5000), to: Some(i64::MAX), ..Default::default() };
+        let results = fts_candidates(&conn, &mgr, "matching content", 100, false, filter).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_path, "new.txt");
+    }
+
+    #[test]
+    fn fts_candidates_kind_filter() {
+        let conn = test_conn();
+        let (_dir, mgr) = dummy_mgr();
+
+        insert_inline_file(&conn, "doc.pdf", 1000, "pdf", &[
+            (0, "[PATH] doc.pdf"),
+            (1, "common search term"),
+        ]);
+        insert_inline_file(&conn, "note.txt", 1000, "text", &[
+            (0, "[PATH] note.txt"),
+            (1, "common search term"),
+        ]);
+
+        let filter = DateFilter { kinds: vec!["pdf".to_string()], ..Default::default() };
+        let results = fts_candidates(&conn, &mgr, "common search", 100, false, filter).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_kind, "pdf");
+    }
+
+    #[test]
+    fn fts_candidates_filename_only_restricts_to_line_zero() {
+        let conn = test_conn();
+        let (_dir, mgr) = dummy_mgr();
+
+        insert_inline_file(&conn, "docs/needle.txt", 1000, "text", &[
+            (0, "[PATH] docs/needle.txt"),
+            (1, "content that also has needle"),
+        ]);
+
+        let filter = DateFilter { filename_only: true, ..Default::default() };
+        let results = fts_candidates(&conn, &mgr, "needle", 100, false, filter).unwrap();
+        // filename_only=true restricts to line_number=0; the content line is excluded.
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].line_number, 0);
+    }
+
+    #[test]
+    fn fts_candidates_respects_limit() {
+        let conn = test_conn();
+        let (_dir, mgr) = dummy_mgr();
+
+        for i in 0..10i64 {
+            insert_inline_file(&conn, &format!("file_{i}.txt"), 1000 + i, "text", &[
+                (0, &format!("[PATH] file_{i}.txt")),
+                (1, "common content term here"),
+            ]);
+        }
+
+        let results = fts_candidates(&conn, &mgr, "common content", 3, false, DateFilter::default()).unwrap();
+        assert_eq!(results.len(), 3);
+    }
 
     // ── build_fts_query ──────────────────────────────────────────────────────
 

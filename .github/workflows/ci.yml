@@ -87,6 +87,10 @@ jobs:
         run: pnpm run check
         working-directory: web
 
+      - name: Test
+        run: pnpm test --run
+        working-directory: web
+
       - name: Build
         run: pnpm run build
         working-directory: web
