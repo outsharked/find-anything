@@ -152,6 +152,58 @@ RBAC is planned for a future release.
 
 ---
 
+### ✅ Content Deduplication & Storage Improvements
+
+- **Hash-based deduplication** (plan 033) — files with identical content share a single set of chunks; duplicates indexed under their own path but linked to the canonical file via `canonical_file_id`; search results show a `+N duplicates` badge and expand to reveal all aliases
+- **Directory rename support** (plan 052) — `POST /api/v1/bulk` `rename_paths` field atomically renames files in SQLite without touching ZIP archives; `find-scan` detects directory-level renames via a path-prefix match and submits them as `rename_paths` rather than delete+re-index; reduces re-indexing work on large directory moves
+- **Deferred archive writer** (plan 053) — archive chunk writes are batched and committed to ZIP in a single pass rather than one entry at a time; reduces ZIP open/close churn during large inbox flushes
+- **Automatic daily compaction** (plan 050) — server runs a wasted-space scan 30 s after startup and then daily at `compaction.start_time` (default `02:00`); rewrites ZIP archives to remove orphaned chunks; only runs when orphaned bytes ≥ `compaction.threshold_pct` (default 10 %)
+
+---
+
+### ✅ Search Enhancements
+
+- **Date range search** (plan 043) — `date_from` / `date_to` query params filter results by file mtime; exposed as "Date modified" pickers in the Advanced Search panel
+- **Natural language date parsing** (plan 044) — queries like `"last week"`, `"since march"`, `"before 2024"` are detected and converted to mtime bounds client-side before the search is submitted; matched phrases highlighted inline in the search box
+- **Search prefix shortcuts** (plan 066) — query prefixes parsed client-side: `file:` (filename search), `doc:`/`document:` (document search), `exact:` (exact match), `regex:` (regex match), `type:<kind>` (kind filter); prefixes can be compounded (`file:exact:report.pdf`); active prefixes appear as dismissible chips; scope and match type also configurable via toggle-button groups in the Advanced panel
+- **New server search modes** — `file-fuzzy`, `file-exact`, `file-regex` (filename-only, filtered to `[PATH]` lines), `doc-exact`, `doc-regex` (document-level exact/regex)
+
+---
+
+### ✅ Indexing Improvements
+
+- **Text normalization** (plan 057) — lines longer than `scan.max_line_length` (default 2 000 chars) are truncated before indexing to prevent FTS5 trigram bloat from minified JS/CSS; configurable per-source
+- **Per-directory include patterns** (plan 048) — `.index` TOML override files support an `include` field to index only specific patterns within a subtree, complementing the existing `exclude` field
+- **External pluggable extractors** (plan 062) — `[scan.extractors]` config table wires system tools for unsupported file formats; `mode = "stdout"` captures tool output as content; `mode = "tempdir"` extracts to a temp dir and indexes members as `outer::member` composite paths; a `"builtin"` sentinel preserves existing behaviour
+- **`[PATH]` metadata prefix convention** (plan 067) — all `line_number=0` path entries are stored as `[PATH] path/to/file` instead of bare strings; PE version-info keys as `[PE:Key]`; enables precise SQL/Rust filtering of path rows vs. EXIF/audio/MIME/PE metadata; existing indexes updated with `find-scan --force`
+- **Scheduled full re-scan in `find-watch`** (plan 051) — `find-watch` periodically triggers a full `find-scan` pass to catch deletions and renames that inotify/FSEvents miss
+
+---
+
+### ✅ Windows Improvements
+
+- **Tray GUID-based icon pinning** (plan 046) — `find-tray` registers the notification-area icon with a stable GUID so Windows persistently tracks the pinned/hidden preference across reinstalls; tray re-registers on Explorer restart
+- **Tray recent files popup** (plan 047) — left-clicking the tray icon shows a borderless popup listing the most recently indexed files with their kind, size, and a click-to-open action
+- **`find-watch` config and exclude fixes** — watcher honours `include_hidden`, `follow_symlinks`, `.noindex` markers, `exclude` patterns, and `include_dir_prefixes` during watch registration; new directories trigger dynamic `watch_tree` registration
+
+---
+
+### ✅ Reactive UI, File Viewer & UX
+
+- **Reactive UI via SSE** (plan 059) — web UI connects to `GET /api/v1/recent/stream`; expanded tree directories silently re-fetch on changes; file viewer auto-reloads on modify, shows "DELETED" banner, offers "Renamed to …" link; search results show "Index updated" banner; deleted result cards greyed out with strikethrough
+- **Filename match highlighting** — path-only results highlight matched query terms in the file path using `<mark>` style; clickable PathBar breadcrumbs navigate to parent directories
+- **Ctrl+P file picker improvements** — fixed-width panel (800 px); correct display of nested archive members (`zip → member`); keyboard navigation (↑/↓ moves cursor, Enter opens)
+
+---
+
+### ✅ Test Coverage
+
+- **Archive extractor integration tests** (plan 058) — 17 tests covering all supported formats (tar, tgz, tar.bz2, tar.xz, zip, 7z), deeply nested paths, unicode filenames, depth limiting, and exclude-pattern filtering
+- **Full running-server integration tests** (plan 061) — heavyweight end-to-end suite that spawns a real `find-server` process and drives the full write→search round-trip
+- **Client integration tests** (plan 065) — 11 `find-scan` integration tests (S1–S11) covering basic indexing, mtime-based skip, force/upgrade modes, delete detection, exclude patterns, ZIP archive members, and external extractors
+
+---
+
 ## Near-term Priorities
 
 ### Entry page UX improvements
@@ -183,6 +235,15 @@ skip reasons. `scan.max_pdf_size_mb` and the dynamic memory guards in
 `find-extract-pdf` have been removed — they are no longer needed with process
 isolation. The 7z dynamic block-memory guard is retained (it saves a subprocess spawn
 and crash log for blocks that would certainly OOM).
+
+---
+
+### 🟡 File Content Pagination (plan 056)
+
+Large files (logs, minified JS, extracted PDFs) can freeze the browser when the full content
+is returned in a single `/api/v1/file` response. Add optional `offset` + `limit` params to
+`GET /api/v1/file`; the file viewer loads content in pages using the same intersection-observer
+pattern as search result load-more. Metadata lines (`line_number=0`) are always returned in full.
 
 ---
 
@@ -298,17 +359,18 @@ Beyond the release pipeline, the getting-started experience needs polish:
 
 - Recency bias (recently modified files rank higher)
 - Result deduplication across sources
-- Advanced filters in UI (file type, date range, size)
-- Boolean operators (AND, OR, NOT) in query syntax "advanced search"
+- [x] Advanced filters in UI (file type, date range, size) — date range + kind filter done; NLP date parsing done
+- [x] Advanced search scoping — `file:`, `doc:`, `exact:`, `regex:`, `type:` prefix shortcuts; scope/match toggles in Advanced panel
+- Boolean operators (AND, OR, NOT) — explicit `AND`/`OR`/`NOT` query syntax beyond prefix shortcuts
 
 ### Web UI Phase 2
 
 - Allow showing tree directly from the main page, e.g. without a search, same as if a search had already occurred. (UX ideas?)
-- Allow clicking on file path segments to navigate to that area in the left nav
+- [x] Allow clicking on file path segments to navigate to that area in the left nav — clickable PathBar breadcrumbs
 - Search suggestions / autocomplete
 - Recent searches dropdown
 - Search result export (JSON, CSV)
-- Advanced search filter UI
+- [x] Advanced search filter UI — scope/match toggle groups; date range pickers; kind filter
 
 ---
 
@@ -339,7 +401,7 @@ content-hash caching to avoid re-OCR.
 
 ### Web UI Ideas
 
-- [ ] - **Breadcrumb navigation** — Clickable path segments at the top of the detail panel; clicking a directory switches to directory listing view
+- [x] **Breadcrumb navigation** — Clickable PathBar path segments; clicking a directory navigates to directory listing view
 - [x] Folder path browsing
 - [x] Sources visibility — dropdown selector (v0.1.6)
 - [x] Word wrap toggle (v0.1.5)
@@ -408,6 +470,8 @@ content-hash caching to avoid re-OCR.
 - [ ] Slow query logging
 - [ ] Database vacuuming automation
 - [ ] Backup and restore utilities
+- [ ] **Metrics & observability** (plan 063) — `metrics` crate facade; Prometheus pull endpoint or push to remote; `find-scan` reports aggregate scan stats to server
+- [ ] **File type config** (plan 064) — `[scan.file_types]` table overrides extension → kind mapping before `detect_kind_from_ext`; companion to pluggable extractors (plan 062)
 
 ### Developer Tools
 
