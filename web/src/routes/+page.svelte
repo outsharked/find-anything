@@ -16,6 +16,7 @@
 	import type { LineSelection } from '$lib/lineSelection';
 	import { FilePath } from '$lib/filePath';
 	import { buildUrl, restoreFromParams, serializeState, deserializeState, expandFileView, collapseFileView } from '$lib/appState';
+	import { mergePage } from '$lib/pagination';
 	import type { AppState, SerializedAppState, FileViewState } from '$lib/appState';
 	import { profile } from '$lib/profile';
 	import { parseNlpQuery } from '$lib/nlpQuery';
@@ -270,12 +271,10 @@
 				// Duplicate keys in the keyed {#each} throw a runtime error and prevent
 				// DOM updates, which keeps the sentinel pinned and causes an infinite
 				// request loop. See CLAUDE.md §"Search result keys and load-more dedup".
-				const seen = new Set(results.map(r => `${r.source}:${r.path}:${r.archive_path ?? ''}:${r.line_number}`));
-				const fresh = resp.results.filter(r => !seen.has(`${r.source}:${r.path}:${r.archive_path ?? ''}:${r.line_number}`));
-				results = [...results, ...fresh];
+				const merged = mergePage(results, resp.results, loadOffset);
+				results = merged.results;
 				totalResults = resp.total;
-				// Advance by full server response, not fresh.length — see loadOffset comment above.
-				loadOffset += resp.results.length;
+				loadOffset = merged.newOffset;
 			}
 			await tick();
 		} catch { /* silent */ }
