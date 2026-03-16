@@ -400,7 +400,6 @@ mod tests {
     }
 
     fn write_bulk_request_gz(path: &std::path::Path, req: &BulkRequest) {
-        use flate2::write::GzEncoder;
         let json = serde_json::to_vec(req).unwrap();
         let file = std::fs::File::create(path).unwrap();
         let mut enc = GzEncoder::new(file, flate2::Compression::default());
@@ -515,15 +514,13 @@ mod tests {
         let req_path2 = inbox_dir.join("req002.gz");
         write_bulk_request_gz(&req_path2, &delete_req);
 
-        // Clear to_archive_dir so we can check the new write.
-        for entry in std::fs::read_dir(&to_archive_dir).unwrap().flatten() {
-            std::fs::remove_file(entry.path()).unwrap();
-        }
+        // Use a fresh to_archive_dir for the delete call so we can check it independently.
+        let to_archive_dir2 = TempDir::new().unwrap();
 
         process_request_phase1(
             &data_dir,
             &req_path2,
-            &to_archive_dir,
+            to_archive_dir2.path(),
             &make_status(),
             make_worker_config(),
             &shared,
@@ -538,12 +535,9 @@ mod tests {
             .unwrap();
         assert_eq!(count, 0, "file should be absent after delete");
 
-        // A .gz should have been written (delete_paths alone does not skip archive phase
-        // because rename_paths is empty but we still write even for deletes — see code:
-        // normalized_files.is_empty() && rename_paths.is_empty() skips only when both are empty).
-        // With no files and no renames the archive phase IS skipped, so to_archive_dir
+        // With no files and no renames the archive phase IS skipped, so to_archive_dir2
         // should be empty here.
-        let gz_files: Vec<_> = std::fs::read_dir(&to_archive_dir)
+        let gz_files: Vec<_> = std::fs::read_dir(to_archive_dir2.path())
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("gz"))
@@ -597,10 +591,14 @@ mod tests {
         };
         let req_path2 = inbox_dir.join("req002.gz");
         write_bulk_request_gz(&req_path2, &rename_req);
+
+        // Use a fresh to_archive_dir for the rename call so we can assert exactly 1 .gz.
+        let to_archive_dir2 = TempDir::new().unwrap();
+
         process_request_phase1(
             &data_dir,
             &req_path2,
-            &to_archive_dir,
+            to_archive_dir2.path(),
             &make_status(),
             make_worker_config(),
             &shared,
@@ -620,6 +618,15 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM files WHERE path = 'src/new_name.rs'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(new_count, 1, "new path should exist after rename");
+
+        // A rename-only request DOES write a .gz to to_archive_dir (only skipped when
+        // BOTH normalized_files AND rename_paths are empty).
+        let gz_files: Vec<_> = std::fs::read_dir(to_archive_dir2.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("gz"))
+            .collect();
+        assert_eq!(gz_files.len(), 1, "rename-only request should write exactly 1 .gz to to_archive_dir");
     }
 
     #[test]
@@ -660,6 +667,68 @@ mod tests {
             0,
             "empty request should not write any .gz to to_archive_dir"
         );
+    }
+
+    /// When a path appears in both `delete_paths` and `files` in the same request,
+    /// the delete runs first, then the upsert re-adds it. The file should be present
+    /// at the end. This documents the "deletes before upserts" ordering invariant.
+    #[test]
+    fn deletes_processed_before_upserts_in_same_request() {
+        let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
+        let shared = crate::archive::SharedArchiveState::new(data_dir.clone()).unwrap();
+        let (recent_tx, _rx) = tokio::sync::broadcast::channel::<RecentFile>(16);
+
+        // First, seed the file so there is something to delete.
+        let seed_req = BulkRequest {
+            source: "testsource".to_string(),
+            files: vec![make_index_file("data/file.txt", "text")],
+            delete_paths: vec![],
+            rename_paths: vec![],
+            scan_timestamp: Some(1_000_000),
+            indexing_failures: vec![],
+        };
+        let req_path1 = inbox_dir.join("req001.gz");
+        write_bulk_request_gz(&req_path1, &seed_req);
+        process_request_phase1(
+            &data_dir,
+            &req_path1,
+            &to_archive_dir,
+            &make_status(),
+            make_worker_config(),
+            &shared,
+            &recent_tx,
+        )
+        .unwrap();
+
+        // Now send a request that both deletes AND upserts the same path.
+        let combined_req = BulkRequest {
+            source: "testsource".to_string(),
+            files: vec![make_index_file("data/file.txt", "text")],
+            delete_paths: vec!["data/file.txt".to_string()],
+            rename_paths: vec![],
+            scan_timestamp: Some(1_000_001),
+            indexing_failures: vec![],
+        };
+        let req_path2 = inbox_dir.join("req002.gz");
+        write_bulk_request_gz(&req_path2, &combined_req);
+        process_request_phase1(
+            &data_dir,
+            &req_path2,
+            &to_archive_dir,
+            &make_status(),
+            make_worker_config(),
+            &shared,
+            &recent_tx,
+        )
+        .unwrap();
+
+        // The upsert should win (delete happened first, then upsert re-added it).
+        let db_path = data_dir.join("sources").join("testsource.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM files WHERE path = 'data/file.txt'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "file should be present after delete+upsert in same request (upsert wins)");
     }
 }
 
