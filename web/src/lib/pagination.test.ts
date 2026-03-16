@@ -78,6 +78,12 @@ describe('mergePage', () => {
 		expect(newOffset).toBe(2);
 	});
 
+	it('handles both existing and incoming empty', () => {
+		const r = mergePage([], [], 0);
+		expect(r.results).toHaveLength(0);
+		expect(r.newOffset).toBe(0);
+	});
+
 	it('archive_path=null dedup — two items with same key and null archive_path are deduped', () => {
 		const existing = [makeResult('s', 'file.txt', 5, null)];
 		const incoming = [makeResult('s', 'file.txt', 5, null)]; // same key

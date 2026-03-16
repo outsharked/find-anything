@@ -322,9 +322,10 @@
 		try {
 			const resp = await search({ q: apiQuery, mode: serverMode, sources: srcs, kinds: effectiveKinds, limit: 50, offset: 0, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
 			if (mySearchId !== searchId) return;
-			results = resp.results;
+			const merged = mergePage([], resp.results, 0);
+			results = merged.results;
 			totalResults = resp.total;
-			loadOffset = resp.results.length; // server cursor starts after page 0
+			loadOffset = merged.newOffset;
 			if (resp.results.length === 0) noMoreResults = true;
 			if (push) fileView = null;
 		} catch (e) {
