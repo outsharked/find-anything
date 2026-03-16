@@ -5,11 +5,9 @@
 | Tool                         | Purpose               | Install                                                           |
 | ---------------------------- | --------------------- | ----------------------------------------------------------------- |
 | Rust (stable)                | Build all Rust crates | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| Node.js 22+                  | Build the web UI      | via `mise` or [nodejs.org](https://nodejs.org)                    |
-| pnpm                         | Web package manager   | `corepack enable` (after Node install)                            |
-| [mise](https://mise.jdx.dev) | Task runner           | `curl https://mise.run \| sh`                                     |
+| [mise](https://mise.jdx.dev) | Tool version manager + task runner | `curl https://mise.run \| sh`              |
 
-After installing mise, run `mise install` in the repo root to install Node and configure the environment.
+After installing mise, run `mise install` in the repo root — this installs the correct versions of Node.js and pnpm (pinned in `.mise.toml`) and configures the environment.
 
 ---
 
