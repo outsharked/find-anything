@@ -981,6 +981,140 @@ pub fn get_file_lines(
     Ok((lines, content_unavailable))
 }
 
+/// Paged variant of `get_file_lines`.
+///
+/// Always returns all line_number=0 (metadata) rows.  Content rows
+/// (line_number > 0) are returned starting from `offset` (0-based index into
+/// the ordered set of content lines), limited to `limit` rows when provided.
+///
+/// Returns `(combined_lines, total_content_count, content_unavailable)` where
+/// `combined_lines` contains metadata lines followed by the content page.
+/// `total_content_count` is the true total regardless of `offset`/`limit`.
+pub fn get_file_lines_paged(
+    conn: &Connection,
+    archive_mgr: &ArchiveManager,
+    path: &str,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<(Vec<ContextLine>, usize, bool)> {
+    let Some(file_id) = resolve_file_id(conn, path)? else {
+        return Ok((vec![], 0, false));
+    };
+
+    // Count total content lines.
+    let total_count: usize = conn.query_row(
+        "SELECT COUNT(*) FROM lines WHERE file_id = ?1 AND line_number > 0",
+        params![file_id],
+        |r| r.get::<_, i64>(0),
+    )? as usize;
+
+    // Fetch all metadata rows (line_number = 0).
+    let mut meta_stmt = conn.prepare(
+        "SELECT l.line_number, l.chunk_archive, l.chunk_name, l.line_offset_in_chunk
+         FROM lines l
+         WHERE l.file_id = ?1 AND l.line_number = 0",
+    )?;
+    let meta_rows: Vec<(usize, Option<String>, Option<String>, usize)> = meta_stmt
+        .query_map(params![file_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as usize,
+                row.get(1)?,
+                row.get(2)?,
+                row.get::<_, i64>(3)? as usize,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    // Fetch content rows, optionally paginated.
+    type Row = (usize, Option<String>, Option<String>, usize);
+    let content_rows: Vec<Row> = if let Some(lim) = limit {
+        let mut stmt = conn.prepare(
+            "SELECT l.line_number, l.chunk_archive, l.chunk_name, l.line_offset_in_chunk
+             FROM lines l
+             WHERE l.file_id = ?1 AND l.line_number > 0
+             ORDER BY l.line_number LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows: rusqlite::Result<Vec<Row>> = stmt
+            .query_map(params![file_id, lim as i64, offset as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as usize,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, i64>(3)? as usize,
+                ))
+            })?
+            .collect();
+        rows?
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT l.line_number, l.chunk_archive, l.chunk_name, l.line_offset_in_chunk
+             FROM lines l
+             WHERE l.file_id = ?1 AND l.line_number > 0
+             ORDER BY l.line_number",
+        )?;
+        let rows: rusqlite::Result<Vec<Row>> = stmt
+            .query_map(params![file_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as usize,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, i64>(3)? as usize,
+                ))
+            })?
+            .collect();
+        rows?
+    };
+
+    // Detect pending-archive state: content rows with NULL chunk refs and no
+    // inline storage entry means the archive worker hasn't run yet.
+    let has_pending = content_rows.iter().any(|(_, ca, cn, _)| ca.is_none() && cn.is_none());
+    let content_unavailable = has_pending && conn.query_row(
+        "SELECT COUNT(*) FROM file_content WHERE file_id = ?1",
+        params![file_id],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) == 0;
+
+    // Combine metadata + content, then resolve chunk content.
+    let all_rows: Vec<_> = meta_rows.into_iter().chain(content_rows).collect();
+    let mut lines = resolve_content(conn, archive_mgr, file_id, all_rows);
+
+    // Fix stale path entry after rename (same logic as get_file_lines).
+    let canonical_path: Option<String> = conn.query_row(
+        "SELECT path FROM files WHERE id = ?1",
+        params![file_id],
+        |r| r.get(0),
+    ).optional()?;
+    if let Some(ref cp) = canonical_path {
+        let already_correct = lines.iter().any(|l| l.line_number == 0 && &l.content == cp);
+        if !already_correct {
+            if let Some(path_entry) = lines.iter_mut()
+                .find(|l| l.line_number == 0 && !l.content.starts_with('['))
+            {
+                path_entry.content = cp.clone();
+            }
+        }
+    }
+
+    // Deduplicate line_number=0 entries (same guard as get_file_lines).
+    {
+        let mut seen = std::collections::HashSet::new();
+        lines.retain(|l| l.line_number != 0 || seen.insert(l.content.clone()));
+    }
+
+    // Inject alias paths.
+    let mut alias_stmt = conn.prepare(
+        "SELECT path FROM files WHERE canonical_file_id = ?1 ORDER BY path",
+    )?;
+    let alias_paths: Vec<String> = alias_stmt
+        .query_map(params![file_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for alias_path in alias_paths {
+        lines.push(ContextLine { line_number: 0, content: alias_path });
+    }
+
+    Ok((lines, total_count, content_unavailable))
+}
+
 // ── Context ───────────────────────────────────────────────────────────────────
 
 pub fn get_context(

@@ -41,6 +41,7 @@ pub async fn get_settings(
         git_hash,
         min_client_version: find_common::api::MIN_CLIENT_VERSION.to_string(),
         max_markdown_render_kb: state.config.server.max_markdown_render_kb,
+        file_view_page_size: state.config.server.file_view_page_size,
     })
     .into_response()
 }

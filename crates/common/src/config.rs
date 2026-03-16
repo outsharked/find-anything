@@ -661,9 +661,16 @@ pub struct ServerAppSettings {
     /// Default: 512.
     #[serde(default = "default_max_markdown_render_kb")]
     pub max_markdown_render_kb: usize,
+    /// Maximum number of content lines returned per /api/v1/file request.
+    /// When the file exceeds this threshold the UI enters paged mode and
+    /// loads additional lines on scroll. 0 disables pagination (legacy).
+    /// Default: 2000.
+    #[serde(default = "default_file_view_page_size")]
+    pub file_view_page_size: usize,
 }
 
 fn default_max_markdown_render_kb() -> usize { 512 }
+fn default_file_view_page_size() -> usize { 2000 }
 fn default_bind() -> String { server_defaults().server.bind.clone() }
 fn default_download_zip_member_levels() -> usize { server_defaults().server.download_zip_member_levels }
 fn default_log_batch_detail_limit() -> usize     { server_defaults().server.log_batch_detail_limit }

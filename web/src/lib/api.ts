@@ -162,12 +162,16 @@ export async function search(params: SearchParams): Promise<SearchResponse> {
 export async function getFile(
 	source: string,
 	path: string,
-	archivePath?: string
+	archivePath?: string,
+	offset?: number,
+	limit?: number
 ): Promise<FileResponse> {
 	const url = new URL('/api/v1/file', location.origin);
 	url.searchParams.set('source', source);
 	url.searchParams.set('path', path);
 	if (archivePath) url.searchParams.set('archive_path', archivePath);
+	if (offset != null) url.searchParams.set('offset', String(offset));
+	if (limit != null) url.searchParams.set('limit', String(limit));
 
 	const resp = await apiFetch(url.toString());
 	if (!resp.ok) throw new Error(`getFile: ${resp.status} ${resp.statusText}`);
@@ -260,6 +264,8 @@ export interface AppSettings {
 	git_hash: string;
 	/** Maximum markdown file size (KB) the UI will render as formatted HTML. */
 	max_markdown_render_kb: number;
+	/** Maximum content lines per /api/v1/file request. 0 = no limit. */
+	file_view_page_size: number;
 }
 
 export async function getSettings(): Promise<AppSettings> {

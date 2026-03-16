@@ -29,6 +29,10 @@ pub struct FileParams {
     pub archive_path: Option<String>,
     /// Optional share link code as an alternative to bearer authentication.
     pub link_code: Option<String>,
+    /// 0-based index of the first content line to return (pagination).
+    pub offset: Option<usize>,
+    /// Maximum number of content lines to return (pagination).
+    pub limit: Option<usize>,
 }
 
 pub async fn get_file(
@@ -52,6 +56,8 @@ pub async fn get_file(
     let data_dir = state.data_dir.clone();
     let link_code = params.link_code.clone();
     let source = params.source.clone();
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit;
 
     run_blocking("get_file", move || -> anyhow::Result<Response> {
         // Validate link code if provided (alternative to bearer auth).
@@ -72,7 +78,8 @@ pub async fn get_file(
             )
             .unwrap_or_else(|_| ("text".into(), None, None));
 
-        let (all_lines, content_unavailable) = db::get_file_lines(&conn, &archive_mgr, &full_path)?;
+        let (all_lines, total_lines, content_unavailable) =
+            db::get_file_lines_paged(&conn, &archive_mgr, &full_path, offset, limit)?;
 
         let metadata: Vec<String> = all_lines.iter()
             .filter(|l| l.line_number == 0)
@@ -82,8 +89,6 @@ pub async fn get_file(
         let content_lines: Vec<_> = all_lines.into_iter()
             .filter(|l| l.line_number > 0)
             .collect();
-
-        let total_lines = content_lines.len();
 
         // Only emit line_offsets when lines aren't a contiguous 1-based sequence.
         let is_sequential = content_lines.iter().enumerate()

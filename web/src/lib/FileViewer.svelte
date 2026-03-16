@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { createEventDispatcher, onMount, tick } from 'svelte';
 	import { getFile } from '$lib/api';
+	import { fileViewPageSize } from '$lib/settingsStore';
 	import { highlightFile } from '$lib/highlight';
 	import DirListing from './DirListing.svelte';
 	import ImageViewer from './ImageViewer.svelte';
@@ -151,6 +152,50 @@
 		return date.toLocaleString();
 	}
 
+	// ── Paged loading state ──────────────────────────────────────────────────────
+
+	let pagedMode = false;
+	/** Accumulated content lines (strings) across all loaded pages. */
+	let allContentLines: string[] = [];
+	/** Accumulated line offsets (1-based actual line_numbers) for allContentLines. */
+	let allLineOffsets: number[] = [];
+	/** True total content line count as reported by the server. */
+	let totalLines = 0;
+	/** Next content-line index to fetch in the forward direction. */
+	let forwardOffset = 0;
+	/** Start of the earliest page loaded (for backward loading). */
+	let backwardOffset = 0;
+	let loadingForward = false;
+	let loadingBackward = false;
+	let noMoreForward = false;
+	let noMoreBackward = true;
+
+	/** Reference to the scrollable .code-container element. */
+	let codeContainer: HTMLElement;
+
+	function isNearBottom(): boolean {
+		if (!codeContainer) return false;
+		return codeContainer.scrollHeight - codeContainer.scrollTop - codeContainer.clientHeight < 600;
+	}
+
+	function isNearTop(): boolean {
+		if (!codeContainer) return false;
+		return codeContainer.scrollTop < 300;
+	}
+
+	function handleScroll() {
+		if (!pagedMode) return;
+		if (!loadingForward && !noMoreForward && isNearBottom()) loadForward();
+		if (!loadingBackward && !noMoreBackward && isNearTop()) loadBackward();
+	}
+
+	/** Rebuild rawContent / highlightedCode / lineOffsets from accumulated lines. */
+	function updateCodeState() {
+		lineOffsets = allLineOffsets;
+		rawContent = allContentLines.join('\n');
+		highlightedCode = highlightFile(allContentLines, path);
+	}
+
 	function applyFileData(data: import('$lib/api').FileResponse, isInitial: boolean) {
 		contentUnavailable = data.content_unavailable ?? false;
 		if (contentUnavailable) return;
@@ -186,21 +231,141 @@
 		}
 	}
 
-	onMount(async () => {
+	/** Apply file-level metadata from the initial response (for paged mode). */
+	function applyFileMeta(data: import('$lib/api').FileResponse, isInitial: boolean) {
+		mtime = data.mtime;
+		size = data.size;
+		fileKind = data.file_kind ?? null;
+		indexingError = data.indexing_error ?? null;
+		const compositePath = archivePath ? `${path}::${archivePath}` : path;
+		metaLines = [];
+		duplicatePaths = [];
+		for (const s of data.metadata) {
+			if (s === compositePath) continue;
+			if (s.startsWith('[')) {
+				metaLines.push({ content: s });
+			} else {
+				duplicatePaths.push(s);
+			}
+		}
+		if (isInitial) {
+			isEncrypted = fileKind === 'pdf' && data.lines.length === 1 && data.lines[0] === 'Content encrypted';
+			showOriginal = fileKind === 'image' || fileKind === 'video' || (fileKind === 'pdf' && !isEncrypted && preferOriginal);
+			imageFullWidth = false;
+		}
+	}
+
+	async function loadFile(isInitial: boolean) {
+		loading = true;
+		pagedMode = false;
+		allContentLines = [];
+		allLineOffsets = [];
+		noMoreForward = false;
+		noMoreBackward = true;
+
 		try {
-			const data = await getFile(source, path, archivePath ?? undefined);
-			applyFileData(data, true);
+			const pageSize = $fileViewPageSize;
+			const firstLn = firstLine(selection);
+			// Anchor the first page so the selected line is visible.
+			const anchorOffset = (firstLn !== null && pageSize > 0)
+				? Math.max(0, Math.floor((firstLn - 1) / pageSize) * pageSize)
+				: 0;
+
+			const data = await getFile(
+				source, path, archivePath ?? undefined,
+				pageSize > 0 ? anchorOffset : undefined,
+				pageSize > 0 ? pageSize : undefined,
+			);
+
+			contentUnavailable = data.content_unavailable ?? false;
+			if (contentUnavailable) return;
+			error = null;
+
+			if (pageSize > 0 && data.total_lines > pageSize) {
+				// Paged mode.
+				pagedMode = true;
+				applyFileMeta(data, isInitial);
+
+				const pageOffsets = data.line_offsets && data.line_offsets.length > 0
+					? data.line_offsets
+					: data.lines.map((_, i) => anchorOffset + i + 1);
+				allContentLines = [...data.lines];
+				allLineOffsets = pageOffsets;
+				totalLines = data.total_lines;
+				forwardOffset = anchorOffset + data.lines.length;
+				backwardOffset = anchorOffset;
+				noMoreForward = forwardOffset >= totalLines;
+				noMoreBackward = anchorOffset === 0;
+				updateCodeState();
+			} else {
+				// Single-page (full file) mode — identical to previous behaviour.
+				applyFileData(data, isInitial);
+			}
 		} catch (e) {
 			error = String(e);
 		} finally {
 			loading = false;
 		}
 
-		const ln = firstLine(selection);
-		if (ln !== null) {
-			await tick();
-			scrollToLine(ln);
+		if (isInitial) {
+			const ln = firstLine(selection);
+			if (ln !== null) {
+				await tick();
+				scrollToLine(ln);
+			}
 		}
+	}
+
+	async function loadForward() {
+		if (loadingForward || noMoreForward) return;
+		loadingForward = true;
+		try {
+			const pageSize = $fileViewPageSize;
+			const data = await getFile(source, path, archivePath ?? undefined, forwardOffset, pageSize);
+			const pageOffsets = data.line_offsets && data.line_offsets.length > 0
+				? data.line_offsets
+				: data.lines.map((_, i) => forwardOffset + i + 1);
+			allContentLines = [...allContentLines, ...data.lines];
+			allLineOffsets = [...allLineOffsets, ...pageOffsets];
+			forwardOffset += data.lines.length;
+			noMoreForward = forwardOffset >= totalLines;
+			updateCodeState();
+			await tick();
+		} catch { /* silent — user can scroll again to retry */ }
+		loadingForward = false;
+		if (isNearBottom() && !noMoreForward) loadForward();
+	}
+
+	async function loadBackward() {
+		if (loadingBackward || noMoreBackward || !codeContainer) return;
+		loadingBackward = true;
+		try {
+			const pageSize = $fileViewPageSize;
+			const prevOffset = Math.max(0, backwardOffset - pageSize);
+			const limit = backwardOffset - prevOffset;
+			const data = await getFile(source, path, archivePath ?? undefined, prevOffset, limit);
+			const pageOffsets = data.line_offsets && data.line_offsets.length > 0
+				? data.line_offsets
+				: data.lines.map((_, i) => prevOffset + i + 1);
+
+			// Preserve scroll position when prepending.
+			const oldScrollHeight = codeContainer.scrollHeight;
+			const oldScrollTop = codeContainer.scrollTop;
+
+			allContentLines = [...data.lines, ...allContentLines];
+			allLineOffsets = [...pageOffsets, ...allLineOffsets];
+			backwardOffset = prevOffset;
+			noMoreBackward = prevOffset === 0;
+			updateCodeState();
+
+			await tick();
+			codeContainer.scrollTop = oldScrollTop + (codeContainer.scrollHeight - oldScrollHeight);
+		} catch { /* silent */ }
+		loadingBackward = false;
+	}
+
+	onMount(async () => {
+		await loadFile(true);
 	});
 
 	function openDuplicate(dupPath: string) {
@@ -248,15 +413,7 @@
 	async function reload() {
 		fileState = 'normal';
 		renamedTo = null;
-		loading = true;
-		try {
-			const data = await getFile(source, path, archivePath ?? undefined);
-			applyFileData(data, false);
-		} catch (e) {
-			error = String(e);
-		} finally {
-			loading = false;
-		}
+		await loadFile(false);
 	}
 </script>
 
@@ -337,7 +494,16 @@
 			{/if}
 		{:else}
 			<!-- Extracted text / code view -->
-			<div class="code-container">
+			<div class="code-container" bind:this={codeContainer} on:scroll={handleScroll}>
+				{#if pagedMode && !noMoreBackward}
+					<div class="load-sentinel">
+						{#if loadingBackward}
+							<span class="sentinel-msg">Loading earlier lines…</span>
+						{:else}
+							<button class="sentinel-btn" on:click={loadBackward}>Load earlier lines</button>
+						{/if}
+					</div>
+				{/if}
 				{#if isEncrypted}
 					<div class="encrypted-notice">🔒 This PDF is password-protected and cannot be displayed.</div>
 				{/if}
@@ -392,6 +558,13 @@
 							dispatch('lineselect', e.detail);
 						}}
 					/>
+				{/if}
+				{#if pagedMode && !noMoreForward}
+					<div class="load-sentinel">
+						{#if loadingForward}
+							<span class="sentinel-msg">Loading…</span>
+						{/if}
+					</div>
 				{/if}
 			</div>
 		{/if}
@@ -539,5 +712,32 @@
 		padding: 24px 16px;
 		color: var(--text-muted);
 		font-size: 13px;
+	}
+
+	.load-sentinel {
+		padding: 8px 16px;
+		text-align: center;
+	}
+
+	.sentinel-msg {
+		font-size: 12px;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+	}
+
+	.sentinel-btn {
+		background: none;
+		border: 1px solid var(--border, rgba(255, 255, 255, 0.15));
+		border-radius: 4px;
+		padding: 4px 12px;
+		font-size: 12px;
+		font-family: var(--font-mono);
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+
+	.sentinel-btn:hover {
+		color: var(--text);
+		background: var(--bg-hover);
 	}
 </style>

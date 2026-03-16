@@ -277,6 +277,10 @@ pub struct AppSettingsResponse {
     /// Defaults to 512 for backwards compatibility with older servers.
     #[serde(default = "default_max_markdown_render_kb")]
     pub max_markdown_render_kb: usize,
+    /// Maximum content lines returned per /api/v1/file request.
+    /// 0 = no limit (older servers). Default: 2000.
+    #[serde(default)]
+    pub file_view_page_size: usize,
 }
 
 fn default_max_markdown_render_kb() -> usize { 512 }
