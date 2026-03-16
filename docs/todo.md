@@ -4,20 +4,16 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
  
-
+[ ] CHORE: Analysis of testing gaps
 [ ] BUG: back arrow browser navigation doesn't work at all
 [ ] CHORE: frontent ux tests
 [ ] CHORE: Code quality analysis on file scanning/walking/filtering pipeline
 [ ] FEAT: With [sources.nas-data] path = "/mnt/nas-data" missing from server, need to handle inline displaye better
 [ ] FEAT: In image detail split view, should be able to move divider/resize window
-[ ] FEAT: Create short URL to link
-[ ] FEAT: use video player for video files
 [ ] BUG: pictures/2014/Jamie Phone 2014/20140410_074302.jpg - no metadata available - why?
 [ ] FEAT: Guard against low disk space
 [ ] BUG: Fetching existing file list seems to not be targeted to a particular tree (e.g. find-scan /path/to/dir)
 [ ] BUG: Monhegan Lighthouse DOry 2005.tif can't be shown
-[ ] FEAT: Add query syntax "type: image" with intellisense
-[ ] FEAT:Add query syntax "path: /backups/" with intellisense
 [ ] FEAT: UX is bad when showing full context for large text documents. Use some kind of scroll pattern to not render the whole thing onscreen
 [ ] FEAT: make "find-admin inbox" have subcommands
 [ ] FEAT: Run compaction scan only once a day, or on demand
@@ -26,12 +22,9 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] FEAT: Give higher priority to more recently modified documents
 [ ] FEAT: UX to retry failed scans (admin page)
 [ ] FEAT: Render SVG by default
-[ ] FEAT: Add "format json' button
-[ ] BUG; Searching on ".png" doesn't work is that improvable
+[ ] BUG: Searching on ".png" doesn't work is that improvable
 [ ] CHORE: Include **/AppData/**, **/bin/**, **/obj/**, **/\*.log by default, "**/pnpm/\*\*", vscode-remote-wsl
 [ ] CHORE: Unit test for handling of retrieveal duplicated items in index
-[ ] Do we actually want to recode innner archives?
-[ ] Do we actually want to index inner archives?
 [ ] CHORE: refactor front end to split svg assets out into files, etc
 [ ] CHORE: Server install should also be able to chain client install
 [ ] FEAT: Add providing uname/password for share to config for each source
@@ -39,7 +32,6 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] CHORE: Code quality: avoid optional typescript parameters; default values should be set at as high a level as possible and propagated conclusively. Add to claude.md
 [ ] FEAT: Custom protocol handler (chrome) to allow exploring the file location. Requires client config for roots.
 [ ] FEAT (PLANNED) metrics - log start/end time of critical proceses to an external service - Grafana LGTM?
-[ ] FEAT (PLANNED): allow adding extra tools (similar to formatters) for archive extraction. Extract hardcoded into default config
 [ ] FEAT (PLANNED): allow adding file extension -> content type mappers. Extract all hardcoded into config
 
 
@@ -51,7 +43,12 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ### Completed Items
 
+[x] FEAT: Add query syntax "type: image" with intellisense (note: we implemented this but not intellisense)
+[ ] FEAT: Add query syntax "path: /backups/" with intellisense (note: we implemented this but not intellisense)
+[x] FEAT: use video player for video files
+[x] FEAT: Create short URL to link
 [x] BUG: "Content has changed. Reload" on a detail page doesn't clear when you hit reload, only hard refresh
+[x] FEAT (PLANNED): allow adding extra tools (similar to formatters) for archive extraction. Extract hardcoded into default config
 [x] BUG: Dynamic width of ctrl+p is an issue - it should stay fixed size. Maybe we should get rid of this and have 
     file:fox theater (look at sourcegraph)
 [x] Look at debug logs during e.g. a simple delete - seems to do a lot of stuff it doesn't need to, e.g. passing off to archving. We should pre-filter the gz file - if only delete/small adds, no need to go to archiving. Check szie of text content, file types. (Note: we no longer delete from archives, it's garbage collected now)
