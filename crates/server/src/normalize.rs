@@ -436,6 +436,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn external_formatter_success() {
         // /bin/cat reads stdin and writes it back to stdout.
@@ -449,6 +450,7 @@ mod tests {
         assert!(joined.contains("world"), "expected 'world' in output, got: {joined}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn external_formatter_nonzero_exit_skipped() {
         // /bin/false always exits 1; the formatter should be skipped and the
@@ -458,8 +460,12 @@ mod tests {
         let result = normalize_lines(lines, "test.txt", &settings);
         let content: Vec<_> = result.iter().filter(|l| l.line_number > 0).collect();
         assert!(!content.is_empty(), "expected content to be returned as-is");
+        let joined: String = content.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("hello"), "expected 'hello' in output, got: {joined}");
+        assert!(joined.contains("world"), "expected 'world' in output, got: {joined}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn external_formatter_empty_output_skipped() {
         use std::os::unix::fs::PermissionsExt;
@@ -473,8 +479,12 @@ mod tests {
         let result = normalize_lines(lines, "test.txt", &settings);
         let content: Vec<_> = result.iter().filter(|l| l.line_number > 0).collect();
         assert!(!content.is_empty(), "expected fallback content when formatter produces empty output");
+        let joined: String = content.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("hello"), "expected 'hello' in output, got: {joined}");
+        assert!(joined.contains("world"), "expected 'world' in output, got: {joined}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn external_formatter_nonexistent_skipped() {
         // A path that doesn't exist should fail to spawn and be skipped gracefully.
@@ -483,5 +493,8 @@ mod tests {
         let result = normalize_lines(lines, "test.txt", &settings);
         let content: Vec<_> = result.iter().filter(|l| l.line_number > 0).collect();
         assert!(!content.is_empty(), "expected content to be returned when formatter is nonexistent");
+        let joined: String = content.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("hello"), "expected 'hello' in output, got: {joined}");
+        assert!(joined.contains("world"), "expected 'world' in output, got: {joined}");
     }
 }
