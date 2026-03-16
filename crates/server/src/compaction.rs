@@ -460,6 +460,99 @@ mod tests {
             assert!(d.as_secs() <= 24 * 3600, "duration should be ≤ 24 h for {h}:{m:02}");
         }
     }
+
+    // ── scan_wasted_space ─────────────────────────────────────────────────────
+
+    fn write_test_zip(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        use std::io::Write;
+        use zip::ZipWriter;
+        use zip::write::SimpleFileOptions;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+        for (name, data) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn seed_db_with_chunk_ref(
+        conn: &rusqlite::Connection,
+        chunk_archive: &str,
+        chunk_name: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO files (path, mtime, size, kind, indexed_at) \
+             VALUES ('test.txt', 1000, 100, 'text', 0)",
+            [],
+        )
+        .unwrap();
+        let file_id: i64 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO lines (file_id, line_number, chunk_archive, chunk_name, \
+             line_offset_in_chunk) VALUES (?1, 1, ?2, ?3, 0)",
+            rusqlite::params![file_id, chunk_archive, chunk_name],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lines_fts(rowid, content) VALUES (last_insert_rowid(), 'hello')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn all_chunks_referenced_no_orphans() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        std::fs::create_dir_all(data_dir.join("sources/content/0000")).unwrap();
+
+        // Create a ZIP archive with one chunk entry.
+        let zip_path = data_dir.join("sources/content/0000/content_00001.zip");
+        write_test_zip(&zip_path, &[("test.txt.chunk0.txt", b"hello world")]);
+
+        // Open source DB and insert a lines row referencing that chunk.
+        let db_path = data_dir.join("sources/test_source.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        seed_db_with_chunk_ref(&conn, "content_00001.zip", "test.txt.chunk0.txt");
+
+        let stats = scan_wasted_space(data_dir).unwrap();
+        assert!(stats.total_bytes > 0, "expected total_bytes > 0");
+        assert_eq!(stats.orphaned_bytes, 0, "expected no orphaned bytes");
+    }
+
+    #[test]
+    fn unreferenced_chunks_counted_as_orphaned() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        std::fs::create_dir_all(data_dir.join("sources/content/0000")).unwrap();
+
+        // Create a ZIP archive with one chunk entry.
+        let zip_path = data_dir.join("sources/content/0000/content_00001.zip");
+        write_test_zip(&zip_path, &[("test.txt.chunk0.txt", b"hello world")]);
+
+        // No DB entries referencing those chunks — everything should be orphaned.
+
+        let stats = scan_wasted_space(data_dir).unwrap();
+        assert!(stats.total_bytes > 0, "expected total_bytes > 0");
+        assert_eq!(
+            stats.orphaned_bytes, stats.total_bytes,
+            "all bytes should be orphaned when no DB references exist"
+        );
+    }
+
+    #[test]
+    fn empty_content_dir_returns_zero() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        std::fs::create_dir_all(data_dir.join("sources/content")).unwrap();
+
+        let stats = scan_wasted_space(data_dir).unwrap();
+        assert_eq!(stats.total_bytes, 0, "expected total_bytes == 0 for empty content dir");
+        assert_eq!(stats.orphaned_bytes, 0, "expected orphaned_bytes == 0 for empty content dir");
+    }
 }
 
 /// Run a wasted-space scan, log the result with timing, update `stats_slot`,
