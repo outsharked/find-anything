@@ -711,6 +711,13 @@ fn delete_fts_for_file(
 
 // ── Delete ────────────────────────────────────────────────────────────────────
 
+/// Stats captured from files that are about to be deleted (for incremental cache update).
+pub struct DeleteDelta {
+    pub files_removed: i64,
+    pub size_removed:  i64,
+    pub by_kind: HashMap<FileKind, (i64, i64)>, // kind → (count, size)
+}
+
 /// Delete files from SQLite. Orphaned ZIP chunks are cleaned up by periodic
 /// compaction rather than immediately rewriting archives.
 ///
@@ -718,10 +725,31 @@ fn delete_fts_for_file(
 ///   `line_number=0` of the promoted alias; content lines stay stale but
 ///   are invisible to search via the JOIN with `lines`).
 /// - Clears indexing errors for the deleted paths in the same transaction.
-pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<()> {
+/// - Returns a `DeleteDelta` capturing the stats of all deleted outer files
+///   (composite archive-member paths are excluded from the delta).
+pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<DeleteDelta> {
+    let mut delta = DeleteDelta { files_removed: 0, size_removed: 0, by_kind: HashMap::new() };
+
+    // Open transaction first — query then delete inside it to avoid TOCTOU.
     let tx = conn.unchecked_transaction()?;
 
     for path in paths {
+        // Composite paths (archive members) don't appear in outer-file stats.
+        if !is_composite(path) {
+            let row: Option<(i64, String)> = tx.query_row(
+                "SELECT COALESCE(size,0), kind FROM files WHERE path = ?1",
+                params![path],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional()?;
+            if let Some((size, kind_str)) = row {
+                let kind = FileKind::from(kind_str.as_str());
+                delta.files_removed += 1;
+                delta.size_removed  += size;
+                let e = delta.by_kind.entry(kind).or_insert((0, 0));
+                e.0 += 1;
+                e.1 += size;
+            }
+        }
         delete_one_path_phase1(&tx, path)?;
         tx.execute("DELETE FROM indexing_errors WHERE path = ?1", params![path])?;
         tx.execute(
@@ -731,7 +759,7 @@ pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<()> {
     }
 
     tx.commit()?;
-    Ok(())
+    Ok(delta)
 }
 
 fn delete_one_path_phase1(
