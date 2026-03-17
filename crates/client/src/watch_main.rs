@@ -197,28 +197,49 @@ enum WindowsCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "warn,find_watch=info".into()))
-        .with(tracing_subscriber::fmt::layer().with_filter(LogIgnoreFilter))
-        .init();
-
     let args = Args::from_arg_matches(&Args::command().version(find_common::tool_version!()).get_matches()).unwrap_or_else(|e| e.exit());
     let config_path = resolve_config(args.config);
 
+    // On Windows, Install/Uninstall commands don't need config or logging —
+    // handle them before the config read.
     #[cfg(windows)]
-    if let Some(cmd) = args.command {
+    if let Some(cmd @ (WindowsCommand::Install { .. } | WindowsCommand::Uninstall { .. })) = args.command {
         return run_windows_command(cmd, &config_path);
     }
 
-    // Default: run the watcher in the foreground.
+    // Read config before logging init so [log] compact = true takes effect.
+    // Config errors go to stderr via `?`; no logging needed for that.
     let config_str = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading config {config_path}"))?;
     let (config, config_warnings) = parse_client_config(&config_str)?;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "warn,find_watch=info".into());
+    if config.log.compact {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_target(false)
+                .with_filter(LogIgnoreFilter))
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().with_filter(LogIgnoreFilter))
+            .init();
+    }
+
     for w in &config_warnings { eprintln!("Warning: {w}"); }
 
     if let Err(e) = find_common::logging::set_ignore_patterns(&config.log.ignore) {
         tracing::warn!("invalid log ignore pattern: {e}");
+    }
+
+    // On Windows, ServiceRun dispatches to the SCM (logging is now ready).
+    #[cfg(windows)]
+    if let Some(cmd) = args.command {
+        return run_windows_command(cmd, &config_path);
     }
 
     let client = api::ApiClient::new(&config.server.url, &config.server.token);

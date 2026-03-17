@@ -146,7 +146,8 @@ fn process_request_phase1(
         .map(|l| l.content.len())
         .sum();
 
-    let tag = format!("[indexer:{}:{req_stem}]", request.source);
+    let tag     = format!("[indexer:{}:{req_stem}]", request.source); // debug-level tag (includes request id)
+    let src_tag = format!("[indexer:{}]",            request.source); // info-level tag  (source only)
 
     tracing::debug!("{tag} start: {} files, {} deletes, {} renames", n_files, n_deletes, n_renames);
 
@@ -306,12 +307,10 @@ fn process_request_phase1(
     let elapsed_secs = elapsed.as_secs_f64();
     let content_kb = total_content_bytes / 1024;
     let compressed_kb = compressed_bytes / 1024;
-    tracing::info!(
-        "{tag} indexed {} files, {} deletes, {} renames, {} lines, \
-         {} KB content, {} KB compressed, {:.1}s",
-        n_files, n_deletes, n_renames, total_content_lines,
-        content_kb, compressed_kb, elapsed_secs,
-    );
+    tracing::debug!("{tag} done: {} files, {} deletes, {} renames, {} lines, {} KB content, {} KB compressed, {:.1}s",
+        n_files, n_deletes, n_renames, total_content_lines, content_kb, compressed_kb, elapsed_secs);
+    tracing::info!("{src_tag} indexed {} files, {} deletes, {} renames, {} lines, {} KB content, {} KB compressed, {:.1}s",
+        n_files, n_deletes, n_renames, total_content_lines, content_kb, compressed_kb, elapsed_secs);
     if elapsed.as_secs() >= 120 {
         tracing::warn!(
             elapsed_secs = elapsed.as_secs(),

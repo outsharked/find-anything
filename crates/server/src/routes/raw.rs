@@ -17,6 +17,37 @@ use crate::AppState;
 
 use super::{check_auth, check_link_code_auth};
 
+/// Log a file-access failure with context that helps distinguish between
+/// "mount not available" and "file genuinely missing on the client".
+///
+/// When `full_path` can't be resolved, stat the `source_root` directory:
+/// - root inaccessible → mount probably failed or path is misconfigured
+/// - root accessible   → the file was likely deleted from the client
+fn log_file_not_found(
+    source: &str,
+    source_root: &std::path::Path,
+    full_path: &std::path::Path,
+    error: &std::io::Error,
+    ctx: &str,
+) {
+    if source_root.metadata().is_err() {
+        tracing::warn!(
+            source,
+            root = %source_root.display(),
+            path = %full_path.display(),
+            error = %error,
+            "{ctx}: source root is not accessible — mount may have failed or path is misconfigured"
+        );
+    } else {
+        tracing::warn!(
+            source,
+            path = %full_path.display(),
+            error = %error,
+            "{ctx}: file not found — may have been deleted from the client"
+        );
+    }
+}
+
 #[derive(Deserialize)]
 pub struct RawParams {
     source: String,
@@ -104,14 +135,15 @@ pub async fn get_raw(
     let canonical_root = match source_root.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(source = %params.source, root = %source_root_str, error = %e, "raw: failed to canonicalize source root");
+            tracing::warn!(source = %params.source, root = %source_root_str, error = %e,
+                "raw: source root not accessible — mount may have failed or path is misconfigured");
             return StatusCode::NOT_FOUND.into_response();
         }
     };
     let canonical_full = match full_path.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(source = %params.source, path = %params.path, error = %e, "raw: failed to canonicalize file path");
+            log_file_not_found(&params.source, source_root, &full_path, &e, "raw");
             return StatusCode::NOT_FOUND.into_response();
         }
     };
@@ -231,17 +263,19 @@ async fn serve_archive_member(
     };
 
     let outer_full = std::path::Path::new(&source_root_str).join(outer_path);
-    let canonical_root = match std::path::Path::new(&source_root_str).canonicalize() {
+    let archive_root = std::path::Path::new(&source_root_str);
+    let canonical_root = match archive_root.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(source = %source, root = %source_root_str, error = %e, "raw(archive): failed to canonicalize source root");
+            tracing::warn!(source = %source, root = %source_root_str, error = %e,
+                "raw(archive): source root not accessible — mount may have failed or path is misconfigured");
             return StatusCode::NOT_FOUND.into_response();
         }
     };
     let canonical_outer = match outer_full.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(source = %source, outer = %outer_path, error = %e, "raw(archive): failed to canonicalize outer path");
+            log_file_not_found(source, archive_root, &outer_full, &e, "raw(archive)");
             return StatusCode::NOT_FOUND.into_response();
         }
     };

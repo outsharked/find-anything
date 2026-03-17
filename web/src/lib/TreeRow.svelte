@@ -5,6 +5,7 @@
 	import { splitEntryPath, shouldExpandEntry } from '$lib/filePath';
 	import { liveEvent } from '$lib/liveUpdates';
 	import { keyboardCursorPath } from '$lib/treeStore';
+	import { getCachedDir, setCachedDir } from '$lib/treeCache';
 
 	export let source: string;
 	export let entry: DirEntry;
@@ -67,10 +68,19 @@
 	async function expandDir() {
 		if (!loaded) {
 			try {
-				const resp = entry.kind === 'archive'
-					? await listArchiveMembers(source, entry.path)
-					: await listDir(source, entry.path);
-				children = resp.entries;
+				if (entry.kind === 'archive') {
+					const resp = await listArchiveMembers(source, entry.path);
+					children = resp.entries;
+				} else {
+					const cached = getCachedDir(source, entry.path);
+					if (cached) {
+						children = cached;
+					} else {
+						const resp = await listDir(source, entry.path);
+						children = resp.entries;
+						setCachedDir(source, entry.path, children);
+					}
+				}
 				loaded = true;
 			} catch {
 				loadError = true;

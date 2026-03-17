@@ -19,18 +19,34 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "warn,find_server=info,tower_http=info".into()))
-        .with(tracing_subscriber::fmt::layer().with_filter(LogIgnoreFilter))
-        .init();
-
+    // Parse args first so we know the config path before initialising logging.
     let args = Args::from_arg_matches(&Args::command().version(find_common::tool_version!()).get_matches()).unwrap_or_else(|e| e.exit());
     let config_path = args.config.unwrap_or_else(default_server_config_path);
 
+    // Read config before logging init so [log] compact = true takes effect.
+    // Config errors go to stderr via `?`; no logging needed for that.
     let config_str = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading config: {config_path}"))?;
     let (config, config_warnings) = parse_server_config(&config_str)?;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "warn,find_server=info,tower_http=info".into());
+
+    if config.log.compact {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_target(false)
+                .with_filter(LogIgnoreFilter))
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().with_filter(LogIgnoreFilter))
+            .init();
+    }
+
     for w in &config_warnings { warn!("{w}"); }
 
     if let Err(e) = find_common::logging::set_ignore_patterns(&config.log.ignore) {

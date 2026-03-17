@@ -819,6 +819,16 @@ pub struct LogConfig {
     /// Default: suppresses "unknown glyph name" noise from pdf-extract.
     #[serde(default = "default_log_ignore")]
     pub ignore: Vec<String>,
+    /// Omit the timestamp and module-path target from each log line.
+    ///
+    /// Set to `true` when running under systemd/journald, which already
+    /// captures the timestamp and process name from OS metadata — keeping them
+    /// in the log message itself is redundant.  Equivalent to the
+    /// `--compact-log` CLI flag; the flag takes precedence.
+    ///
+    /// Default: false.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 fn default_log_ignore() -> Vec<String> { client_defaults().log.ignore.clone() }
