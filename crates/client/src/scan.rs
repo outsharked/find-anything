@@ -432,6 +432,13 @@ async fn push_non_archive_files(
 }
 
 /// Process one file: resolve its effective config, extract content via
+const SCAN_INLINE_SET: &[subprocess::InlineKind] = &[
+    subprocess::InlineKind::Text,
+    subprocess::InlineKind::Html,
+    subprocess::InlineKind::Media,
+    subprocess::InlineKind::Office,
+];
+
 /// subprocess, handle OOM server-fallback, and accumulate the result in the
 /// batch. Called from both the `run_scan` loop and `scan_single_file`.
 /// Returns `true` if the file was actually submitted to the server, `false` if
@@ -476,8 +483,8 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
         info!("Processing {rel_path}");
     }
 
-    match subprocess::resolve_extractor(abs_path, &eff_scan) {
-        subprocess::ExtractorChoice::External(ref ext_cfg) => {
+    match subprocess::resolve_extractor(abs_path, &eff_scan, &eff_scan.extractor_dir, SCAN_INLINE_SET) {
+        subprocess::ExtractorRoute::External(ref ext_cfg) => {
             match ext_cfg.mode {
                 ExternalExtractorMode::Stdout => {
                     // ── External stdout extraction ────────────────────────────────
@@ -587,8 +594,8 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                 }
             }
         }
-        subprocess::ExtractorChoice::Builtin => {
-            if find_extract_archive::accepts(abs_path) {
+        subprocess::ExtractorRoute::Archive => {
+            {
                 // ── Streaming archive extraction ─────────────────────────────────────
                 // Members are processed one at a time via a bounded channel so that
                 // lines are freed after each member is converted to an IndexFile,
@@ -621,7 +628,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
 
                 if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
                 let (mut member_rx, subprocess_task) = subprocess::start_archive_subprocess(
-                    abs_path.to_path_buf(), &eff_scan, &eff_scan.extractor_dir);
+                    abs_path.to_path_buf(), &eff_scan, &subprocess::resolve_binary_for_archive(&eff_scan.extractor_dir));
 
                 let mut members_submitted: usize = 0;
                 while let Some(member_batch) = member_rx.recv().await {
@@ -705,43 +712,57 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                     scanner_version: SCANNER_VERSION,
                     is_new,
                 });
-            } else {
-                // ── Non-archive extraction ────────────────────────────────────────────
-                // dispatch_from_path handles MIME detection internally: it emits a
-                // [FILE:mime] line when no extractor matched the bytes, so we check
-                // for that line below to update the kind accordingly.
-                let t0 = std::time::Instant::now();
-                if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
-                let outcome = subprocess::extract_via_subprocess(
-                    abs_path, &eff_scan, &eff_scan.extractor_dir).await;
-                if ctx.quiet { lazy_header::clear_pending(); }
-
-                let lines = match outcome {
-                    subprocess::SubprocessOutcome::Ok(lines) => lines,
-                    subprocess::SubprocessOutcome::BinaryMissing => {
-                        // Extractor binary not installed — skip this file entirely so it
-                        // is re-indexed (with content) once the binary is deployed.
-                        warn!("skipping {rel_path}: extractor binary not found (file will be retried once the binary is installed)");
-                        return Ok(false);
-                    }
-                    subprocess::SubprocessOutcome::Failed => {
-                        if eff_scan.server_fallback {
-                            if let Err(e) = upload::upload_file(ctx.api, abs_path, rel_path, mtime, ctx.source_name).await {
-                                warn!("server fallback upload failed for {rel_path}: {e:#}");
-                                // Fall through: index filename-only so file appears in search.
-                            } else {
-                                // Server will index it; skip local filename-only entry.
-                                return Ok(true);
-                            }
-                        }
-                        // Index filename-only so the file is at least findable by name.
-                        vec![]
-                    }
-                };
-
-                let extract_ms = t0.elapsed().as_millis() as u64;
-                push_non_archive_files(ctx, rel_path, abs_path, mtime, size, kind, lines, extract_ms, is_new).await?;
             }
+        }
+        subprocess::ExtractorRoute::Subprocess(ref binary) => {
+            // ── Non-archive extraction ────────────────────────────────────────────
+            // dispatch_from_path handles MIME detection internally: it emits a
+            // [FILE:mime] line when no extractor matched the bytes, so we check
+            // for that line below to update the kind accordingly.
+            let t0 = std::time::Instant::now();
+            if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
+            let outcome = subprocess::extract_via_subprocess(
+                abs_path, &eff_scan, binary).await;
+            if ctx.quiet { lazy_header::clear_pending(); }
+
+            let lines = match outcome {
+                subprocess::SubprocessOutcome::Ok(lines) => lines,
+                subprocess::SubprocessOutcome::BinaryMissing => {
+                    // Extractor binary not installed — skip this file entirely so it
+                    // is re-indexed (with content) once the binary is deployed.
+                    warn!("skipping {rel_path}: extractor binary not found (file will be retried once the binary is installed)");
+                    return Ok(false);
+                }
+                subprocess::SubprocessOutcome::Failed => {
+                    if eff_scan.server_fallback {
+                        if let Err(e) = upload::upload_file(ctx.api, abs_path, rel_path, mtime, ctx.source_name).await {
+                            warn!("server fallback upload failed for {rel_path}: {e:#}");
+                            // Fall through: index filename-only so file appears in search.
+                        } else {
+                            // Server will index it; skip local filename-only entry.
+                            return Ok(true);
+                        }
+                    }
+                    // Index filename-only so the file is at least findable by name.
+                    vec![]
+                }
+            };
+
+            let extract_ms = t0.elapsed().as_millis() as u64;
+            push_non_archive_files(ctx, rel_path, abs_path, mtime, size, kind, lines, extract_ms, is_new).await?;
+        }
+        subprocess::ExtractorRoute::Inline(inline_kind) => {
+            // `inline_kind` is the InlineKind enum variant (bound here to avoid shadowing
+            // the outer `kind: String` computed from detect_kind on line 473).
+            let t0 = std::time::Instant::now();
+            if ctx.quiet { lazy_header::set_pending(&abs_path.to_string_lossy()); }
+            let ext_config = extractor_config_from_scan(&eff_scan);
+            let lines = subprocess::extract_inline(inline_kind, abs_path, &ext_config);
+            if ctx.quiet { lazy_header::clear_pending(); }
+
+            let extract_ms = t0.elapsed().as_millis() as u64;
+            // `kind` here is the outer String variable, not the InlineKind.
+            push_non_archive_files(ctx, rel_path, abs_path, mtime, size, kind, lines, extract_ms, is_new).await?;
         }
     }
 

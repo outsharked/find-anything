@@ -467,6 +467,8 @@ fn resolve_watch_config(
 
 // ── File handling ─────────────────────────────────────────────────────────────
 
+const WATCH_INLINE_SET: &[subprocess::InlineKind] = &[subprocess::InlineKind::Text];
+
 async fn handle_update(
     api: &ApiClient,
     source_name: &str,
@@ -478,8 +480,8 @@ async fn handle_update(
 ) -> Result<()> {
     info!("update: {}", rel_path);
 
-    let lines = match subprocess::resolve_extractor(abs_path, eff_scan) {
-        subprocess::ExtractorChoice::External(ref ext_cfg) => match ext_cfg.mode {
+    let lines = match subprocess::resolve_extractor(abs_path, eff_scan, extractor_dir, WATCH_INLINE_SET) {
+        subprocess::ExtractorRoute::External(ref ext_cfg) => match ext_cfg.mode {
             ExternalExtractorMode::Stdout => {
                 match subprocess::run_external_stdout(abs_path, ext_cfg, eff_scan).await {
                     subprocess::ExternalOutcome::Ok(lines) => lines,
@@ -496,12 +498,27 @@ async fn handle_update(
                 }
             }
         },
-        subprocess::ExtractorChoice::Builtin => {
-            match subprocess::extract_via_subprocess(abs_path, eff_scan, extractor_dir).await {
+        subprocess::ExtractorRoute::Archive => {
+            // find-watch does not use the streaming MPSC path — treat as subprocess.
+            match subprocess::extract_via_subprocess(
+                abs_path, eff_scan,
+                &subprocess::resolve_binary_for_archive(extractor_dir),
+            ).await {
                 subprocess::SubprocessOutcome::Ok(lines) => lines,
                 subprocess::SubprocessOutcome::BinaryMissing => return Ok(()),
                 subprocess::SubprocessOutcome::Failed => vec![],
             }
+        }
+        subprocess::ExtractorRoute::Subprocess(ref binary) => {
+            match subprocess::extract_via_subprocess(abs_path, eff_scan, binary).await {
+                subprocess::SubprocessOutcome::Ok(lines) => lines,
+                subprocess::SubprocessOutcome::BinaryMissing => return Ok(()),
+                subprocess::SubprocessOutcome::Failed => vec![],
+            }
+        }
+        subprocess::ExtractorRoute::Inline(kind) => {
+            let ext_config = extractor_config_from_scan(eff_scan);
+            subprocess::extract_inline(kind, abs_path, &ext_config)
         }
     };
 
@@ -817,8 +834,8 @@ async fn handle_dir_rename(
             delete_paths.push(old_rel);
         } else if new_included && !old_source_included {
             // Was excluded, now included → full re-extraction.
-            let lines = match subprocess::resolve_extractor(new_abs, &new_eff_scan) {
-                subprocess::ExtractorChoice::External(ref ext_cfg) => match ext_cfg.mode {
+            let lines = match subprocess::resolve_extractor(new_abs, &new_eff_scan, extractor_dir, WATCH_INLINE_SET) {
+                subprocess::ExtractorRoute::External(ref ext_cfg) => match ext_cfg.mode {
                     ExternalExtractorMode::Stdout => {
                         match subprocess::run_external_stdout(new_abs, ext_cfg, &new_eff_scan).await {
                             subprocess::ExternalOutcome::Ok(lines) => lines,
@@ -835,12 +852,26 @@ async fn handle_dir_rename(
                         }
                     }
                 },
-                subprocess::ExtractorChoice::Builtin => {
-                    match subprocess::extract_via_subprocess(new_abs, &new_eff_scan, extractor_dir).await {
+                subprocess::ExtractorRoute::Archive => {
+                    match subprocess::extract_via_subprocess(
+                        new_abs, &new_eff_scan,
+                        &subprocess::resolve_binary_for_archive(extractor_dir),
+                    ).await {
                         subprocess::SubprocessOutcome::Ok(lines) => lines,
                         subprocess::SubprocessOutcome::BinaryMissing
                         | subprocess::SubprocessOutcome::Failed => vec![],
                     }
+                }
+                subprocess::ExtractorRoute::Subprocess(ref binary) => {
+                    match subprocess::extract_via_subprocess(new_abs, &new_eff_scan, binary).await {
+                        subprocess::SubprocessOutcome::Ok(lines) => lines,
+                        subprocess::SubprocessOutcome::BinaryMissing
+                        | subprocess::SubprocessOutcome::Failed => vec![],
+                    }
+                }
+                subprocess::ExtractorRoute::Inline(kind) => {
+                    let ext_config = extractor_config_from_scan(&new_eff_scan);
+                    subprocess::extract_inline(kind, new_abs, &ext_config)
                 }
             };
             let mtime = mtime_of(new_abs).unwrap_or(0);

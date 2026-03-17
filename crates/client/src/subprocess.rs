@@ -17,7 +17,7 @@ use find_common::{
     config::{ExternalExtractorConfig, ExtractorConfig, ExtractorEntry, ScanConfig},
 };
 use find_extract_archive::MemberBatch;
-use find_extract_dispatch::dispatch_from_bytes;
+use find_extract_dispatch::{dispatch_from_bytes, dispatch_from_path};
 
 /// Outcome of a subprocess extraction attempt.
 pub enum SubprocessOutcome {
@@ -41,31 +41,28 @@ pub enum ExternalOutcome {
     BinaryMissing,
 }
 
-/// Result of `resolve_extractor`.
-#[allow(dead_code)] // used by find-scan; other binaries share this module
-pub enum ExtractorChoice {
-    /// Use built-in routing (existing code paths).
-    Builtin,
+/// Which extractor to use for a given file.
+#[derive(Debug)]
+#[allow(dead_code)] // intentional: find-client compiles multiple binaries; not all use every export
+pub enum ExtractorRoute {
+    /// Call the extractor library directly in-process.
+    Inline(InlineKind),
+    /// Spawn the archive subprocess (streaming MPSC path).
+    Archive,
+    /// Spawn a non-archive extractor subprocess; contains the resolved binary path.
+    Subprocess(String),
     /// Use a user-configured external tool.
     External(ExternalExtractorConfig),
 }
 
-/// Resolve the extractor to use for a given file path.
-/// Checks [scan.extractors] first; falls back to built-in routing.
-#[allow(dead_code)] // used by find-scan; other binaries share this module
-pub fn resolve_extractor(path: &Path, scan: &ScanConfig) -> ExtractorChoice {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if let Some(entry) = scan.extractors.get(&ext) {
-        match entry {
-            ExtractorEntry::Builtin(_) => {}
-            ExtractorEntry::External(cfg) => return ExtractorChoice::External(cfg.clone()),
-        }
-    }
-    ExtractorChoice::Builtin
+/// Identifies which in-process extractor library to call.
+#[derive(PartialEq, Debug)]
+pub enum InlineKind {
+    /// Text/code files — routed through find_extract_dispatch::dispatch_from_path.
+    Text,
+    Html,
+    Media,
+    Office,
 }
 
 /// Substitute {file}, {name}, {dir} placeholders in extractor args.
@@ -272,6 +269,108 @@ pub async fn run_external_tempdir(
     ExternalOutcome::Ok(all_lines)
 }
 
+/// Resolve the binary path for a named extractor binary.
+/// Search order: configured extractor_dir → same dir as current exe → PATH.
+fn resolve_binary(name: &str, extractor_dir: &Option<String>) -> String {
+    if let Some(dir) = extractor_dir {
+        return format!("{}/{}", dir, name);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+    name.to_string()
+}
+
+/// Resolve the path to the find-extract-archive binary.
+#[allow(dead_code)]
+pub fn resolve_binary_for_archive(extractor_dir: &Option<String>) -> String {
+    resolve_binary("find-extract-archive", extractor_dir)
+}
+
+/// Resolve the extractor route for a given file path.
+///
+/// Resolution order:
+/// 1. User-configured `scan.extractors` entry → `External` (unless overridden to builtin)
+/// 2. Archive extensions → `Archive` (always subprocess regardless of inline_set)
+/// 3. PDF → `Subprocess("find-extract-pdf")` (always subprocess)
+/// 4. Extension matches an inline-eligible type and kind is in inline_set → `Inline(kind)`
+/// 5. Extension matches an inline-eligible type but kind not in inline_set → `Subprocess(binary)`
+/// 6. Everything else → `Subprocess("find-extract-dispatch")`
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub fn resolve_extractor(
+    path: &Path,
+    scan: &ScanConfig,
+    extractor_dir: &Option<String>,
+    inline_set: &[InlineKind],
+) -> ExtractorRoute {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // 1. User-configured extractor override.
+    if let Some(entry) = scan.extractors.get(&ext) {
+        match entry {
+            ExtractorEntry::Builtin(_) => {} // fall through to built-in routing
+            ExtractorEntry::External(cfg) => return ExtractorRoute::External(cfg.clone()),
+        }
+    }
+
+    // 2. Archive — always subprocess (streaming MPSC path is bespoke).
+    if find_extract_archive::is_archive_ext(&ext) {
+        return ExtractorRoute::Archive;
+    }
+
+    // 3. PDF — always subprocess (fork can panic on malformed data).
+    if ext == "pdf" {
+        return ExtractorRoute::Subprocess(resolve_binary("find-extract-pdf", extractor_dir));
+    }
+
+    // 4 & 5. Inline-eligible types — honour inline_set.
+    let inline_kind: Option<InlineKind> = match ext.as_str() {
+        "html" | "htm" | "xhtml" => Some(InlineKind::Html),
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "ico" | "webp" | "heic"
+        | "tiff" | "tif" | "raw" | "cr2" | "nef" | "arw"
+        | "mp3" | "flac" | "ogg" | "m4a" | "aac" | "wav" | "wma" | "opus"
+        | "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "flv" => Some(InlineKind::Media),
+        "docx" | "xlsx" | "xls" | "xlsm" | "pptx" => Some(InlineKind::Office),
+        _ => None,
+    };
+
+    if let Some(kind) = inline_kind {
+        let binary = match &kind {
+            InlineKind::Html   => "find-extract-html",
+            InlineKind::Media  => "find-extract-media",
+            InlineKind::Office => "find-extract-office",
+            InlineKind::Text   => "find-extract-dispatch",
+        };
+        if inline_set.contains(&kind) {
+            return ExtractorRoute::Inline(kind);
+        } else {
+            return ExtractorRoute::Subprocess(resolve_binary(binary, extractor_dir));
+        }
+    }
+
+    // 5b. Specialist subprocess types — route to their dedicated binary.
+    // epub must come before the dispatch fallthrough to preserve its dedicated extractor.
+    if ext == "epub" {
+        return ExtractorRoute::Subprocess(resolve_binary("find-extract-epub", extractor_dir));
+    }
+
+    // 6. Text/code and everything else — dispatch (inline if Text is in inline_set).
+    if inline_set.contains(&InlineKind::Text) {
+        ExtractorRoute::Inline(InlineKind::Text)
+    } else {
+        ExtractorRoute::Subprocess(resolve_binary("find-extract-dispatch", extractor_dir))
+    }
+}
+
 /// Extract content from any file via the appropriate subprocess.
 ///
 /// For archive files, parses `Vec<MemberBatch>` from the binary and flattens to
@@ -283,9 +382,9 @@ pub async fn run_external_tempdir(
 pub async fn extract_via_subprocess(
     abs_path: &Path,
     scan: &ScanConfig,
-    extractor_dir: &Option<String>,
+    binary: &str,
 ) -> SubprocessOutcome {
-    let binary = extractor_binary_for(abs_path, extractor_dir);
+    let binary = binary.to_string();
     let max_content_kb = (scan.max_content_size_mb * 1024).to_string();
     let max_depth = scan.archives.max_depth.to_string();
     let max_line_length = scan.max_line_length.to_string();
@@ -385,9 +484,9 @@ pub async fn extract_via_subprocess(
 pub fn start_archive_subprocess(
     abs_path: PathBuf,
     scan: &ScanConfig,
-    extractor_dir: &Option<String>,
+    binary: &str,
 ) -> (mpsc::Receiver<MemberBatch>, tokio::task::JoinHandle<bool>) {
-    let binary = extractor_binary_for(&abs_path, extractor_dir);
+    let binary = binary.to_string();
     let max_content_kb = (scan.max_content_size_mb * 1024).to_string();
     let max_depth = scan.archives.max_depth.to_string();
     let max_line_length = scan.max_line_length.to_string();
@@ -620,24 +719,45 @@ mod tests {
     }
 
     #[test]
-    fn resolve_extractor_builtin_sentinel_falls_through() {
-        use find_common::config::{ExtractorEntry, ScanConfig};
-        let mut scan = ScanConfig::default();
-        scan.extractors.insert("zip".to_string(), ExtractorEntry::Builtin("builtin".to_string()));
-        let path = std::path::Path::new("archive.zip");
-        assert!(matches!(super::resolve_extractor(path, &scan), super::ExtractorChoice::Builtin));
-    }
-
-    #[test]
-    fn resolve_extractor_unknown_extension_is_builtin() {
+    fn route_html_with_html_in_inline_set_returns_inline() {
         use find_common::config::ScanConfig;
         let scan = ScanConfig::default();
-        let path = std::path::Path::new("file.nd1");
-        assert!(matches!(super::resolve_extractor(path, &scan), super::ExtractorChoice::Builtin));
+        let path = std::path::Path::new("page.html");
+        let route = super::resolve_extractor(path, &scan, &None, &[super::InlineKind::Html]);
+        assert!(matches!(route, super::ExtractorRoute::Inline(super::InlineKind::Html)));
     }
 
     #[test]
-    fn resolve_extractor_external_entry_returned() {
+    fn route_html_without_html_in_inline_set_returns_subprocess() {
+        use find_common::config::ScanConfig;
+        let scan = ScanConfig::default();
+        let path = std::path::Path::new("page.html");
+        let route = super::resolve_extractor(path, &scan, &None, &[]);
+        assert!(matches!(route, super::ExtractorRoute::Subprocess(_)));
+    }
+
+    #[test]
+    fn route_pdf_always_subprocess() {
+        use find_common::config::ScanConfig;
+        let scan = ScanConfig::default();
+        let path = std::path::Path::new("doc.pdf");
+        let all = &[super::InlineKind::Text, super::InlineKind::Html,
+                    super::InlineKind::Media, super::InlineKind::Office];
+        let route = super::resolve_extractor(path, &scan, &None, all);
+        assert!(matches!(route, super::ExtractorRoute::Subprocess(_)));
+    }
+
+    #[test]
+    fn route_zip_always_archive() {
+        use find_common::config::ScanConfig;
+        let scan = ScanConfig::default();
+        let path = std::path::Path::new("archive.zip");
+        let route = super::resolve_extractor(path, &scan, &None, &[]);
+        assert!(matches!(route, super::ExtractorRoute::Archive));
+    }
+
+    #[test]
+    fn route_external_entry_still_returned() {
         use find_common::config::{ExternalExtractorConfig, ExternalExtractorMode, ExtractorEntry, ScanConfig};
         let mut scan = ScanConfig::default();
         scan.extractors.insert(
@@ -648,11 +768,34 @@ mod tests {
                 args: vec!["{file}".to_string(), "{dir}".to_string()],
             }),
         );
-        let path = std::path::Path::new("archive.nd1");
-        assert!(matches!(
-            super::resolve_extractor(path, &scan),
-            super::ExtractorChoice::External(_)
-        ));
+        let path = std::path::Path::new("file.nd1");
+        let route = super::resolve_extractor(path, &scan, &None, &[]);
+        assert!(matches!(route, super::ExtractorRoute::External(_)));
+    }
+
+    #[test]
+    fn route_media_inline_set_respected() {
+        use find_common::config::ScanConfig;
+        let scan = ScanConfig::default();
+        let path = std::path::Path::new("photo.jpg");
+        let route_inline = super::resolve_extractor(path, &scan, &None, &[super::InlineKind::Media]);
+        let route_sub    = super::resolve_extractor(path, &scan, &None, &[]);
+        assert!(matches!(route_inline, super::ExtractorRoute::Inline(super::InlineKind::Media)));
+        assert!(matches!(route_sub, super::ExtractorRoute::Subprocess(_)));
+    }
+
+    #[test]
+    fn route_unknown_extension_is_dispatch_subprocess() {
+        use find_common::config::ScanConfig;
+        let scan = ScanConfig::default();
+        let path = std::path::Path::new("file.xyz"); // unknown extension, not used elsewhere
+        let route = super::resolve_extractor(path, &scan, &None, &[]);
+        match &route {
+            super::ExtractorRoute::Subprocess(bin) => {
+                assert!(bin.contains("find-extract-dispatch"), "unexpected binary: {bin}");
+            }
+            _ => panic!("expected Subprocess, got different variant"),
+        }
     }
 
     #[cfg(unix)]
@@ -779,48 +922,61 @@ mod tests {
             "expected Failed"
         );
     }
+
+    #[test]
+    fn extract_inline_text_returns_lines() {
+        use find_common::config::ScanConfig;
+        let cfg = find_common::config::extractor_config_from_scan(&ScanConfig::default());
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let path = manifest.join("src/subprocess.rs"); // large file, always non-empty
+        let lines = super::extract_inline(super::InlineKind::Text, &path, &cfg);
+        assert!(!lines.is_empty(), "expected text lines from subprocess.rs");
+    }
+
+    #[test]
+    fn extract_inline_html_returns_lines() {
+        use find_common::config::ScanConfig;
+        let cfg = find_common::config::extractor_config_from_scan(&ScanConfig::default());
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fixture = manifest.join("tests/fixtures");
+        let html_file = std::fs::read_dir(&fixture).ok()
+            .and_then(|mut d| d.find(|e| {
+                e.as_ref().ok()
+                    .and_then(|e| e.path().extension().map(|x| x == "html"))
+                    .unwrap_or(false)
+            }))
+            .and_then(|e| e.ok())
+            .map(|e| e.path());
+        if let Some(path) = html_file {
+            let lines = super::extract_inline(super::InlineKind::Html, &path, &cfg);
+            assert!(!lines.is_empty(), "expected html lines");
+        }
+        // No HTML fixture → pass silently.
+    }
 }
 
-pub fn extractor_binary_for(path: &Path, extractor_dir: &Option<String>) -> String {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    let name = match ext.as_str() {
-        "zip" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" | "txz" | "7z" => {
-            "find-extract-archive"
-        }
-        "pdf" => "find-extract-pdf",
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "ico" | "webp" | "heic"
-        | "tiff" | "tif" | "raw" | "cr2" | "nef" | "arw"
-        | "mp3" | "flac" | "ogg" | "m4a" | "aac" | "wav" | "wma" | "opus"
-        | "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "flv" => {
-            "find-extract-media"
-        }
-        "html" | "htm" | "xhtml" => "find-extract-html",
-        "docx" | "xlsx" | "xls" | "xlsm" | "pptx" => "find-extract-office",
-        "epub" => "find-extract-epub",
-        _ => "find-extract-dispatch",
+/// Call an extractor library in-process without spawning a subprocess.
+///
+/// On error, logs a warning and returns an empty vec (same semantics as a
+/// subprocess `Failed` outcome: the file will be indexed by filename only).
+///
+/// `extract_inline` is synchronous. When called from an async context it
+/// will block the Tokio executor thread; this is an accepted trade-off for
+/// this change — `spawn_blocking` wrapping is out of scope.
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub fn extract_inline(kind: InlineKind, path: &Path, cfg: &ExtractorConfig) -> Vec<IndexLine> {
+    let result = match kind {
+        InlineKind::Text => dispatch_from_path(path, cfg),
+        InlineKind::Html => find_extract_html::extract(path, cfg),
+        InlineKind::Media => find_extract_media::extract(path, cfg),
+        InlineKind::Office => find_extract_office::extract(path, cfg),
     };
-
-    // Resolution order:
-    // 1. configured extractor_dir / name
-    // 2. same dir as current executable / name
-    // 3. name (rely on PATH)
-    if let Some(dir) = extractor_dir {
-        return format!("{}/{}", dir, name);
-    }
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return candidate.to_string_lossy().to_string();
-            }
+    match result {
+        Ok(lines) => lines,
+        Err(e) => {
+            warn!("inline extraction failed for {}: {e:#}", path.display());
+            vec![]
         }
     }
-
-    name.to_string()
 }
+

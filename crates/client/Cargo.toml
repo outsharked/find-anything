@@ -29,6 +29,8 @@ find-extract-dispatch  = { path = "../extractors/dispatch" }
 find-extract-archive   = { path = "../extractors/archive" }
 # media still needed directly for detect_kind (is_image_ext / is_audio_ext / is_video_ext)
 find-extract-media     = { path = "../extractors/media" }
+find-extract-html      = { path = "../extractors/html" }
+find-extract-office    = { path = "../extractors/office" }
 # pdf and pe still needed directly for detect_kind (accepts())
 find-extract-pdf       = { path = "../extractors/pdf" }
 find-extract-pe        = { path = "../extractors/pe" }
