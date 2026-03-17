@@ -178,9 +178,13 @@ export async function getFile(
 	return resp.json();
 }
 
-export async function listFiles(source: string): Promise<FileRecord[]> {
+export async function listFiles(source: string, q?: string, limit = 50): Promise<FileRecord[]> {
 	const url = new URL('/api/v1/files', location.origin);
 	url.searchParams.set('source', source);
+	if (q !== undefined) {
+		url.searchParams.set('q', q);
+		url.searchParams.set('limit', String(limit));
+	}
 	const resp = await apiFetch(url.toString());
 	if (!resp.ok) throw new Error(`listFiles: ${resp.status} ${resp.statusText}`);
 	return resp.json();

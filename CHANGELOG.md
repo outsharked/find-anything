@@ -11,6 +11,17 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Ctrl+P palette: server-side search** — `GET /api/v1/files` now accepts optional `?q=&limit=` params; when `q` is present the server returns up to `limit` (default 50) substring-matched paths (case-insensitive LIKE) ordered by path, or the most-recently-indexed files when `q` is empty; the palette no longer downloads the full file list on open, making it practical for sources with 100 k+ files
+- **Ctrl+P palette: scope badge** — the input row shows a pill badge indicating which sources are being searched: the source name when scoped to one source, per-source badges when scoped to a subset, or a dimmed "all" badge when all sources (>1) are searched
+- **Ctrl+P palette: stale-result preservation** — the results list is not blanked during a refresh; new results replace the old ones in-place once the fetch completes, eliminating the flash to an empty view on each keystroke
+- **Testing requirements in CLAUDE.md** — added a table specifying when to write web UI unit tests (Vitest), server integration tests (`TestServer`), and CLI end-to-end tests; added guidance on replacing deleted client-side unit tests with server-side equivalents when logic moves to the server
+- **`GET /api/v1/files` integration tests** (`crates/server/tests/files_search.rs`) — 6 tests covering: full list returned when `q` absent, empty `q` returns recent files, substring match, case-insensitive match, no match returns empty, `limit` param respected
+
+### Fixed
+
+- **Ctrl+P palette: infinite loop on open** — replaced `$: if (open)` reactive block (which read `inputEl` inside a `tick().then()` callback, causing `bind:this` to re-trigger it every flush) with a `beforeUpdate` + previous-value guard that fires exactly once on the `false→true` transition
+- **Ctrl+P palette: typed characters not appearing** — removed the `$: if (typeof query === 'string') scheduleSearch(query)` reactive statement that fired before `bind:value` could update `query`; search is now triggered via `on:input` reading `e.target.value` directly, matching the pattern used by the main search box
+
 - Inline safe extractors in find-scan: text, HTML, media, and office files are now
   extracted in-process rather than via subprocess, eliminating IPC overhead for the
   most common file types. find-watch inlines text only (memory footprint concern).

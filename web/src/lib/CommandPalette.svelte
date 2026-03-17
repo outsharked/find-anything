@@ -1,65 +1,90 @@
 <script lang="ts">
-	import { createEventDispatcher, tick } from 'svelte';
+	import { createEventDispatcher, beforeUpdate, tick } from 'svelte';
 	import { listFiles } from '$lib/api';
 	import type { FileRecord } from '$lib/api';
-	import { buildItems, filterItems, splitDisplayPath, archivePathOf } from '$lib/commandPaletteLogic';
+	import { splitDisplayPath, archivePathOf } from '$lib/commandPaletteLogic';
 
 	/** Set to true to show the palette. */
 	export let open = false;
 	/** Source(s) to search. Empty = no filter (all sources). */
 	export let sources: string[] = [];
+	/** Total number of sources available — used to decide whether to show "all". */
+	export let totalSourceCount = 0;
 
 	const dispatch = createEventDispatcher<{
 		select: { source: string; path: string; archivePath: string | null; kind: string };
 		close: void;
 	}>();
 
+	type SourcedFile = FileRecord & { source: string };
+
 	let query = '';
 	let selected = 0;
 	let inputEl: HTMLInputElement;
-
-	// Per-source file list cache. Must be `let` (not `const`) so Svelte's
-	// reactivity tracks it — Map mutations don't trigger updates, but
-	// reassigning `cache = cache` after each set does.
-	let cache = new Map<string, FileRecord[]>();
-
+	let results: SourcedFile[] = [];
 	let loading = false;
+	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-	// Fetch all scoped sources in parallel when palette opens or sources change.
-	$: if (open && sources.length) loadAll(sources);
+	$: isAll = totalSourceCount > 1 && sources.length >= totalSourceCount;
 
-	async function ensureLoaded(source: string): Promise<void> {
-		if (cache.has(source)) return;
-		const records = await listFiles(source);
-		cache.set(source, records);
-		cache = cache; // trigger Svelte reactivity for allItems
+	// Use beforeUpdate + previous-value guard to react to open transitioning
+	// false→true. A `$: if (open)` reactive block reads `inputEl` (inside its
+	// tick callback), so bind:this re-triggers it every flush — infinite loop.
+	let prevOpen = false;
+	beforeUpdate(() => {
+		if (open && !prevOpen) {
+			query = '';
+			results = [];
+			loading = true;
+			tick().then(() => {
+				inputEl?.focus();
+				fetchResults('');
+			});
+		}
+		prevOpen = open;
+	});
+
+	function handleInput(e: Event) {
+		query = (e.target as HTMLInputElement).value;
+		scheduleSearch(query);
 	}
 
-	async function loadAll(srcs: string[]) {
+	function scheduleSearch(q: string) {
+		if (debounceTimer) clearTimeout(debounceTimer);
+		debounceTimer = setTimeout(() => fetchResults(q), 500);
+	}
+
+	async function fetchResults(q: string) {
+		if (!sources.length) return;
 		loading = true;
 		try {
-			await Promise.all(srcs.map(ensureLoaded));
+			const all = await Promise.all(
+				sources.map(async (src) => {
+					const records = await listFiles(src, q, 50);
+					return records.map((r): SourcedFile => ({ ...r, source: src }));
+				})
+			);
+			results = all.flat();
+			selected = 0;
 		} catch {
-			// partial failures are silently swallowed; missing sources yield no items
+			// partial failures silently yield no items for that source
 		} finally {
 			loading = false;
 		}
 	}
 
-	$: allItems = buildItems(cache, sources);
-	$: filtered = filterItems(allItems, query);
-
-	$: if (filtered) selected = 0;
-
-	$: if (open) tick().then(() => inputEl?.focus());
+	function scrollSelected() {
+		tick().then(() => {
+			document.querySelector('.cp-item.active')?.scrollIntoView({ block: 'nearest' });
+		});
+	}
 
 	function close() {
-		query = '';
 		dispatch('close');
 	}
 
 	function confirm() {
-		const item = filtered[selected];
+		const item = results[selected];
 		if (item) {
 			const i = item.path.indexOf('::');
 			const outerPath = i >= 0 ? item.path.slice(0, i) : item.path;
@@ -74,19 +99,15 @@
 			close();
 		} else if (e.key === 'ArrowDown') {
 			e.preventDefault();
-			selected = Math.min(selected + 1, filtered.length - 1);
+			selected = Math.min(selected + 1, results.length - 1);
+			scrollSelected();
 		} else if (e.key === 'ArrowUp') {
 			e.preventDefault();
 			selected = Math.max(selected - 1, 0);
+			scrollSelected();
 		} else if (e.key === 'Enter') {
 			confirm();
 		}
-	}
-
-	$: if (typeof document !== 'undefined' && selected >= 0) {
-		tick().then(() => {
-			document.querySelector('.cp-item.active')?.scrollIntoView({ block: 'nearest' });
-		});
 	}
 </script>
 
@@ -97,21 +118,31 @@
 		<div class="cp-panel" on:click|stopPropagation on:keydown|stopPropagation>
 			<div class="cp-input-wrap">
 				<span class="cp-icon">⌕</span>
+				{#if isAll}
+					<span class="cp-scope cp-scope-all">all</span>
+				{:else}
+					{#each sources as src}
+						<span class="cp-scope">{src}</span>
+					{/each}
+				{/if}
 				<input
 					bind:this={inputEl}
 					bind:value={query}
 					class="cp-input"
 					placeholder="Go to file…"
+					autocomplete="off"
+					spellcheck="false"
+					on:input={handleInput}
 					on:keydown={onKeydown}
 				/>
 			</div>
 			<div class="cp-results">
-				{#if loading}
-					<div class="cp-status">Loading files…</div>
-				{:else if filtered.length === 0}
-					<div class="cp-status">No matches</div>
+				{#if results.length === 0 && loading}
+					<div class="cp-status">Loading…</div>
+				{:else if results.length === 0}
+					<div class="cp-status">{query ? 'No matches' : 'No files indexed'}</div>
 				{:else}
-					{#each filtered as item, i (`${item.source}:${item.path}`)}
+					{#each results as item, i (`${item.source}:${item.path}`)}
 						<button
 							type="button"
 							class="cp-item"
@@ -177,6 +208,21 @@
 		color: var(--text);
 		font-size: 14px;
 		font-family: var(--font-mono);
+	}
+
+	.cp-scope {
+		font-size: 11px;
+		color: var(--text-muted);
+		background: var(--badge-bg);
+		border: 1px solid var(--border);
+		padding: 1px 8px;
+		border-radius: 20px;
+		flex-shrink: 0;
+		white-space: nowrap;
+	}
+
+	.cp-scope-all {
+		opacity: 0.7;
 	}
 
 	.cp-source {

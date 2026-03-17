@@ -116,17 +116,24 @@ pub async fn get_file(
 }
 
 
-// ── GET /api/v1/files?source=<name> ──────────────────────────────────────────
+// ── GET /api/v1/files?source=<name>[&q=<query>&limit=<n>] ────────────────────
+//
+// Without `q`: returns the full file list (used by find-scan for deletion detection).
+// With `q`: returns up to `limit` (default 50) matching files for the Ctrl+P palette.
 
 #[derive(Deserialize)]
-pub struct SourceParam {
+pub struct FilesParams {
     pub source: String,
+    /// Search query for palette mode. When present, returns up to `limit` matches.
+    pub q: Option<String>,
+    /// Maximum results for palette mode (default 50).
+    pub limit: Option<usize>,
 }
 
 pub async fn list_files(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(params): Query<SourceParam>,
+    Query(params): Query<FilesParams>,
 ) -> impl IntoResponse {
     if let Err(s) = check_auth(&state, &headers) { return (s, Json(serde_json::Value::Null)).into_response(); }
 
@@ -135,8 +142,14 @@ pub async fn list_files(
         Err(s) => return (s, Json(serde_json::Value::Null)).into_response(),
     };
 
+    let q = params.q.clone();
+    let limit = params.limit.unwrap_or(50);
+
     run_blocking("list_files", move || {
         let conn = db::open(&db_path)?;
-        db::list_files(&conn).map(Json)
+        match q {
+            Some(q) => db::search_files(&conn, &q, limit).map(Json),
+            None    => db::list_files(&conn).map(Json),
+        }
     }).await
 }

@@ -262,6 +262,26 @@ removing a config option in one, update the other at the same time.
 
 ---
 
+### Testing requirements
+
+Apply the following testing requirements whenever making changes:
+
+| Change type | Required tests |
+|---|---|
+| Web UI logic (TypeScript/Svelte) | Client-side unit tests in `web/src/lib/*.test.ts` using Vitest |
+| New or changed HTTP endpoints | Integration tests in `crates/server/tests/` using `TestServer` |
+| New or changed CLI behaviour (`find-scan`, `find-watch`, `find-admin`) | End-to-end tests that invoke the binary or use the client API |
+
+**Web UI unit tests** — place alongside the module under test (e.g. `commandPaletteLogic.test.ts` next to `commandPaletteLogic.ts`). Run with `pnpm run test` inside `web/`.
+
+**Server integration tests** — use `TestServer::spawn()` from `crates/server/tests/helpers/`. Create a new `crates/server/tests/<feature>.rs` file for each new endpoint or significant change. Existing test files are good reference examples. Run with `cargo test --test <name>`.
+
+**CLI end-to-end tests** — invoke the compiled binary against a running `TestServer`. Use the existing pattern in `crates/server/tests/` as a guide. Run with `cargo test`.
+
+When deleting client-side logic that was previously unit-tested, replace those tests with equivalent server-side integration tests if the behaviour moved to the server.
+
+---
+
 ### Commits
 
 **Do not automatically commit changes.** Always wait for explicit user instruction before running `git commit`. Complete the implementation and verify it works first; the user will ask to commit when ready.

@@ -7,7 +7,7 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] BUG: back arrow browser navigation doesn't work at all
 [ ] CHORE: frontent ux tests
 [ ] CHORE: Code quality analysis on file scanning/walking/filtering pipeline
-[ ] FEAT: With [sources.nas-data] path = "/mnt/nas-data" missing from server, need to handle inline displaye better
+[ ] FEAT: When [sources.nas-data] path = "/mnt/nas-data" is missing from server, show a clear inline error message or fallback UI in the client
 [ ] FEAT: In image detail split view, should be able to move divider/resize window
 [ ] BUG: pictures/2014/Jamie Phone 2014/20140410_074302.jpg - no metadata available - why?
 [ ] FEAT: Guard against low disk space

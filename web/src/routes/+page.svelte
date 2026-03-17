@@ -571,6 +571,7 @@
 <CommandPalette
 	open={showPalette}
 	sources={paletteSources}
+	totalSourceCount={sourceNames.length}
 	on:select={handlePaletteSelect}
 	on:close={() => (showPalette = false)}
 />

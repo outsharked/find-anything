@@ -334,6 +334,31 @@ pub fn list_files(conn: &Connection) -> Result<Vec<FileRecord>> {
     Ok(rows)
 }
 
+// ── File search (for Ctrl+P palette) ─────────────────────────────────────────
+
+pub fn search_files(conn: &Connection, q: &str, limit: usize) -> Result<Vec<FileRecord>> {
+    if q.is_empty() {
+        // No query: return most recently indexed files.
+        let mut stmt = conn.prepare(
+            "SELECT path, kind FROM files ORDER BY indexed_at DESC LIMIT ?"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(FileRecord { path: row.get(0)?, mtime: 0, kind: row.get(1)?,
+                scanner_version: 0, indexed_at: Some(0) })
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        return Ok(rows);
+    }
+    let pattern = format!("%{}%", q);
+    let mut stmt = conn.prepare(
+        "SELECT path, kind FROM files WHERE lower(path) LIKE lower(?) ORDER BY path LIMIT ?"
+    )?;
+    let rows = stmt.query_map(params![pattern, limit as i64], |row| {
+        Ok(FileRecord { path: row.get(0)?, mtime: 0, kind: row.get(1)?,
+            scanner_version: 0, indexed_at: Some(0) })
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 // ── Upsert ────────────────────────────────────────────────────────────────────
 
 pub fn upsert_files(conn: &Connection, files: &[IndexFile]) -> Result<()> {
