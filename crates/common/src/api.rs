@@ -423,7 +423,7 @@ fn default_max_markdown_render_kb() -> usize { 512 }
 // ── Stats types ───────────────────────────────────────────────────────────────
 
 /// Per-kind breakdown entry in `SourceStats`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KindStats {
     pub count: usize,
     pub size: i64,

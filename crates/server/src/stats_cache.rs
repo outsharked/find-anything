@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 
 use find_common::api::{ExtStat, FileKind, KindStats};
 
@@ -11,6 +10,7 @@ use find_common::api::{ExtStat, FileKind, KindStats};
 pub struct SourceStatsCache {
     pub sources: Vec<CachedSourceStats>,
     /// Unix timestamp of the last full rebuild.
+    #[allow(dead_code)]
     pub rebuilt_at: Option<i64>,
 }
 
@@ -21,14 +21,17 @@ pub struct CachedSourceStats {
     pub total_size:  i64,
     pub by_kind:     HashMap<FileKind, KindStats>,
     /// Only populated on full rebuild.
+    #[allow(dead_code)]
     pub by_ext:      Vec<ExtStat>,
     /// Only populated on full rebuild.
+    #[allow(dead_code)]
     pub fts_row_count: i64,
 }
 
 /// Run all expensive queries for every source DB and store results in `cache`.
 /// Called at startup, daily, and on `?refresh=true`.
-pub fn full_rebuild(data_dir: &Path, cache: &Arc<std::sync::RwLock<SourceStatsCache>>) {
+#[allow(dead_code)]
+pub fn full_rebuild(data_dir: &Path, cache: &std::sync::RwLock<SourceStatsCache>) {
     let sources_dir = data_dir.join("sources");
     let mut sources: Vec<CachedSourceStats> = Vec::new();
 
@@ -56,6 +59,7 @@ pub fn full_rebuild(data_dir: &Path, cache: &Arc<std::sync::RwLock<SourceStatsCa
 
     sources.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let source_count = sources.len();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -65,10 +69,11 @@ pub fn full_rebuild(data_dir: &Path, cache: &Arc<std::sync::RwLock<SourceStatsCa
         guard.sources = sources;
         guard.rebuilt_at = Some(now);
     }
-    tracing::debug!("stats_cache: full rebuild complete");
+    tracing::debug!("stats_cache: full rebuild complete ({source_count} sources)");
 }
 
 /// Per-source incremental delta — applied after each worker batch.
+#[allow(dead_code)]
 #[derive(Default)]
 pub struct SourceStatsDelta {
     pub source: String,
@@ -79,16 +84,13 @@ pub struct SourceStatsDelta {
 }
 
 impl SourceStatsCache {
+    #[allow(dead_code)]
     pub fn apply_delta(&mut self, delta: &SourceStatsDelta) {
         if let Some(s) = self.sources.iter_mut().find(|s| s.name == delta.source) {
             s.total_files = (s.total_files as i64 + delta.files_delta).max(0) as usize;
             s.total_size  = (s.total_size  + delta.size_delta).max(0);
             for (kind, (count_d, size_d)) in &delta.kind_deltas {
-                let e = s.by_kind.entry(kind.clone()).or_insert_with(|| KindStats {
-                    count: 0,
-                    size: 0,
-                    avg_extract_ms: None,
-                });
+                let e = s.by_kind.entry(kind.clone()).or_default();
                 e.count = (e.count as i64 + count_d).max(0) as usize;
                 e.size  = (e.size  + size_d).max(0);
             }
