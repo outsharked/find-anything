@@ -287,7 +287,6 @@ fn resolve_binary(name: &str, extractor_dir: &Option<String>) -> String {
 }
 
 /// Resolve the path to the find-extract-archive binary.
-#[allow(dead_code)]
 pub fn resolve_binary_for_archive(extractor_dir: &Option<String>) -> String {
     resolve_binary("find-extract-archive", extractor_dir)
 }

@@ -595,8 +595,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
             }
         }
         subprocess::ExtractorRoute::Archive => {
-            {
-                // ── Streaming archive extraction ─────────────────────────────────────
+            // ── Streaming archive extraction ─────────────────────────────────────
                 // Members are processed one at a time via a bounded channel so that
                 // lines are freed after each member is converted to an IndexFile,
                 // rather than holding the entire archive's content in memory.
@@ -712,7 +711,6 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                     scanner_version: SCANNER_VERSION,
                     is_new,
                 });
-            }
         }
         subprocess::ExtractorRoute::Subprocess(ref binary) => {
             // ── Non-archive extraction ────────────────────────────────────────────
