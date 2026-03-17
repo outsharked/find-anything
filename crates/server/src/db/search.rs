@@ -28,16 +28,40 @@ impl DateFilter {
     }
 }
 
-/// Build `AND f.kind IN (?{start}, ...)` for `n` kind values, or empty if n == 0.
-fn kind_in_clause(n: usize, start: usize) -> String {
-    if n == 0 {
-        return String::new();
+// ── ParamBinder ───────────────────────────────────────────────────────────────
+
+/// Accumulates SQL parameters and auto-numbers their `?N` placeholders.
+///
+/// Eliminates manual placeholder numbering in dynamic WHERE clauses: each
+/// `push()` call appends a value and returns the correct `?N` string.
+///
+/// Lifetime note: call `as_refs()` and bind the result before passing it to
+/// `stmt.query()` — the borrow must outlive the query call:
+///
+/// ```ignore
+/// let mut p = ParamBinder::new();
+/// let fts_ph   = p.push(fts_query);
+/// let limit_ph = p.push(limit as i64);
+/// let sql = format!("… MATCH {fts_ph} … LIMIT {limit_ph}");
+/// let refs = p.as_refs();
+/// stmt.query(refs.as_slice())?;
+/// ```
+struct ParamBinder {
+    params: Vec<Box<dyn rusqlite::ToSql>>,
+}
+
+impl ParamBinder {
+    fn new() -> Self { Self { params: vec![] } }
+
+    /// Append a value and return its `?N` placeholder string.
+    fn push(&mut self, v: impl rusqlite::ToSql + 'static) -> String {
+        self.params.push(Box::new(v));
+        format!("?{}", self.params.len())
     }
-    let placeholders = (start..start + n)
-        .map(|i| format!("?{i}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("AND f.kind IN ({placeholders})")
+
+    fn as_refs(&self) -> Vec<&dyn rusqlite::ToSql> {
+        self.params.iter().map(|p| p.as_ref()).collect()
+    }
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
@@ -103,35 +127,35 @@ pub fn fts_count(conn: &Connection, query: &str, limit: usize, phrase: bool, dat
     // Date/kind/filename filter active: need JOIN to lines and files.
     let from = date.from.unwrap_or(i64::MIN);
     let to = date.to.unwrap_or(i64::MAX);
-    let kind_clause = kind_in_clause(date.kinds.len(), 5);
     let filename_clause = if date.filename_only { "AND l.line_number = 0" } else { "" };
+
+    let mut p = ParamBinder::new();
+    let fts_ph   = p.push(fts_query);
+    let limit_ph = p.push(limit as i64);
+    let from_ph  = p.push(from);
+    let to_ph    = p.push(to);
+    let kind_clause = if date.kinds.is_empty() {
+        String::new()
+    } else {
+        let phs = date.kinds.iter().map(|k| p.push(k.to_string())).collect::<Vec<_>>().join(", ");
+        format!("AND f.kind IN ({phs})")
+    };
+
     let sql = format!(
         "SELECT count(*) FROM (
              SELECT 1
              FROM lines_fts
              JOIN lines l ON l.id = lines_fts.rowid
              JOIN files f ON f.id = l.file_id
-             WHERE lines_fts MATCH ?1
-               AND f.mtime BETWEEN ?3 AND ?4
+             WHERE lines_fts MATCH {fts_ph}
+               AND f.mtime BETWEEN {from_ph} AND {to_ph}
                {kind_clause}
                {filename_clause}
-             LIMIT ?2
+             LIMIT {limit_ph}
          )"
     );
-    let mut dyn_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(fts_query),
-        Box::new(limit as i64),
-        Box::new(from),
-        Box::new(to),
-    ];
-    for k in &date.kinds {
-        dyn_params.push(Box::new(k.to_string()));
-    }
-    let count: i64 = conn.query_row(
-        &sql,
-        rusqlite::params_from_iter(dyn_params.iter().map(|p| p.as_ref())),
-        |row| row.get(0),
-    )?;
+    let refs = p.as_refs();
+    let count: i64 = conn.query_row(&sql, refs.as_slice(), |row| row.get(0))?;
     Ok(count as usize)
 }
 
@@ -180,7 +204,19 @@ pub fn fts_candidates(
     let raw: Vec<RawRow> = if date.is_active() || date.filename_only {
         let from = date.from.unwrap_or(i64::MIN);
         let to = date.to.unwrap_or(i64::MAX);
-        let kind_clause = kind_in_clause(date.kinds.len(), 5);
+
+        let mut p = ParamBinder::new();
+        let fts_ph   = p.push(fts_query.clone());
+        let limit_ph = p.push(limit as i64);
+        let from_ph  = p.push(from);
+        let to_ph    = p.push(to);
+        let kind_clause = if date.kinds.is_empty() {
+            String::new()
+        } else {
+            let phs = date.kinds.iter().map(|k| p.push(k.to_string())).collect::<Vec<_>>().join(", ");
+            format!("AND f.kind IN ({phs})")
+        };
+
         let sql = format!(
             "SELECT f.path, f.kind, l.line_number,
                     l.chunk_archive, l.chunk_name, l.line_offset_in_chunk, f.id,
@@ -188,26 +224,15 @@ pub fn fts_candidates(
              FROM lines_fts
              JOIN lines l ON l.id = lines_fts.rowid
              JOIN files f ON f.id = l.file_id
-             WHERE lines_fts MATCH ?1
-               AND f.mtime BETWEEN ?3 AND ?4
+             WHERE lines_fts MATCH {fts_ph}
+               AND f.mtime BETWEEN {from_ph} AND {to_ph}
                {kind_clause}
                {filename_clause}
-             LIMIT ?2"
+             LIMIT {limit_ph}"
         );
-        let mut dyn_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-            Box::new(fts_query.clone()),
-            Box::new(limit as i64),
-            Box::new(from),
-            Box::new(to),
-        ];
-        for k in &date.kinds {
-            dyn_params.push(Box::new(k.to_string()));
-        }
+        let refs = p.as_refs();
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(
-            rusqlite::params_from_iter(dyn_params.iter().map(|p| p.as_ref())),
-            map_row,
-        )?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt.query_map(refs.as_slice(), map_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     } else {
         let mut stmt = conn.prepare(
@@ -323,34 +348,25 @@ pub fn document_candidates(
     if date.is_active() && !qualifying_ids.is_empty() {
         let from = date.from.unwrap_or(i64::MIN);
         let to = date.to.unwrap_or(i64::MAX);
-        let id_count = qualifying_ids.len();
-        // Build an IN clause for the current qualifying set: ?3..?(id_count+2)
-        let id_placeholders: String = (3..3 + id_count)
-            .map(|i| format!("?{i}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // Kind IN clause starts after the id placeholders: ?(id_count+3)..
-        let kind_start = id_count + 3;
+
+        let mut p = ParamBinder::new();
+        let from_ph = p.push(from);
+        let to_ph   = p.push(to);
+        let id_phs  = qualifying_ids.iter().map(|&id| p.push(id)).collect::<Vec<_>>().join(", ");
         let kind_clause = if date.kinds.is_empty() {
             String::new()
         } else {
-            let placeholders = (kind_start..kind_start + date.kinds.len())
-                .map(|i| format!("?{i}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("AND kind IN ({placeholders})")
+            let phs = date.kinds.iter().map(|k| p.push(k.to_string())).collect::<Vec<_>>().join(", ");
+            format!("AND kind IN ({phs})")
         };
+
         let sql = format!(
-            "SELECT id FROM files WHERE id IN ({id_placeholders}) AND mtime BETWEEN ?1 AND ?2 {kind_clause}"
+            "SELECT id FROM files WHERE id IN ({id_phs}) AND mtime BETWEEN {from_ph} AND {to_ph} {kind_clause}"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let id_params: Vec<Box<dyn rusqlite::ToSql>> = std::iter::once(Box::new(from) as Box<dyn rusqlite::ToSql>)
-            .chain(std::iter::once(Box::new(to) as Box<dyn rusqlite::ToSql>))
-            .chain(qualifying_ids.iter().map(|&id| Box::new(id) as Box<dyn rusqlite::ToSql>))
-            .chain(date.kinds.iter().map(|k| Box::new(k.to_string()) as Box<dyn rusqlite::ToSql>))
-            .collect();
+        let refs = p.as_refs();
         let filtered: HashSet<i64> = stmt
-            .query_map(rusqlite::params_from_iter(id_params.iter().map(|p| p.as_ref())), |row| row.get(0))?
+            .query_map(refs.as_slice(), |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         qualifying_ids = filtered;
     }
@@ -792,5 +808,31 @@ mod tests {
         assert!(!q.contains('^'));
         // Both sides are long enough to survive the >=3 filter
         assert!(q.contains("test") && q.contains("query"));
+    }
+
+    // ── ParamBinder ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn param_binder_sequential_placeholders() {
+        let mut p = ParamBinder::new();
+        assert_eq!(p.push("first"),  "?1");
+        assert_eq!(p.push("second"), "?2");
+        assert_eq!(p.push(42i64),    "?3");
+        assert_eq!(p.push("fourth"), "?4");
+    }
+
+    #[test]
+    fn param_binder_as_refs_length_matches_push_count() {
+        let mut p = ParamBinder::new();
+        p.push("a");
+        p.push(1i64);
+        p.push("b");
+        assert_eq!(p.as_refs().len(), 3);
+    }
+
+    #[test]
+    fn param_binder_empty_has_no_refs() {
+        let p = ParamBinder::new();
+        assert!(p.as_refs().is_empty());
     }
 }
