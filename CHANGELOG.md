@@ -11,7 +11,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
-- **Video metadata crash on large files** — `audio_video_metadata::get_format_from_file` reads the entire file into memory; on a large video (multi-GB MKV, etc.) this exhausts the allocator and panics with `capacity overflow`; `extract_video` now checks file size first and skips metadata extraction for files over 500 MB (the file is still indexed by name)
+- **Video metadata crash on large files** — replaced `audio_video_metadata` (which calls `read_to_end` on the entire file, panicking with `capacity overflow` on multi-GB MKVs) with `nom-exif` which uses seek-based I/O and never loads the full file; `nom-exif` covers MP4, MOV, MKV, WebM natively; AVI, WMV, FLV, MPEG, OGV fall back to magic-byte detection that emits at minimum a `[VIDEO:format]` line so the file is findable by container type
 
 ### Changed
 

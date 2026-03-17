@@ -4,7 +4,6 @@ use std::path::Path;
 
 use find_extract_types::IndexLine;
 use find_extract_types::ExtractorConfig;
-use audio_video_metadata::{get_format_from_file, Metadata};
 use id3::TagLike;
 
 /// Extract metadata from media files (images, audio, video).
@@ -406,50 +405,103 @@ pub fn is_audio_ext(ext: &str) -> bool {
 // VIDEO EXTRACTION
 // ============================================================================
 
-/// `audio_video_metadata::get_format_from_file` reads the entire file into
-/// memory via `read_to_end`.  On a large video file (multi-GB MKV, etc.) this
-/// exhausts the allocator and panics with "capacity overflow".  Guard by
-/// checking file size before calling into the library: for files above the
-/// threshold we return an empty result — the file is still indexed by name.
-const MAX_VIDEO_PROBE_BYTES: u64 = 500 * 1024 * 1024; // 500 MB
+// ── nom-exif MediaParser (reused across calls via thread-local) ───────────────
+
+thread_local! {
+    static MEDIA_PARSER: std::cell::RefCell<nom_exif::MediaParser> =
+        std::cell::RefCell::new(nom_exif::MediaParser::new());
+}
 
 fn extract_video(path: &Path) -> anyhow::Result<Vec<IndexLine>> {
-    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_VIDEO_PROBE_BYTES {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    match ext.as_str() {
+        // nom-exif handles ISOBMFF and Matroska natively, with seek-based I/O.
+        "mp4" | "m4v" | "mov" | "3gp" | "mkv" | "webm" | "mka" => {
+            extract_video_nom_exif(path, &ext)
+        }
+        // Other formats: detect container from magic bytes, emit format line only.
+        _ => extract_video_header_only(path),
+    }
+}
+
+/// Parse video metadata using nom-exif (seek-based, no full-file read).
+fn extract_video_nom_exif(path: &Path, ext: &str) -> anyhow::Result<Vec<IndexLine>> {
+    use nom_exif::{MediaSource, TrackInfo, TrackInfoTag};
+
+    let ms = match MediaSource::file_path(path) {
+        Ok(ms) => ms,
+        Err(_) => return Ok(vec![make_meta_line("format", ext)]),
+    };
+
+    if !ms.has_track() {
+        return Ok(vec![make_meta_line("format", ext)]);
+    }
+
+    let info: Option<TrackInfo> = MEDIA_PARSER.with(|p| {
+        p.borrow_mut().parse(ms).ok()
+    });
+
+    let Some(info) = info else {
+        return Ok(vec![make_meta_line("format", ext)]);
+    };
+
+    let mut lines = vec![make_meta_line("format", ext)];
+
+    if let (Some(w), Some(h)) = (
+        info.get(TrackInfoTag::ImageWidth).and_then(|v| v.as_u32()),
+        info.get(TrackInfoTag::ImageHeight).and_then(|v| v.as_u32()),
+    ) {
+        lines.push(make_meta_line("resolution", &format!("{}x{}", w, h)));
+    }
+
+    if let Some(ms) = info.get(TrackInfoTag::DurationMs).and_then(|v| v.as_u64()) {
+        let total_secs = ms / 1000;
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        lines.push(make_meta_line("duration", &format!("{}:{:02}", mins, secs)));
+    }
+
+    Ok(lines)
+}
+
+/// For formats nom-exif doesn't support (AVI, WMV, FLV, etc.): detect the
+/// container from magic bytes and emit a format line so the file is at least
+/// findable by container type.
+fn extract_video_header_only(path: &Path) -> anyhow::Result<Vec<IndexLine>> {
+    let mut f = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Ok(vec![]),
+    };
+    let mut buf = [0u8; 16];
+    let n = f.read(&mut buf).unwrap_or(0);
+    if n < 4 {
         return Ok(vec![]);
     }
 
-    match get_format_from_file(path) {
-        Ok(Metadata::Video(m)) => {
-            let mut lines = Vec::new();
-
-            // Format type (e.g., "MP4", "WebM", "Ogg")
-            lines.push(make_meta_line("format", &format!("{:?}", m.format)));
-
-            // Dimensions (width x height)
-            lines.push(make_meta_line(
-                "resolution",
-                &format!("{}x{}", m.dimensions.width, m.dimensions.height)
-            ));
-
-            // Duration from audio track if available
-            if let Some(duration) = m.audio.duration {
-                let secs = duration.as_secs();
-                let mins = secs / 60;
-                let secs = secs % 60;
-                lines.push(make_meta_line("duration", &format!("{}:{:02}", mins, secs)));
-            }
-
-            Ok(lines)
-        }
-        Ok(Metadata::Audio(_)) => {
-            // File was detected as audio, not video - skip
-            Ok(vec![])
-        }
-        Err(_) => {
-            // Failed to parse - return empty
-            Ok(vec![])
-        }
+    // AVI: RIFF....AVI
+    if &buf[..4] == b"RIFF" && n >= 12 && &buf[8..12] == b"AVI " {
+        return Ok(vec![make_meta_line("format", "avi")]);
     }
+    // ASF / WMV / WMA: ASF Header Object GUID
+    if n >= 16 && buf == [0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+                          0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C] {
+        return Ok(vec![make_meta_line("format", "wmv")]);
+    }
+    // FLV
+    if n >= 3 && &buf[..3] == b"FLV" {
+        return Ok(vec![make_meta_line("format", "flv")]);
+    }
+    // MPEG-PS pack header or video sequence header
+    if &buf[..4] == b"\x00\x00\x01\xBA" || &buf[..4] == b"\x00\x00\x01\xB3" {
+        return Ok(vec![make_meta_line("format", "mpeg")]);
+    }
+    // OGG (covers OGV)
+    if &buf[..4] == b"OggS" {
+        return Ok(vec![make_meta_line("format", "ogv")]);
+    }
+
+    Ok(vec![])
 }
 
 fn make_meta_line(key: &str, value: &str) -> IndexLine {

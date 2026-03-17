@@ -25,7 +25,7 @@ metaflac = "0.2"
 mp4ameta = "0.11"
 
 # Video metadata
-audio-video-metadata = "0.1"
+nom-exif = "2"
 
 # For writing archive member bytes to a temp file before extracting
 tempfile = "3"
