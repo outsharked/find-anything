@@ -540,6 +540,20 @@ pub struct StatsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsStreamEvent {
     pub sources: Vec<SourceStreamSnapshot>,
+    pub inbox_pending: usize,
+    pub failed_requests: usize,
+    #[serde(default)]
+    pub archive_queue: usize,
+    pub total_archives: usize,
+    pub db_size_bytes: u64,
+    pub archive_size_bytes: u64,
+    pub worker_status: WorkerStatus,
+    #[serde(default)]
+    pub inbox_paused: bool,
+    #[serde(default)]
+    pub orphaned_bytes: Option<u64>,
+    #[serde(default)]
+    pub orphaned_stats_age_secs: Option<u64>,
 }
 
 /// Per-source snapshot for SSE streaming.

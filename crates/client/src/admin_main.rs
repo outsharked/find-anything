@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
                 use std::io::Write;
                 let stream = client.stream_stats(|event| {
                     let output = format_stream_status(&event);
-                    print!("\x1b[2J\x1b[H{output}");
+                    print!("\x1b[H\x1b[J{output}");
                     std::io::stdout().flush().ok();
                 });
                 tokio::select! {
@@ -545,6 +545,35 @@ fn format_stream_status(event: &find_common::api::StatsStreamEvent) -> String {
             s.total_files,
             format_bytes(s.total_size as u64),
         ).unwrap();
+    }
+    writeln!(out).unwrap();
+    if event.inbox_paused {
+        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive  {}",
+            event.inbox_pending, event.failed_requests, event.archive_queue,
+            "PAUSED".yellow()).unwrap();
+    } else {
+        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive",
+            event.inbox_pending, event.failed_requests, event.archive_queue).unwrap();
+    }
+    writeln!(out, "Archives: {} ZIP files ({})", event.total_archives, format_bytes(event.archive_size_bytes)).unwrap();
+    writeln!(out, "DB size:  {}", format_bytes(event.db_size_bytes)).unwrap();
+    match (event.orphaned_bytes, event.orphaned_stats_age_secs) {
+        (Some(orphaned), Some(age)) => {
+            let pct = if event.archive_size_bytes > 0 {
+                orphaned as f64 / event.archive_size_bytes as f64 * 100.0
+            } else { 0.0 };
+            writeln!(
+                out,
+                "Wasted:   {} ({:.1}%)  [stats {}]",
+                format_bytes(orphaned), pct, format_age(age),
+            ).unwrap();
+        }
+        _ => writeln!(out, "Wasted:   (pending first scan)").unwrap(),
+    }
+    match &event.worker_status {
+        WorkerStatus::Idle => writeln!(out, "Worker:   idle").unwrap(),
+        WorkerStatus::Processing { source, file } =>
+            writeln!(out, "Worker:   {} processing {}/{}", "●".cyan(), source, file).unwrap(),
     }
     out
 }

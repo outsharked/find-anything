@@ -226,6 +226,15 @@ subdirectories on expand.
 
 ## Project Conventions
 
+### Rust style
+
+See [`docs/rust-style.md`](docs/rust-style.md) for binding patterns and idioms
+specific to this codebase. When a situation is not covered there, refer to the
+[Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) and the
+[Clippy lint catalogue](https://rust-lang.github.io/rust-clippy/master/).
+
+---
+
 ### Rust: Configuration objects over threaded parameters
 
 When a function needs to pass configuration to downstream callers, prefer a

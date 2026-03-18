@@ -153,15 +153,71 @@ pub async fn get_stats(
 // ── GET /api/v1/stats/stream (SSE) ───────────────────────────────────────────
 
 fn build_stream_event(state: &AppState) -> StatsStreamEvent {
-    let guard = state.source_stats_cache.read().unwrap_or_else(|e| e.into_inner());
-    StatsStreamEvent {
-        sources: guard.sources.iter().map(|s| SourceStreamSnapshot {
+    let sources = {
+        let guard = state.source_stats_cache.read().unwrap_or_else(|e| e.into_inner());
+        guard.sources.iter().map(|s| SourceStreamSnapshot {
             name:          s.name.clone(),
             total_files:   s.total_files,
             total_size:    s.total_size,
             by_kind:       s.by_kind.clone(),
             fts_row_count: s.fts_row_count,
-        }).collect(),
+        }).collect()
+    };
+
+    let inbox_dir = state.data_dir.join("inbox");
+    let failed_dir = inbox_dir.join("failed");
+    let to_archive_dir = inbox_dir.join("to-archive");
+    let count_gz = |dir: &std::path::Path| -> usize {
+        std::fs::read_dir(dir)
+            .map(|rd| rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map(|x| x == "gz").unwrap_or(false))
+                .count())
+            .unwrap_or(0)
+    };
+
+    let worker_status = state.worker_status
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or(WorkerStatus::Idle);
+
+    let inbox_paused = state.inbox_paused.load(std::sync::atomic::Ordering::Relaxed);
+
+    let db_size_bytes: u64 = {
+        let sources_dir = state.data_dir.join("sources");
+        std::fs::read_dir(&sources_dir)
+            .map(|rd| rd.flatten()
+                .filter(|e| e.path().extension().map(|x| x == "db").unwrap_or(false))
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum::<u64>())
+            .unwrap_or(0)
+    };
+
+    let (orphaned_bytes, orphaned_stats_age_secs) = state.compaction_stats
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let age = (now - s.scanned_at).max(0) as u64;
+            (Some(s.orphaned_bytes), Some(age))
+        }))
+        .unwrap_or((None, None));
+
+    StatsStreamEvent {
+        sources,
+        inbox_pending:           count_gz(&inbox_dir),
+        failed_requests:         count_gz(&failed_dir),
+        archive_queue:           count_gz(&to_archive_dir),
+        total_archives:          state.archive_state.total_archives() as usize,
+        archive_size_bytes:      state.archive_state.archive_size_bytes(),
+        db_size_bytes,
+        worker_status,
+        inbox_paused,
+        orphaned_bytes,
+        orphaned_stats_age_secs,
     }
 }
 

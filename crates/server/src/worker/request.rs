@@ -65,7 +65,8 @@ pub(super) async fn process_request_async(
         let cfg = handles.cfg.clone();
         let shared_archive = Arc::clone(&handles.shared_archive);
         let recent_tx = handles.recent_tx.clone();
-        move || process_request_phase1(&data_dir, &request_path, &to_archive_dir, &status, cfg, &shared_archive, &recent_tx)
+        let stats_watch = Arc::clone(&handles.stats_watch);
+        move || process_request_phase1(&data_dir, &request_path, &to_archive_dir, &status, cfg, &shared_archive, &recent_tx, &stats_watch)
     });
 
     let timed_result = tokio::time::timeout(request_timeout, blocking_task).await;
@@ -134,6 +135,7 @@ pub(super) async fn process_request_async(
 
 /// Phase 1: process a single inbox request — SQLite only, no ZIP I/O.
 /// Writes a normalized `.gz` to `to_archive_dir` for the archive phase.
+#[allow(clippy::too_many_arguments)]
 fn process_request_phase1(
     data_dir: &Path,
     request_path: &Path,
@@ -142,6 +144,7 @@ fn process_request_phase1(
     cfg: WorkerConfig,
     shared_archive_state: &Arc<SharedArchiveState>,
     recent_tx: &tokio::sync::broadcast::Sender<RecentFile>,
+    stats_watch: &Arc<tokio::sync::watch::Sender<u64>>,
 ) -> Result<crate::stats_cache::SourceStatsDelta> {
     let request_start = std::time::Instant::now();
 
@@ -176,6 +179,15 @@ fn process_request_phase1(
         source: request.source.clone(),
         ..Default::default()
     };
+
+    // Signal batch start so the live status view shows Processing immediately.
+    if let Ok(mut guard) = status.lock() {
+        *guard = find_common::api::WorkerStatus::Processing {
+            source: request.source.clone(),
+            file: format!("(0/{n_files})"),
+        };
+    }
+    stats_watch.send_modify(|v| *v = v.wrapping_add(1));
 
     tracing::debug!("{tag} start: {} files, {} deletes, {} renames", n_files, n_deletes, n_renames);
 

@@ -11,6 +11,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **`find-admin status --watch` scrollback pollution** — replaced `\x1b[2J\x1b[H` (erase-entire-display + cursor-home, which pushes previous content into terminal scrollback in Windows Terminal and iTerm2) with `\x1b[H\x1b[J` (cursor-home then erase-from-cursor) so successive watch frames overwrite in-place without accumulating in scrollback
+
 - **SQLite WAL mode** — source databases now open with `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`; previously the default rollback-journal mode held an exclusive write lock for the full duration of every index transaction, blocking concurrent search queries; WAL mode allows reads and writes to proceed concurrently; `synchronous = NORMAL` is safe with WAL and significantly faster than the default `FULL` mode
 - **Formatter stderr noise** — when an external formatter (e.g. biome) exits with a non-zero code, its stderr output is now logged at `debug` level rather than included in the `warn` line; the warn still fires so failures are visible, but multi-line tool output (e.g. biome's "Code formatting aborted due to parsing errors") no longer clutters production logs
 
@@ -27,7 +29,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
-- **`GET /api/v1/stats/stream`** — SSE endpoint that pushes `StatsStreamEvent` snapshots whenever the in-memory stats cache changes; rate-limited to `server.stats_stream_rate_hz` events per second (default: 5); `find-admin status --watch` now subscribes to this stream and redraws on each event instead of polling on a fixed interval
+- **`GET /api/v1/stats/stream`** — SSE endpoint that pushes `StatsStreamEvent` snapshots whenever the in-memory stats cache changes; rate-limited to `server.stats_stream_rate_hz` events per second (default: 5); `find-admin status --watch` now subscribes to this stream and redraws on each event instead of polling on a fixed interval; `StatsStreamEvent` extended to include worker status, inbox pending/failed/archive-queue counts, DB size, archive size, orphaned bytes, and paused flag so the watch view now mirrors `find-admin status` output
+- **`--version` git hash** — `find-common` now has a `build.rs` that captures the git commit hash, tag, and dirty flag at build time and exposes them as package-level constants (`GIT_HASH`, `GIT_TAG`, `GIT_DIRTY`); the `tool_version!` macro now reads these constants instead of expanding `option_env!` at the calling crate's compile time, ensuring the version string is always accurate regardless of incremental build caching; dirty builds now show `{hash}+` instead of `(dev)`
 
 - **Source stats cache** — `GET /api/v1/stats` now reads from an in-memory `SourceStatsCache` instead of running three expensive full-table-scan queries on every request (previously ~10 s on large databases); the cache is rebuilt from DB at startup (30 s delay) and daily alongside compaction; the worker applies a cheap incremental delta after each batch to keep `total_files`, `total_size`, and `by_kind` accurate without full scans; `by_ext` and `fts_row_count` are slightly stale between daily rebuilds (acceptable trade-off); `find-admin status --refresh` (new `--refresh` flag) forces a synchronous full rebuild before displaying results
 

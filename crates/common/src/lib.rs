@@ -7,25 +7,32 @@ pub mod subprocess;
 
 pub use find_extract_types::build_globset;
 
+/// Git commit hash at build time, set by `build.rs`.  Falls back to `"unknown"`.
+pub const GIT_HASH: &str = match option_env!("GIT_HASH") { Some(h) => h, None => "unknown" };
+/// Git tag at HEAD at build time (empty string if none).
+pub const GIT_TAG: &str  = match option_env!("GIT_TAG")  { Some(t) => t, None => "" };
+/// Non-empty (`"1"`) when the working tree had uncommitted changes at build time.
+pub const GIT_DIRTY: &str = match option_env!("GIT_DIRTY") { Some(d) => d, None => "" };
+
 /// Returns the tool version string for `--version` output.
 ///
 /// On a clean release tag build: `"0.7.0"`
-/// On a dirty working tree:      `"0.7.0 (dev)"`
+/// On a dirty working tree:      `"0.7.0 (abc1234+)"`
 /// Otherwise (post-release/dev): `"0.7.0 (abc1234)"`
 ///
-/// The `option_env!` calls expand at **the calling crate's** compile time,
-/// so each binary embeds its own build-time constants — no `build.rs` needed.
+/// Git info is captured by `find-common`'s `build.rs` and exposed as
+/// `find_common::{GIT_HASH, GIT_TAG, GIT_DIRTY}`.
 #[macro_export]
 macro_rules! tool_version {
     () => {{
         let pkg_version = env!("CARGO_PKG_VERSION");
-        let hash  = option_env!("GIT_HASH").unwrap_or("unknown");
-        let tag   = option_env!("GIT_TAG").unwrap_or("").trim();
-        let dirty = option_env!("GIT_DIRTY").unwrap_or("").trim();
+        let hash  = $crate::GIT_HASH;
+        let tag   = $crate::GIT_TAG;
+        let dirty = $crate::GIT_DIRTY;
         // clap's Command::version() requires &'static str; Box::leak is fine for a
         // one-time startup allocation.
         if !dirty.is_empty() {
-            Box::leak(format!("{} (dev)", pkg_version).into_boxed_str()) as &str
+            Box::leak(format!("{} ({hash}+)", pkg_version).into_boxed_str()) as &str
         } else if tag == format!("v{}", pkg_version) {
             pkg_version
         } else {

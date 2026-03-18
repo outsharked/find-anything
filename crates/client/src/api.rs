@@ -238,8 +238,9 @@ impl ApiClient {
                 if let Ok(event_str) = std::str::from_utf8(&buf[..pos]) {
                     for line in event_str.lines() {
                         if let Some(data) = line.strip_prefix("data:") {
-                            if let Ok(event) = serde_json::from_str::<StatsStreamEvent>(data.trim()) {
-                                on_event(event);
+                            match serde_json::from_str::<StatsStreamEvent>(data.trim()) {
+                                Ok(event) => on_event(event),
+                                Err(e) => eprintln!("[stats stream] deserialize error: {e}"),
                             }
                         }
                     }
