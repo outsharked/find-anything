@@ -324,6 +324,7 @@ pub fn start_compaction_scanner(
     shared: Arc<SharedArchiveState>,
     cfg: CompactionConfig,
     source_stats_cache: Arc<std::sync::RwLock<crate::stats_cache::SourceStatsCache>>,
+    stats_watch: Arc<tokio::sync::watch::Sender<u64>>,
 ) {
     let (hour, minute) = parse_hhmm(&cfg.start_time).unwrap_or_else(|| {
         tracing::warn!(
@@ -395,6 +396,7 @@ pub fn start_compaction_scanner(
                     crate::stats_cache::full_rebuild(&dd, &cache);
                 }).await.ok();
                 tracing::debug!("stats_cache: daily full rebuild complete");
+                stats_watch.send_modify(|v| *v = v.wrapping_add(1));
             }
         }
     });

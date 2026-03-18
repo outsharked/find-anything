@@ -43,6 +43,7 @@ pub(super) struct IndexerHandles {
     pub shared_archive:     Arc<SharedArchiveState>,
     pub recent_tx:          broadcast::Sender<RecentFile>,
     pub source_stats_cache: Arc<std::sync::RwLock<crate::stats_cache::SourceStatsCache>>,
+    pub stats_watch:        Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────────
@@ -104,6 +105,7 @@ pub(super) async fn process_request_async(
             if let Ok(mut guard) = handles.source_stats_cache.write() {
                 guard.apply_delta(&delta);
             }
+            handles.stats_watch.send_modify(|v| *v = v.wrapping_add(1));
         }
         Ok(Ok(Err(e))) => {
             if is_db_locked(&e) {

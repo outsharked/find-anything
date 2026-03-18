@@ -71,6 +71,7 @@ pub async fn get_stats(
                 crate::compaction::save_stats_to_slot(&compact_slot, &data_dir, compact);
             }
         }).await.ok();
+        state.stats_watch.send_modify(|v| *v = v.wrapping_add(1));
     }
 
     let (orphaned_bytes, orphaned_stats_age_secs) = state.compaction_stats

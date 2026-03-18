@@ -85,6 +85,8 @@ pub struct AppState {
     pub under_systemd: bool,
     pub update_cache: tokio::sync::RwLock<Option<CachedUpdateCheck>>,
     pub recent_tx: tokio::sync::broadcast::Sender<RecentFile>,
+    /// Watch channel incremented on every stats cache update; SSE subscribers react to changes.
+    pub stats_watch: Arc<tokio::sync::watch::Sender<u64>>,
     /// In-memory rate limiter for `GET /api/v1/links/:code`: maps IP → (count, window_start).
     pub link_rate_limiter: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, std::time::Instant)>>,
 }
@@ -113,6 +115,8 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
     let compaction_stats = Arc::new(std::sync::RwLock::new(initial_compaction_stats));
     let source_stats_cache = Arc::new(std::sync::RwLock::new(stats_cache::SourceStatsCache::default()));
     let (recent_tx, _) = tokio::sync::broadcast::channel::<RecentFile>(256);
+    let (stats_watch_tx, _stats_watch_rx) = tokio::sync::watch::channel(0u64);
+    let stats_watch = Arc::new(stats_watch_tx);
 
     // Open links.db (creates table on first use).
     if let Err(e) = db::links::open_links_db(&data_dir) {
@@ -130,6 +134,7 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         under_systemd,
         update_cache: tokio::sync::RwLock::new(None),
         recent_tx,
+        stats_watch: Arc::clone(&stats_watch),
         link_rate_limiter: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
@@ -152,6 +157,7 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         inbox_paused,
         recent_tx: state.recent_tx.clone(),
         source_stats_cache: Arc::clone(&source_stats_cache),
+        stats_watch: Arc::clone(&stats_watch),
     };
     let worker_data_dir = data_dir.clone();
     tokio::spawn(async move {
@@ -171,6 +177,7 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         Arc::clone(&state.archive_state),
         state.config.compaction.clone(),
         Arc::clone(&source_stats_cache),
+        Arc::clone(&stats_watch),
     );
 
     // Startup full rebuild of source stats cache (delayed 30 s to let the inbox
@@ -178,11 +185,13 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
     {
         let cache = Arc::clone(&source_stats_cache);
         let dd = data_dir.clone();
+        let sw = Arc::clone(&stats_watch);
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             tokio::task::spawn_blocking(move || {
                 stats_cache::full_rebuild(&dd, &cache);
             }).await.ok();
+            sw.send_modify(|v| *v = v.wrapping_add(1));
         });
     }
 
