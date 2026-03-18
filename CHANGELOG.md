@@ -11,6 +11,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **Phantom canonical causes archive members to return zero content** — when `find-scan --force` re-indexes an archive whose member was the dedup canonical for another archive's member, SQLite's `ON DELETE SET NULL` promoted the alias to `canonical_file_id = NULL` with no content lines; the dedup query then selected this "phantom canonical" as the target for the newly re-indexed member, leaving both with zero content lines; fixed by adding `EXISTS (SELECT 1 FROM lines WHERE file_id = id LIMIT 1)` to the dedup query so contentless phantoms are never selected; regression test added documenting the full scenario
+- **7z solid archive members skipped when block unpack size is zero** — `sevenz_rust2::Block::get_unpack_size()` returns 0 for solid archives where the block-level total is absent from the header (individual file sizes are still present in `SubStreamsInfo`); the previous code treated this as "unknown size — skip block", causing all members of affected solid archives to be indexed by filename only; fixed by falling back to summing `archive.files[fi].size()` for files in the block when `get_unpack_size()` returns 0; integration test and fixture added
+- **`update-server.sh` missing `find-extract-dispatch`** — the server update script was not deploying the `find-extract-dispatch` binary, meaning the dispatching extractor was never updated on the server after a release
+- **CSS/SCSS/Sass/Less/Stylus files not indexed as text** — `.css`, `.scss`, `.sass`, `.less`, `.styl` extensions were absent from `is_text_ext()`; these files were treated as unknown kind and their content was not extracted
+
+### Changed
+
+- **`find-common` build.rs removed** — git hash constants (`GIT_HASH`, `GIT_TAG`, `GIT_DIRTY`) are now injected via environment variables set by the mise build tasks rather than a `build.rs` script; raw `cargo build` invocations fall back to `"unknown"`; eliminates a build-time `git` subprocess that caused unnecessary rebuilds
+- **`find-scan --force` prints resume hint on Ctrl+C** — interrupting a force re-index now prints `Interrupted. To resume, run: find-scan --force {epoch}` before exiting with code 130
+
 - **`find-admin status --watch` scrollback pollution** — replaced `\x1b[2J\x1b[H` (erase-entire-display + cursor-home, which pushes previous content into terminal scrollback in Windows Terminal and iTerm2) with `\x1b[H\x1b[J` (cursor-home then erase-from-cursor) so successive watch frames overwrite in-place without accumulating in scrollback
 
 - **SQLite WAL mode** — source databases now open with `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`; previously the default rollback-journal mode held an exclusive write lock for the full duration of every index transaction, blocking concurrent search queries; WAL mode allows reads and writes to proceed concurrently; `synchronous = NORMAL` is safe with WAL and significantly faster than the default `FULL` mode

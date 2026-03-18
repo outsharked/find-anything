@@ -447,6 +447,11 @@ mod tests {
         }
     }
 
+    fn make_stats_watch() -> Arc<tokio::sync::watch::Sender<u64>> {
+        let (tx, _rx) = tokio::sync::watch::channel(0u64);
+        Arc::new(tx)
+    }
+
     fn make_status() -> StatusHandle {
         Arc::new(Mutex::new(find_common::api::WorkerStatus::Idle))
     }
@@ -514,6 +519,7 @@ mod tests {
             make_worker_config(),
             &shared,
             &recent_tx,
+            &make_stats_watch(),
         )
         .unwrap();
 
@@ -559,6 +565,7 @@ mod tests {
             make_worker_config(),
             &shared,
             &recent_tx,
+            &make_stats_watch(),
         )
         .unwrap();
 
@@ -595,6 +602,7 @@ mod tests {
             make_worker_config(),
             &shared,
             &recent_tx,
+            &make_stats_watch(),
         )
         .unwrap();
 
@@ -644,6 +652,7 @@ mod tests {
             make_worker_config(),
             &shared,
             &recent_tx,
+            &make_stats_watch(),
         )
         .unwrap();
 
@@ -673,6 +682,7 @@ mod tests {
             make_worker_config(),
             &shared,
             &recent_tx,
+            &make_stats_watch(),
         )
         .unwrap();
 
@@ -724,6 +734,7 @@ mod tests {
             make_worker_config(),
             &shared,
             &recent_tx,
+            &make_stats_watch(),
         )
         .unwrap();
 
@@ -767,6 +778,7 @@ mod tests {
             make_worker_config(),
             &shared,
             &recent_tx,
+            &make_stats_watch(),
         )
         .unwrap();
 
@@ -789,6 +801,7 @@ mod tests {
             make_worker_config(),
             &shared,
             &recent_tx,
+            &make_stats_watch(),
         )
         .unwrap();
 

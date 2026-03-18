@@ -518,7 +518,26 @@ fn sevenz_streaming(path: &Path, display_prefix: &str, cfg: &ExtractorConfig, ca
         // be larger).  Skip the block if decoding it would consume more than
         // 75% of currently available memory, leaving headroom for the OS and
         // the rest of the scan process.
-        let unpack_size = archive.blocks[block_index].get_unpack_size();
+        //
+        // get_unpack_size() == 0 means the block header doesn't record a
+        // block-level total (common in solid archives where individual file
+        // sizes ARE stored but not summed).  Fall back to summing individual
+        // file sizes as a memory estimate so we don't skip extractable blocks.
+        let unpack_size = {
+            let block_size = archive.blocks[block_index].get_unpack_size();
+            if block_size == 0 {
+                archive
+                    .stream_map
+                    .file_block_index
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| b.is_some_and(|bi| bi == block_index))
+                    .map(|(fi, _)| archive.files[fi].size())
+                    .sum::<u64>()
+            } else {
+                block_size
+            }
+        };
         // Helper: collect non-directory file names in this block.
         let block_files = || -> Vec<&str> {
             archive
@@ -533,36 +552,6 @@ fn sevenz_streaming(path: &Path, display_prefix: &str, cfg: &ExtractorConfig, ca
                 })
                 .collect()
         };
-
-        // Dynamic memory guard.  OOM in the LZMA decoder calls handle_alloc_error
-        // which aborts the process — it is NOT catchable via catch_unwind.  We must
-        // refuse to attempt the allocation rather than try to recover after the fact.
-        //
-        // get_unpack_size() == 0 means the archive header doesn't record individual
-        // file sizes for this block (common in solid archives).  We cannot estimate
-        // the required allocation, so we skip the block rather than risk a crash.
-        if unpack_size == 0 {
-            let names = block_files();
-            if !names.is_empty() {
-                warn!(
-                    "7z: '{}': block {} has unknown unpack size; \
-                     {} file(s) indexed by filename only",
-                    path.display(), block_index, names.len(),
-                );
-                for name in names {
-                    callback(MemberBatch {
-                        lines: make_filename_line(name),
-                        content_hash: None,
-                        skip_reason: Some(
-                            "unknown block size; cannot safely estimate memory requirement"
-                                .to_string(),
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
-            continue;
-        }
 
         if let Some(avail) = available_memory_bytes() {
             let budget = avail * 3 / 4;

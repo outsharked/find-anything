@@ -74,6 +74,7 @@ pub(super) fn process_file_phase1_fallback(
              WHERE content_hash = ?1
                AND canonical_file_id IS NULL
                AND path != ?2
+               AND EXISTS (SELECT 1 FROM lines WHERE file_id = id LIMIT 1)
              LIMIT 1",
             rusqlite::params![hash, file.path],
             |row| row.get(0),
@@ -391,6 +392,99 @@ mod tests {
             |r| r.get(0),
         ).unwrap();
         assert_eq!(alias_canonical, Some(canonical_id));
+    }
+
+    /// Regression: phantom canonical created by ON DELETE SET NULL must not be used for dedup.
+    ///
+    /// Production scenario that triggered this bug:
+    ///   1. `archive.7z::tsconfig.json` is indexed → becomes the canonical for hash H.
+    ///   2. `archive.v2.7z::tsconfig.json` (same content) is indexed → becomes an alias
+    ///      pointing at the canonical.
+    ///   3. `find-scan --force archive.7z` sends a mtime=0 sentinel → server runs
+    ///      `DELETE FROM files WHERE path LIKE 'archive.7z::%'`, deleting the canonical.
+    ///   4. SQLite fires ON DELETE SET NULL on the alias row: its `canonical_file_id`
+    ///      becomes NULL.  The alias was inserted without content lines (aliases don't store
+    ///      their own lines), so it is now a "phantom canonical" — `canonical_file_id IS NULL`
+    ///      but zero lines.
+    ///   5. The worker re-inserts `archive.7z::tsconfig.json` from the fresh extraction.
+    ///      The dedup query finds the phantom canonical (it has `canonical_file_id IS NULL`
+    ///      and the same content hash) and registers the new file as an alias pointing at it.
+    ///   6. Both entries now have zero content lines; the file is un-searchable.
+    ///
+    /// The fix: require `EXISTS (SELECT 1 FROM lines …)` in the dedup query so that a
+    /// contentless phantom is never selected as a canonical target.
+    ///
+    /// Note: the phantom canonical state (step 4) is still reachable in production — it is
+    /// a DB-level side effect of ON DELETE SET NULL, not prevented by this fix.  The fix
+    /// is purely in the dedup query, which is why this test remains valid.
+    #[test]
+    fn dedup_ignores_phantom_canonical_with_no_lines() {
+        let mut conn = test_conn();
+
+        // Step 1: insert a canonical (file_a) with real content.
+        let mut file_a = make_file("archive.7z::tsconfig.json", 1000, "{}");
+        file_a.content_hash = Some("hash_abc".to_string());
+        process_file_phase1(&mut conn, &file_a, 0).unwrap();
+
+        let canonical_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = 'archive.7z::tsconfig.json'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+
+        // Step 2: file_b (from another archive) deduplicates against file_a.
+        let mut file_b = make_file("archive.v2.7z::tsconfig.json", 1100, "{}");
+        file_b.content_hash = Some("hash_abc".to_string());
+        process_file_phase1(&mut conn, &file_b, 0).unwrap();
+
+        // Confirm file_b is an alias.
+        let alias_canonical: Option<i64> = conn.query_row(
+            "SELECT canonical_file_id FROM files WHERE path = 'archive.v2.7z::tsconfig.json'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(alias_canonical, Some(canonical_id));
+
+        // Step 3: simulate --force re-index of archive.7z by deleting file_a.
+        // ON DELETE SET NULL fires: file_b now has canonical_file_id=NULL (phantom canonical).
+        conn.execute("DELETE FROM files WHERE path = 'archive.7z::tsconfig.json'", []).unwrap();
+
+        // Confirm file_b is now a phantom canonical (canonical_file_id IS NULL, no lines).
+        let phantom_canonical_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = 'archive.v2.7z::tsconfig.json' AND canonical_file_id IS NULL",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        let phantom_line_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM lines WHERE file_id = ?1",
+            rusqlite::params![phantom_canonical_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(phantom_line_count, 0, "phantom canonical should have no lines");
+
+        // Step 4: re-index archive.7z::tsconfig.json.
+        // WITHOUT the fix, this would find the phantom canonical and register as alias → no content.
+        // WITH the fix, the phantom canonical is ignored → new canonical inserted with content.
+        let mut file_a_reindexed = make_file("archive.7z::tsconfig.json", 1200, "{}");
+        file_a_reindexed.content_hash = Some("hash_abc".to_string());
+        process_file_phase1(&mut conn, &file_a_reindexed, 0).unwrap();
+
+        // file_a_reindexed must NOT be an alias — it must be the new canonical with content.
+        let new_canonical: Option<i64> = conn.query_row(
+            "SELECT canonical_file_id FROM files WHERE path = 'archive.7z::tsconfig.json'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(new_canonical.is_none(), "re-indexed file must be a canonical, not an alias pointing to a phantom");
+
+        let new_line_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM lines l
+             JOIN files f ON l.file_id = f.id
+             WHERE f.path = 'archive.7z::tsconfig.json'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(new_line_count > 0, "re-indexed file must have content lines, got {new_line_count}");
     }
 
     #[test]

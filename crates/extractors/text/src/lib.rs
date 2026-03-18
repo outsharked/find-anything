@@ -140,6 +140,7 @@ pub fn is_text_ext(ext: &str) -> bool {
         | "r" | "m" | "pl" | "sh" | "bash" | "zsh" | "fish" | "ps1"
         | "lua" | "vim" | "el" | "clj" | "hs" | "ml" | "fs" | "ex"
         | "erl" | "dart" | "jl" | "nim" | "zig" | "s" | "asm"
+        | "css" | "scss" | "sass" | "less" | "styl"
         | "html" | "htm" | "xml" | "svg" | "md" | "markdown" | "rst"
         | "tex" | "adoc" | "org"
         | "json" | "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf"

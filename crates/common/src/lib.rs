@@ -7,7 +7,8 @@ pub mod subprocess;
 
 pub use find_extract_types::build_globset;
 
-/// Git commit hash at build time, set by `build.rs`.  Falls back to `"unknown"`.
+/// Git commit hash at build time, injected via `GIT_HASH` env var by the mise build tasks.
+/// Falls back to `"unknown"` for raw `cargo build` invocations.
 pub const GIT_HASH: &str = match option_env!("GIT_HASH") { Some(h) => h, None => "unknown" };
 /// Git tag at HEAD at build time (empty string if none).
 pub const GIT_TAG: &str  = match option_env!("GIT_TAG")  { Some(t) => t, None => "" };

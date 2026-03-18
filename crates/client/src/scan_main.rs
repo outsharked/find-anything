@@ -97,6 +97,12 @@ async fn main() -> Result<()> {
                 .as_secs() as i64;
             eprintln!("Force re-index started (epoch {epoch}).");
             eprintln!("If interrupted, resume with: find-scan --force {epoch}");
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    eprintln!("\nInterrupted. To resume, run: find-scan --force {epoch}");
+                    std::process::exit(130);
+                }
+            });
             Some(epoch)
         }
         Some(s) => {

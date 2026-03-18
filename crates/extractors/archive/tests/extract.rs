@@ -34,6 +34,14 @@ fn fixtures_tgz() -> PathBuf {
         .join("tests/fixtures/fixtures.tgz")
 }
 
+/// solid_block.7z — a solid 7z archive where the block-level unpack size is not
+/// recorded in the header (get_unpack_size() == 0).  Regression fixture for the
+/// bug where all members of such a block were indexed by filename only.
+fn solid_block_7z() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/solid_block.7z")
+}
+
 fn default_cfg() -> ExtractorConfig {
     ExtractorConfig {
         max_content_kb: 1024,
@@ -312,5 +320,62 @@ fn tgz_nested_tar_members_extracted() {
     assert!(
         has_path(&lines, "fixtures/c.tar::c.txt"),
         "fixtures/c.tar::c.txt not found"
+    );
+}
+
+// ============================================================================
+// 7z solid block with unknown block-level unpack size (get_unpack_size() == 0)
+// ============================================================================
+
+/// Regression test: solid_block.7z is a solid 7z archive where the block header
+/// does not record a block-level total unpack size (get_unpack_size() == 0).
+/// Previously all members of such a block were indexed by filename only.
+/// After the fix, content must be extracted for every member.
+#[test]
+fn solid_7z_block_content_extracted() {
+    let mut batches: Vec<MemberBatch> = Vec::new();
+    extract_streaming(&solid_block_7z(), &default_cfg(), &mut |b| batches.push(b)).unwrap();
+
+    // Every non-directory member must have at least one content line (line_number > 0).
+    // Collect members that only have the filename line (line_number == 0).
+    let filename_only: Vec<String> = batches
+        .iter()
+        .filter(|b| b.skip_reason.is_none())
+        .flat_map(|b| &b.lines)
+        .filter(|l| l.line_number == 0)
+        .map(|l| l.archive_path.clone().unwrap_or_else(|| l.content.clone()))
+        .collect();
+
+    let has_content: Vec<String> = batches
+        .iter()
+        .flat_map(|b| &b.lines)
+        .filter(|l| l.line_number > 0)
+        .filter_map(|l| l.archive_path.clone())
+        .collect();
+
+    // All three fixture members must have content lines.
+    for member in &["solid7z_fixture/app.js", "solid7z_fixture/config.json", "solid7z_fixture/readme.md"] {
+        assert!(
+            has_content.iter().any(|p| p == member),
+            "{member} has no content lines (filename_only={filename_only:?}); \
+             solid block members may be getting skipped"
+        );
+    }
+}
+
+/// The skip_reason field must be absent for successfully extracted members.
+#[test]
+fn solid_7z_block_no_skip_reason() {
+    let mut batches: Vec<MemberBatch> = Vec::new();
+    extract_streaming(&solid_block_7z(), &default_cfg(), &mut |b| batches.push(b)).unwrap();
+
+    let skipped: Vec<_> = batches.iter()
+        .filter(|b| b.skip_reason.is_some())
+        .collect();
+
+    assert!(
+        skipped.is_empty(),
+        "unexpected skip_reason in solid_block.7z extraction: {:?}",
+        skipped.iter().map(|b| b.skip_reason.as_deref().unwrap()).collect::<Vec<_>>()
     );
 }
