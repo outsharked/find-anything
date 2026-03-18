@@ -3,12 +3,17 @@ use std::sync::Arc;
 use axum::{
     extract::{Query, State},
     http::HeaderMap,
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     Json,
 };
 use serde::Deserialize;
+use tokio_stream::wrappers::WatchStream;
+use tokio_stream::StreamExt as _;
 
-use find_common::api::{SourceStats, StatsResponse, WorkerStatus};
+use find_common::api::{SourceStats, SourceStreamSnapshot, StatsResponse, StatsStreamEvent, WorkerStatus};
 
 use crate::{db, AppState};
 
@@ -143,4 +148,52 @@ pub async fn get_stats(
         orphaned_bytes,
         orphaned_stats_age_secs,
     }).into_response()
+}
+
+// ── GET /api/v1/stats/stream (SSE) ───────────────────────────────────────────
+
+fn build_stream_event(state: &AppState) -> StatsStreamEvent {
+    let guard = state.source_stats_cache.read().unwrap_or_else(|e| e.into_inner());
+    StatsStreamEvent {
+        sources: guard.sources.iter().map(|s| SourceStreamSnapshot {
+            name:          s.name.clone(),
+            total_files:   s.total_files,
+            total_size:    s.total_size,
+            by_kind:       s.by_kind.clone(),
+            fts_row_count: s.fts_row_count,
+        }).collect(),
+    }
+}
+
+pub async fn stream_stats(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(s) = check_auth(&state, &headers) {
+        return (s, "Unauthorized").into_response();
+    }
+
+    let rx = state.stats_watch.subscribe();
+
+    let initial_event = build_stream_event(&state);
+
+    let initial = tokio_stream::iter(std::iter::once(initial_event));
+
+    let rate_hz = state.config.server.stats_stream_rate_hz.max(0.1);
+    let min_interval = std::time::Duration::from_secs_f64(1.0 / rate_hz);
+
+    let state2 = Arc::clone(&state);
+    let live = WatchStream::new(rx)
+        .throttle(min_interval)
+        .map(move |_seq| build_stream_event(&state2));
+
+    let stream = initial.chain(live).map(|event| {
+        Ok::<Event, std::convert::Infallible>(
+            Event::default().json_data(&event).unwrap_or_default()
+        )
+    });
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(30)))
+        .into_response()
 }
