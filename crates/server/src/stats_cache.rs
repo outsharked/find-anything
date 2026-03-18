@@ -10,7 +10,6 @@ use find_common::api::{ExtStat, FileKind, KindStats};
 pub struct SourceStatsCache {
     pub sources: Vec<CachedSourceStats>,
     /// Unix timestamp of the last full rebuild.
-    #[allow(dead_code)]
     pub rebuilt_at: Option<i64>,
 }
 
@@ -21,16 +20,13 @@ pub struct CachedSourceStats {
     pub total_size:  i64,
     pub by_kind:     HashMap<FileKind, KindStats>,
     /// Only populated on full rebuild.
-    #[allow(dead_code)]
     pub by_ext:      Vec<ExtStat>,
     /// Only populated on full rebuild.
-    #[allow(dead_code)]
     pub fts_row_count: i64,
 }
 
 /// Run all expensive queries for every source DB and store results in `cache`.
 /// Called at startup, daily, and on `?refresh=true`.
-#[allow(dead_code)]
 pub fn full_rebuild(data_dir: &Path, cache: &std::sync::RwLock<SourceStatsCache>) {
     let sources_dir = data_dir.join("sources");
     let mut sources: Vec<CachedSourceStats> = Vec::new();
@@ -73,7 +69,6 @@ pub fn full_rebuild(data_dir: &Path, cache: &std::sync::RwLock<SourceStatsCache>
 }
 
 /// Per-source incremental delta — applied after each worker batch.
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct SourceStatsDelta {
     pub source: String,
@@ -84,7 +79,6 @@ pub struct SourceStatsDelta {
 }
 
 impl SourceStatsCache {
-    #[allow(dead_code)]
     pub fn apply_delta(&mut self, delta: &SourceStatsDelta) {
         if let Some(s) = self.sources.iter_mut().find(|s| s.name == delta.source) {
             s.total_files = (s.total_files as i64 + delta.files_delta).max(0) as usize;
