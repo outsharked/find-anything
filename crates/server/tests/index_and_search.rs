@@ -95,9 +95,11 @@ async fn test_stats_shows_indexed_file() {
     srv.post_bulk(&req).await;
     srv.wait_for_idle().await;
 
+    // Use ?refresh=true so stats are rebuilt from DB rather than waiting for the
+    // 30-second startup cache rebuild.
     let resp: StatsResponse = srv
         .client
-        .get(srv.url("/api/v1/stats"))
+        .get(srv.url("/api/v1/stats?refresh=true"))
         .send()
         .await
         .unwrap()
