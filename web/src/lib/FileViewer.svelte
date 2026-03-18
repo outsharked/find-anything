@@ -214,6 +214,10 @@
 				duplicatePaths.push(s);
 			}
 		}
+		// Also include duplicate_paths from the dedicated field (schema v3).
+		for (const dup of (data.duplicate_paths ?? [])) {
+			if (!duplicatePaths.includes(dup)) duplicatePaths.push(dup);
+		}
 
 		lineOffsets = data.line_offsets && data.line_offsets.length > 0
 			? data.line_offsets
@@ -247,6 +251,10 @@
 			} else {
 				duplicatePaths.push(s);
 			}
+		}
+		// Also include duplicate_paths from the dedicated field (schema v3).
+		for (const dup of (data.duplicate_paths ?? [])) {
+			if (!duplicatePaths.includes(dup)) duplicatePaths.push(dup);
 		}
 		if (isInitial) {
 			isEncrypted = fileKind === 'pdf' && data.lines.length === 1 && data.lines[0] === 'Content encrypted';

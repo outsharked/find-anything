@@ -172,7 +172,7 @@ fn make_result(
         mtime: c.mtime,
         size: c.size,
         context_lines: vec![],
-        aliases: vec![],
+        duplicate_paths: vec![],
         extra_matches,
     }
 }
@@ -249,12 +249,12 @@ pub async fn search(
                                 ScoredResult { result: make_result(&source_name, &rep, score, extra_matches), file_id }
                             })
                             .collect();
-                        let canonical_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
-                        let aliases_map = db::fetch_aliases_for_canonical_ids(&conn, &canonical_ids)?;
+                        let file_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
+                        let dups_map = db::fetch_duplicates_for_file_ids(&conn, &file_ids)?;
                         let results: Vec<SearchResult> = result_pairs
                             .into_iter()
                             .map(|mut sr| {
-                                if let Some(aliases) = aliases_map.get(&sr.file_id) { sr.result.aliases = aliases.clone(); }
+                                if let Some(dups) = dups_map.get(&sr.file_id) { sr.result.duplicate_paths = dups.clone(); }
                                 sr.result
                             })
                             .collect();
@@ -268,12 +268,12 @@ pub async fn search(
                             .collect();
                         let source_total = filtered.len();
                         let result_pairs = group_by_file(filtered, &source_name);
-                        let canonical_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
-                        let aliases_map = db::fetch_aliases_for_canonical_ids(&conn, &canonical_ids)?;
+                        let file_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
+                        let dups_map = db::fetch_duplicates_for_file_ids(&conn, &file_ids)?;
                         let results: Vec<SearchResult> = result_pairs
                             .into_iter()
                             .map(|mut sr| {
-                                if let Some(aliases) = aliases_map.get(&sr.file_id) { sr.result.aliases = aliases.clone(); }
+                                if let Some(dups) = dups_map.get(&sr.file_id) { sr.result.duplicate_paths = dups.clone(); }
                                 sr.result
                             })
                             .collect();
@@ -289,12 +289,12 @@ pub async fn search(
                             .collect();
                         let source_total = filtered.len();
                         let result_pairs = group_by_file(filtered, &source_name);
-                        let canonical_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
-                        let aliases_map = db::fetch_aliases_for_canonical_ids(&conn, &canonical_ids)?;
+                        let file_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
+                        let dups_map = db::fetch_duplicates_for_file_ids(&conn, &file_ids)?;
                         let results: Vec<SearchResult> = result_pairs
                             .into_iter()
                             .map(|mut sr| {
-                                if let Some(aliases) = aliases_map.get(&sr.file_id) { sr.result.aliases = aliases.clone(); }
+                                if let Some(dups) = dups_map.get(&sr.file_id) { sr.result.duplicate_paths = dups.clone(); }
                                 sr.result
                             })
                             .collect();
@@ -374,15 +374,15 @@ pub async fn search(
                     }
                 };
 
-                // Look up aliases for all canonical file IDs in the result set.
-                let canonical_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
-                let aliases_map = db::fetch_aliases_for_canonical_ids(&conn, &canonical_ids)?;
+                // Look up duplicates for all file IDs in the result set.
+                let file_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
+                let dups_map = db::fetch_duplicates_for_file_ids(&conn, &file_ids)?;
 
                 let results: Vec<SearchResult> = result_pairs
                     .into_iter()
                     .map(|mut sr| {
-                        if let Some(aliases) = aliases_map.get(&sr.file_id) {
-                            sr.result.aliases = aliases.clone();
+                        if let Some(dups) = dups_map.get(&sr.file_id) {
+                            sr.result.duplicate_paths = dups.clone();
                         }
                         sr.result
                     })

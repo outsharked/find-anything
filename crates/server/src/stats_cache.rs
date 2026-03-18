@@ -23,6 +23,8 @@ pub struct CachedSourceStats {
     pub by_ext:      Vec<ExtStat>,
     /// Only populated on full rebuild.
     pub fts_row_count: i64,
+    /// Files whose content hasn't been written to ZIP yet.
+    pub files_pending_content: usize,
 }
 
 /// Run all expensive queries for every source DB and store results in `cache`.
@@ -50,7 +52,8 @@ pub fn full_rebuild(data_dir: &Path, cache: &std::sync::RwLock<SourceStatsCache>
         let (total_files, total_size, by_kind) = crate::db::get_stats(&conn).unwrap_or_default();
         let by_ext     = crate::db::get_stats_by_ext(&conn).unwrap_or_default();
         let fts_row_count = crate::db::get_fts_row_count(&conn).unwrap_or(0);
-        sources.push(CachedSourceStats { name: source_name, total_files, total_size, by_kind, by_ext, fts_row_count });
+        let files_pending_content = crate::db::get_files_pending_content(&conn).unwrap_or(0);
+        sources.push(CachedSourceStats { name: source_name, total_files, total_size, by_kind, by_ext, fts_row_count, files_pending_content });
     }
 
     sources.sort_by(|a, b| a.name.cmp(&b.name));
@@ -80,16 +83,22 @@ pub struct SourceStatsDelta {
 
 impl SourceStatsCache {
     pub fn apply_delta(&mut self, delta: &SourceStatsDelta) {
-        if let Some(s) = self.sources.iter_mut().find(|s| s.name == delta.source) {
-            s.total_files = (s.total_files as i64 + delta.files_delta).max(0) as usize;
-            s.total_size  = (s.total_size  + delta.size_delta).max(0);
-            for (kind, (count_d, size_d)) in &delta.kind_deltas {
-                let e = s.by_kind.entry(kind.clone()).or_default();
-                e.count = (e.count as i64 + count_d).max(0) as usize;
-                e.size  = (e.size  + size_d).max(0);
-            }
+        // Find the source entry, creating one on first use so new sources become
+        // visible immediately rather than waiting for the next full rebuild.
+        if !self.sources.iter().any(|s| s.name == delta.source) {
+            self.sources.push(CachedSourceStats {
+                name: delta.source.clone(),
+                ..Default::default()
+            });
+            self.sources.sort_by(|a, b| a.name.cmp(&b.name));
         }
-        // If source not yet in cache (e.g. first-ever file for a new source),
-        // leave it for the next full rebuild to populate.
+        let s = self.sources.iter_mut().find(|s| s.name == delta.source).unwrap();
+        s.total_files = (s.total_files as i64 + delta.files_delta).max(0) as usize;
+        s.total_size  = (s.total_size  + delta.size_delta).max(0);
+        for (kind, (count_d, size_d)) in &delta.kind_deltas {
+            let e = s.by_kind.entry(kind.clone()).or_default();
+            e.count = (e.count as i64 + count_d).max(0) as usize;
+            e.size  = (e.size  + size_d).max(0);
+        }
     }
 }

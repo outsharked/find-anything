@@ -244,10 +244,10 @@ pub struct SearchResult {
     /// Populated when ?context=N is passed to the search endpoint.
     #[serde(default)]
     pub context_lines: Vec<ContextLine>,
-    /// Other paths with identical content (deduplication aliases).
+    /// Other paths with identical content.
     /// Empty when there are no duplicates; omitted from JSON.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub aliases: Vec<String>,
+    pub duplicate_paths: Vec<String>,
     /// Additional lines where query terms were found (document mode only).
     /// Each entry is the best matching line for a term not covered by `line_number`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -309,6 +309,10 @@ pub struct FileResponse {
     /// Clients should show "content not yet available" rather than empty lines.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub content_unavailable: bool,
+    /// Other paths with identical content (from the duplicates table).
+    /// Populated from the `duplicates` table; empty when there are no duplicates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub duplicate_paths: Vec<String>,
 }
 
 /// GET /api/v1/files response entry (for deletion detection / Ctrl+P).
@@ -487,6 +491,10 @@ pub struct SourceStats {
     /// files; useful for diagnosing whether the index is populated).
     #[serde(default)]
     pub fts_row_count: i64,
+    /// Files whose content has not yet been written to a ZIP archive (phase-2
+    /// backlog at the DB level).  Zero once fully indexed.
+    #[serde(default)]
+    pub files_pending_content: usize,
 }
 
 /// Current processing state of the inbox worker.
@@ -564,6 +572,8 @@ pub struct SourceStreamSnapshot {
     pub total_size: i64,
     pub by_kind: std::collections::HashMap<FileKind, KindStats>,
     pub fts_row_count: i64,
+    #[serde(default)]
+    pub files_pending_content: usize,
 }
 
 // ── Inbox admin types ─────────────────────────────────────────────────────────

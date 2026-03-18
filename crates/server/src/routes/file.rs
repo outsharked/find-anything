@@ -11,6 +11,8 @@ use serde::Deserialize;
 use find_common::api::{FileKind, FileResponse};
 use find_common::path::split_composite;
 
+use rusqlite::OptionalExtension;
+
 use crate::{archive::ArchiveManager, db, AppState};
 
 use super::{check_auth, check_link_code_auth, composite_path, run_blocking, source_db_path};
@@ -108,10 +110,33 @@ pub async fn get_file(
             let (outer, _) = split_composite(&full_path)?;
             db::get_indexing_error(&conn, outer).ok().flatten()
         });
+
+        // Look up duplicate paths from the duplicates table.
+        let duplicate_paths: Vec<String> = conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            rusqlite::params![&full_path],
+            |r| r.get::<_, i64>(0),
+        ).optional()?.and_then(|file_id| {
+            let mut stmt = conn.prepare(
+                "SELECT f2.path
+                 FROM duplicates d1
+                 JOIN duplicates d2 ON d2.content_hash = d1.content_hash
+                   AND d2.file_id != d1.file_id
+                 JOIN files f2 ON f2.id = d2.file_id
+                 WHERE d1.file_id = ?1
+                 ORDER BY f2.path",
+            ).ok()?;
+            let paths: Vec<String> = stmt.query_map(
+                rusqlite::params![file_id],
+                |r| r.get(0),
+            ).ok()?.collect::<rusqlite::Result<_>>().unwrap_or_default();
+            Some(paths)
+        }).unwrap_or_default();
+
         Ok(Json(FileResponse {
             lines, line_offsets, metadata,
             file_kind: kind, total_lines, mtime, size,
-            indexing_error, content_unavailable,
+            indexing_error, content_unavailable, duplicate_paths,
         }).into_response())
     }).await
 }

@@ -122,6 +122,8 @@ pub async fn start_inbox_worker(
     handles: WorkerHandles,
 ) -> anyhow::Result<()> {
     let WorkerHandles { status, archive_state: shared_archive_state, inbox_paused, recent_tx, source_stats_cache, stats_watch } = handles;
+    let stats_watch_archive = Arc::clone(&stats_watch);
+    let source_stats_cache_archive = Arc::clone(&source_stats_cache);
     let inbox_dir = data_dir.join("inbox");
     let failed_dir = inbox_dir.join("failed");
     let to_archive_dir = inbox_dir.join("to-archive");
@@ -182,6 +184,8 @@ pub async fn start_inbox_worker(
         let to_archive_dir = to_archive_dir.clone();
         let shared = Arc::clone(&shared_archive_state);
         let archive_notify = Arc::clone(&archive_notify);
+        let stats_watch = stats_watch_archive;
+        let source_stats_cache = source_stats_cache_archive;
 
         tokio::spawn(async move {
             tracing::debug!("Archive worker started");
@@ -196,6 +200,8 @@ pub async fn start_inbox_worker(
                 // Sleep 5 s to allow accumulation before processing.
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
+                let mut any_processed = false;
+
                 // Drain queue in batches (blocking).
                 loop {
                     let to_archive = to_archive_dir.clone();
@@ -209,6 +215,11 @@ pub async fn start_inbox_worker(
 
                     match batch_result {
                         Ok(Ok(processed)) => {
+                            if processed > 0 {
+                                any_processed = true;
+                                // Notify the SSE stats stream so archive_queue count updates.
+                                stats_watch.send_modify(|v| *v = v.wrapping_add(1));
+                            }
                             if processed < cfg.archive_batch_size {
                                 break; // queue drained
                             }
@@ -223,6 +234,16 @@ pub async fn start_inbox_worker(
                             break;
                         }
                     }
+                }
+
+                // When the queue drains, rebuild stats so files_pending_content updates.
+                if any_processed {
+                    let cache = Arc::clone(&source_stats_cache);
+                    let dd = data_dir.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::stats_cache::full_rebuild(&dd, &cache);
+                    }).await.ok();
+                    stats_watch.send_modify(|v| *v = v.wrapping_add(1));
                 }
             }
         });

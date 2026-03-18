@@ -9,6 +9,8 @@ use rusqlite::OptionalExtension;
 use find_common::api::{FileKind, IndexFile, IndexLine};
 use find_common::path::{composite_like_prefix, is_composite};
 
+use crate::db::{encode_fts_rowid, MAX_LINES_PER_FILE};
+
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Outcome returned by `process_file_phase1` / `process_file_phase1_fallback`.
@@ -55,8 +57,6 @@ pub(super) fn process_file_phase1_fallback(
     }
 
     // Single query for the existing record id, stored mtime, size, and kind.
-    // Used for: dedup outcome, stale-mtime guard, chunk-removal queue,
-    // Phase1Outcome (New vs Modified), and incremental stats delta.
     let existing_record: Option<(i64, i64, i64, String)> = conn.query_row(
         "SELECT id, mtime, COALESCE(size,0), kind FROM files WHERE path = ?1",
         rusqlite::params![file.path],
@@ -65,48 +65,6 @@ pub(super) fn process_file_phase1_fallback(
     let existing_id    = existing_record.as_ref().map(|(id, _, _, _)| *id);
     let stored_mtime   = existing_record.as_ref().map(|(_, mtime, _, _)| *mtime);
     let old_size_kind  = existing_record.map(|(_, _, size, kind)| (size, FileKind::from(kind.as_str())));
-
-    // Dedup check: if another canonical with the same content hash exists,
-    // register this file as an alias and skip chunk/lines/FTS writes.
-    if let Some(hash) = &file.content_hash {
-        let canonical_id: Option<i64> = conn.query_row(
-            "SELECT id FROM files
-             WHERE content_hash = ?1
-               AND canonical_file_id IS NULL
-               AND path != ?2
-               AND EXISTS (SELECT 1 FROM lines WHERE file_id = id LIMIT 1)
-             LIMIT 1",
-            rusqlite::params![hash, file.path],
-            |row| row.get(0),
-        ).optional()?;
-
-        if let Some(canonical_id) = canonical_id {
-            conn.execute(
-                "INSERT INTO files (path, mtime, size, kind, indexed_at, extract_ms, content_hash, canonical_file_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(path) DO UPDATE SET
-                   mtime            = excluded.mtime,
-                   size             = excluded.size,
-                   kind             = excluded.kind,
-                   extract_ms       = excluded.extract_ms,
-                   content_hash     = excluded.content_hash,
-                   canonical_file_id = excluded.canonical_file_id",
-                rusqlite::params![
-                    file.path, file.mtime, file.size, file.kind.to_string(),
-                    now_secs,
-                    file.extract_ms.map(|ms| ms as i64),
-                    hash,
-                    canonical_id,
-                ],
-            )?;
-            if existing_id.is_none() {
-                return Ok(Phase1Outcome::New);
-            } else {
-                let (old_size, old_kind) = old_size_kind.unwrap_or((0, FileKind::Unknown));
-                return Ok(Phase1Outcome::Modified { old_size, old_kind });
-            }
-        }
-    }
 
     // Stale-mtime guard: skip if the stored mtime is already newer.
     if let Some(stored) = stored_mtime {
@@ -128,10 +86,12 @@ pub(super) fn process_file_phase1_fallback(
     let t_fts = std::time::Instant::now();
     let tx = conn.transaction()?;
 
+    let line_count = file.lines.len() as i64;
+
     // Upsert the file record and get the stable file_id.
     let file_id: i64 = tx.query_row(
-        "INSERT INTO files (path, mtime, size, kind, scanner_version, indexed_at, extract_ms, content_hash, canonical_file_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)
+        "INSERT INTO files (path, mtime, size, kind, scanner_version, indexed_at, extract_ms, content_hash, line_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(path) DO UPDATE SET
            mtime             = excluded.mtime,
            size              = excluded.size,
@@ -140,7 +100,7 @@ pub(super) fn process_file_phase1_fallback(
            indexed_at        = excluded.indexed_at,
            extract_ms        = excluded.extract_ms,
            content_hash      = excluded.content_hash,
-           canonical_file_id = NULL
+           line_count        = excluded.line_count
          RETURNING id",
         rusqlite::params![
             file.path, file.mtime, file.size, file.kind.to_string(),
@@ -148,12 +108,42 @@ pub(super) fn process_file_phase1_fallback(
             now_secs,
             file.extract_ms.map(|ms| ms as i64),
             file.content_hash.as_deref(),
+            line_count,
         ],
         |row| row.get(0),
     )?;
 
-    // Delete existing lines and inline content.
-    tx.execute("DELETE FROM lines WHERE file_id = ?1", rusqlite::params![file_id])?;
+    // If content_hash is set, ensure content_blocks row exists.
+    if let Some(hash) = &file.content_hash {
+        tx.execute(
+            "INSERT OR IGNORE INTO content_blocks(content_hash) VALUES(?1)",
+            rusqlite::params![hash],
+        )?;
+    }
+
+    // On re-index: delete old inline FTS entries before inserting new ones.
+    // This keeps the contentless FTS5 index clean for inline files, where old
+    // content is readily available in file_content before it gets overwritten.
+    // For deferred files, old FTS entries become stale and are filtered at read
+    // time by read_chunk_for_file returning None for uncovered line numbers.
+    if existing_id.is_some() && use_inline {
+        let old_content: Option<String> = tx.query_row(
+            "SELECT content FROM file_content WHERE file_id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        ).optional()?;
+        if let Some(old) = old_content {
+            // Position i in the '\n'-split corresponds to line_number i for
+            // dense (0-based sequential) inline files.
+            for (i, old_line) in old.split('\n').enumerate() {
+                let old_rowid = encode_fts_rowid(file_id, i as i64);
+                tx.execute(
+                    "INSERT INTO lines_fts(lines_fts, rowid, content) VALUES('delete', ?1, ?2)",
+                    rusqlite::params![old_rowid, old_line],
+                )?;
+            }
+        }
+    }
 
     if use_inline {
         // Store content inline in file_content table.
@@ -170,22 +160,20 @@ pub(super) fn process_file_phase1_fallback(
             rusqlite::params![file_id, inline_text],
         )?;
 
-        // Insert line rows with NULL chunk refs; offset = position in inline_text lines.
-        for (offset, line) in sorted_lines.iter().enumerate() {
-            let line_id = tx.query_row(
-                "INSERT INTO lines (file_id, line_number, chunk_archive, chunk_name, line_offset_in_chunk)
-                 VALUES (?1, ?2, NULL, NULL, ?3)
-                 RETURNING id",
-                rusqlite::params![
-                    file_id,
-                    line.line_number as i64,
-                    offset as i64,
-                ],
-                |row| row.get::<_, i64>(0),
-            )?;
+        // Insert FTS rows using encode_fts_rowid.
+        for line in &sorted_lines {
+            let line_number = line.line_number as i64;
+            if line_number >= MAX_LINES_PER_FILE {
+                tracing::warn!(
+                    "file {} line {} exceeds MAX_LINES_PER_FILE — skipping FTS",
+                    file.path, line_number
+                );
+                continue;
+            }
+            let rowid = encode_fts_rowid(file_id, line_number);
             tx.execute(
                 "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
-                rusqlite::params![line_id, line.content],
+                rusqlite::params![rowid, line.content],
             )?;
         }
     } else {
@@ -195,26 +183,29 @@ pub(super) fn process_file_phase1_fallback(
             rusqlite::params![file_id],
         )?;
 
-        // Deferred archive: insert lines with NULL chunk refs (archive thread will fill them in).
-        // FTS is indexed immediately for search availability.
+        // Deferred archive: insert FTS rows immediately for search availability.
         let mut sorted_lines = file.lines.iter().collect::<Vec<_>>();
         sorted_lines.sort_by_key(|l| l.line_number);
         for line in &sorted_lines {
-            let line_id = tx.query_row(
-                "INSERT INTO lines (file_id, line_number, chunk_archive, chunk_name, line_offset_in_chunk)
-                 VALUES (?1, ?2, NULL, NULL, 0)
-                 RETURNING id",
-                rusqlite::params![
-                    file_id,
-                    line.line_number as i64,
-                ],
-                |row| row.get::<_, i64>(0),
-            )?;
+            let line_number = line.line_number as i64;
+            if line_number >= MAX_LINES_PER_FILE {
+                tracing::warn!(
+                    "file {} line {} exceeds MAX_LINES_PER_FILE — skipping FTS",
+                    file.path, line_number
+                );
+                continue;
+            }
+            let rowid = encode_fts_rowid(file_id, line_number);
             tx.execute(
                 "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
-                rusqlite::params![line_id, line.content],
+                rusqlite::params![rowid, line.content],
             )?;
         }
+    }
+
+    // Update duplicate tracking.
+    if let Some(hash) = &file.content_hash {
+        upsert_duplicate_tracking(&tx, hash, file_id)?;
     }
 
     tx.commit()?;
@@ -226,6 +217,37 @@ pub(super) fn process_file_phase1_fallback(
         let (old_size, old_kind) = old_size_kind.unwrap_or((0, FileKind::Unknown));
         Ok(Phase1Outcome::Modified { old_size, old_kind })
     }
+}
+
+/// Insert duplicate tracking entries when 2+ files share a content_hash.
+fn upsert_duplicate_tracking(
+    tx: &rusqlite::Transaction,
+    hash: &str,
+    file_id: i64,
+) -> Result<()> {
+    // Find other files with the same content_hash.
+    let other_ids: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT id FROM files WHERE content_hash = ?1 AND id != ?2",
+        )?;
+        let ids: Vec<i64> = stmt.query_map(rusqlite::params![hash, file_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        ids
+    };
+    if !other_ids.is_empty() {
+        // Insert for all existing duplicates and for the current file.
+        for other_id in &other_ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO duplicates(content_hash, file_id) VALUES(?1, ?2)",
+                rusqlite::params![hash, other_id],
+            )?;
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO duplicates(content_hash, file_id) VALUES(?1, ?2)",
+            rusqlite::params![hash, file_id],
+        )?;
+    }
+    Ok(())
 }
 
 // ── Helper constructors ───────────────────────────────────────────────────────
@@ -285,17 +307,7 @@ mod tests {
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        conn.execute_batch(include_str!("../schema_v2.sql")).unwrap();
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS pending_chunk_removes;
-             CREATE TABLE IF NOT EXISTS activity_log (
-                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                 occurred_at INTEGER NOT NULL,
-                 action      TEXT    NOT NULL,
-                 path        TEXT    NOT NULL,
-                 new_path    TEXT
-             );",
-        ).unwrap();
+        conn.execute_batch(include_str!("../schema_v3.sql")).unwrap();
         crate::db::register_scalar_functions(&conn).unwrap();
         conn
     }
@@ -325,17 +337,12 @@ mod tests {
         ).ok()
     }
 
-    fn line_count(conn: &Connection, path: &str) -> usize {
-        let file_id: i64 = conn.query_row(
-            "SELECT id FROM files WHERE path = ?1",
-            rusqlite::params![path],
-            |r| r.get(0),
-        ).unwrap();
+    fn fts_row_count(conn: &Connection) -> i64 {
         conn.query_row(
-            "SELECT COUNT(*) FROM lines WHERE file_id = ?1",
-            rusqlite::params![file_id],
-            |r| r.get::<_, i64>(0),
-        ).unwrap() as usize
+            "SELECT COUNT(*) FROM lines_fts",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(0)
     }
 
     #[test]
@@ -345,7 +352,8 @@ mod tests {
         let outcome = process_file_phase1(&mut conn, &file, 0).unwrap();
         assert!(matches!(outcome, Phase1Outcome::New));
         assert_eq!(stored_mtime(&conn, "docs/readme.txt"), Some(1000));
-        assert_eq!(line_count(&conn, "docs/readme.txt"), 2); // line 0 + line 1
+        // 2 FTS entries (line 0 + line 1)
+        assert_eq!(fts_row_count(&conn), 2);
     }
 
     #[test]
@@ -367,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn content_hash_dedup_registers_alias() {
+    fn content_hash_registers_duplicate_pair() {
         let mut conn = test_conn();
 
         let mut file_a = make_file("original.txt", 1000, "shared content");
@@ -375,116 +383,41 @@ mod tests {
         let outcome_a = process_file_phase1(&mut conn, &file_a, 0).unwrap();
         assert!(matches!(outcome_a, Phase1Outcome::New));
 
-        let canonical_id: i64 = conn.query_row(
-            "SELECT id FROM files WHERE path = 'original.txt'",
+        // Only one file → no duplicates yet.
+        let dup_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM duplicates WHERE content_hash = 'abc123'",
             [],
             |r| r.get(0),
         ).unwrap();
+        assert_eq!(dup_count, 0, "single file should not be in duplicates");
 
         let mut file_b = make_file("duplicate.txt", 1100, "shared content");
         file_b.content_hash = Some("abc123".to_string());
         let outcome_b = process_file_phase1(&mut conn, &file_b, 0).unwrap();
         assert!(matches!(outcome_b, Phase1Outcome::New));
 
-        let alias_canonical: Option<i64> = conn.query_row(
-            "SELECT canonical_file_id FROM files WHERE path = 'duplicate.txt'",
+        // Both files should now be in duplicates.
+        let dup_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM duplicates WHERE content_hash = 'abc123'",
             [],
             |r| r.get(0),
         ).unwrap();
-        assert_eq!(alias_canonical, Some(canonical_id));
+        assert_eq!(dup_count, 2, "both files should be in duplicates table");
     }
 
-    /// Regression: phantom canonical created by ON DELETE SET NULL must not be used for dedup.
-    ///
-    /// Production scenario that triggered this bug:
-    ///   1. `archive.7z::tsconfig.json` is indexed → becomes the canonical for hash H.
-    ///   2. `archive.v2.7z::tsconfig.json` (same content) is indexed → becomes an alias
-    ///      pointing at the canonical.
-    ///   3. `find-scan --force archive.7z` sends a mtime=0 sentinel → server runs
-    ///      `DELETE FROM files WHERE path LIKE 'archive.7z::%'`, deleting the canonical.
-    ///   4. SQLite fires ON DELETE SET NULL on the alias row: its `canonical_file_id`
-    ///      becomes NULL.  The alias was inserted without content lines (aliases don't store
-    ///      their own lines), so it is now a "phantom canonical" — `canonical_file_id IS NULL`
-    ///      but zero lines.
-    ///   5. The worker re-inserts `archive.7z::tsconfig.json` from the fresh extraction.
-    ///      The dedup query finds the phantom canonical (it has `canonical_file_id IS NULL`
-    ///      and the same content hash) and registers the new file as an alias pointing at it.
-    ///   6. Both entries now have zero content lines; the file is un-searchable.
-    ///
-    /// The fix: require `EXISTS (SELECT 1 FROM lines …)` in the dedup query so that a
-    /// contentless phantom is never selected as a canonical target.
-    ///
-    /// Note: the phantom canonical state (step 4) is still reachable in production — it is
-    /// a DB-level side effect of ON DELETE SET NULL, not prevented by this fix.  The fix
-    /// is purely in the dedup query, which is why this test remains valid.
     #[test]
-    fn dedup_ignores_phantom_canonical_with_no_lines() {
+    fn no_duplicate_entry_for_unique_hash() {
         let mut conn = test_conn();
+        let mut file = make_file("unique.txt", 1000, "unique content");
+        file.content_hash = Some("unique_hash".to_string());
+        process_file_phase1(&mut conn, &file, 0).unwrap();
 
-        // Step 1: insert a canonical (file_a) with real content.
-        let mut file_a = make_file("archive.7z::tsconfig.json", 1000, "{}");
-        file_a.content_hash = Some("hash_abc".to_string());
-        process_file_phase1(&mut conn, &file_a, 0).unwrap();
-
-        let canonical_id: i64 = conn.query_row(
-            "SELECT id FROM files WHERE path = 'archive.7z::tsconfig.json'",
+        let dup_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM duplicates",
             [],
             |r| r.get(0),
         ).unwrap();
-
-        // Step 2: file_b (from another archive) deduplicates against file_a.
-        let mut file_b = make_file("archive.v2.7z::tsconfig.json", 1100, "{}");
-        file_b.content_hash = Some("hash_abc".to_string());
-        process_file_phase1(&mut conn, &file_b, 0).unwrap();
-
-        // Confirm file_b is an alias.
-        let alias_canonical: Option<i64> = conn.query_row(
-            "SELECT canonical_file_id FROM files WHERE path = 'archive.v2.7z::tsconfig.json'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(alias_canonical, Some(canonical_id));
-
-        // Step 3: simulate --force re-index of archive.7z by deleting file_a.
-        // ON DELETE SET NULL fires: file_b now has canonical_file_id=NULL (phantom canonical).
-        conn.execute("DELETE FROM files WHERE path = 'archive.7z::tsconfig.json'", []).unwrap();
-
-        // Confirm file_b is now a phantom canonical (canonical_file_id IS NULL, no lines).
-        let phantom_canonical_id: i64 = conn.query_row(
-            "SELECT id FROM files WHERE path = 'archive.v2.7z::tsconfig.json' AND canonical_file_id IS NULL",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        let phantom_line_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM lines WHERE file_id = ?1",
-            rusqlite::params![phantom_canonical_id],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(phantom_line_count, 0, "phantom canonical should have no lines");
-
-        // Step 4: re-index archive.7z::tsconfig.json.
-        // WITHOUT the fix, this would find the phantom canonical and register as alias → no content.
-        // WITH the fix, the phantom canonical is ignored → new canonical inserted with content.
-        let mut file_a_reindexed = make_file("archive.7z::tsconfig.json", 1200, "{}");
-        file_a_reindexed.content_hash = Some("hash_abc".to_string());
-        process_file_phase1(&mut conn, &file_a_reindexed, 0).unwrap();
-
-        // file_a_reindexed must NOT be an alias — it must be the new canonical with content.
-        let new_canonical: Option<i64> = conn.query_row(
-            "SELECT canonical_file_id FROM files WHERE path = 'archive.7z::tsconfig.json'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert!(new_canonical.is_none(), "re-indexed file must be a canonical, not an alias pointing to a phantom");
-
-        let new_line_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM lines l
-             JOIN files f ON l.file_id = f.id
-             WHERE f.path = 'archive.7z::tsconfig.json'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert!(new_line_count > 0, "re-indexed file must have content lines, got {new_line_count}");
+        assert_eq!(dup_count, 0, "unique file should not be in duplicates");
     }
 
     #[test]
@@ -517,12 +450,22 @@ mod tests {
             |r| r.get(0),
         ).ok();
         assert!(inline.is_none(), "deferred file should not be stored inline");
+        // FTS entries should still be there (2 lines)
+        assert_eq!(fts_row_count(&conn), 2);
+    }
 
-        let null_chunk_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM lines WHERE file_id = ?1 AND chunk_archive IS NULL",
-            rusqlite::params![file_id],
+    #[test]
+    fn deferred_storage_inserts_content_block() {
+        let mut conn = test_conn();
+        let mut file = make_file("doc.txt", 1000, "content");
+        file.content_hash = Some("myhash".to_string());
+        process_file_phase1(&mut conn, &file, 0).unwrap();
+
+        let block_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM content_blocks WHERE content_hash = 'myhash'",
+            [],
             |r| r.get(0),
         ).unwrap();
-        assert_eq!(null_chunk_count, 2);
+        assert_eq!(block_count, 1, "content_blocks row should exist for the hash");
     }
 }

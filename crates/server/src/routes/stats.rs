@@ -123,15 +123,16 @@ pub async fn get_stats(
             (None, vec![], 0)
         };
         SourceStats {
-            name:                 s.name.clone(),
+            name:                   s.name.clone(),
             last_scan,
-            total_files:          s.total_files,
-            total_size:           s.total_size,
-            by_kind:              s.by_kind.clone(),
-            by_ext:               s.by_ext.clone(),
+            total_files:            s.total_files,
+            total_size:             s.total_size,
+            by_kind:                s.by_kind.clone(),
+            by_ext:                 s.by_ext.clone(),
             history,
             indexing_error_count,
-            fts_row_count:        s.fts_row_count,
+            fts_row_count:          s.fts_row_count,
+            files_pending_content:  s.files_pending_content,
         }
     }).collect();
 
@@ -156,11 +157,12 @@ fn build_stream_event(state: &AppState) -> StatsStreamEvent {
     let sources = {
         let guard = state.source_stats_cache.read().unwrap_or_else(|e| e.into_inner());
         guard.sources.iter().map(|s| SourceStreamSnapshot {
-            name:          s.name.clone(),
-            total_files:   s.total_files,
-            total_size:    s.total_size,
-            by_kind:       s.by_kind.clone(),
-            fts_row_count: s.fts_row_count,
+            name:                  s.name.clone(),
+            total_files:           s.total_files,
+            total_size:            s.total_size,
+            by_kind:               s.by_kind.clone(),
+            fts_row_count:         s.fts_row_count,
+            files_pending_content: s.files_pending_content,
         }).collect()
     };
 

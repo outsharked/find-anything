@@ -7,7 +7,7 @@ use find_common::api::FileKind;
 
 use crate::archive::ArchiveManager;
 
-use super::read_chunk_lines;
+use super::read_chunk_for_file;
 use super::split_composite_path;
 
 /// Combined search filter: optional date range (mtime), optional kind allowlist,
@@ -31,21 +31,6 @@ impl DateFilter {
 // ── ParamBinder ───────────────────────────────────────────────────────────────
 
 /// Accumulates SQL parameters and auto-numbers their `?N` placeholders.
-///
-/// Eliminates manual placeholder numbering in dynamic WHERE clauses: each
-/// `push()` call appends a value and returns the correct `?N` string.
-///
-/// Lifetime note: call `as_refs()` and bind the result before passing it to
-/// `stmt.query()` — the borrow must outlive the query call:
-///
-/// ```ignore
-/// let mut p = ParamBinder::new();
-/// let fts_ph   = p.push(fts_query);
-/// let limit_ph = p.push(limit as i64);
-/// let sql = format!("… MATCH {fts_ph} … LIMIT {limit_ph}");
-/// let refs = p.as_refs();
-/// stmt.query(refs.as_slice())?;
-/// ```
 struct ParamBinder {
     params: Vec<Box<dyn rusqlite::ToSql>>,
 }
@@ -77,7 +62,7 @@ pub struct CandidateRow {
     pub content: String,
     pub mtime: i64,
     pub size: Option<i64>,
-    /// The file's row ID in the `files` table (used for alias lookup).
+    /// The file's row ID in the `files` table (used for duplicate lookup).
     pub file_id: i64,
 }
 
@@ -90,13 +75,6 @@ pub(crate) fn build_fts_query(query: &str, phrase: bool) -> Option<String> {
         }
         Some(format!("\"{}\"", query.replace('"', "\"\"")))
     } else {
-        // Use unquoted terms so FTS5 treats each word as a token query rather
-        // than a phrase query.  Quoted phrases require ≥3 trigrams to match
-        // (i.e. the term must be ≥5 chars), which breaks short-word searches
-        // like "test" (4 chars, 2 trigrams).  Unquoted token queries have no
-        // such minimum.  Split on any non-alphanumeric character (except `_`)
-        // so that e.g. "plan.index" yields ["plan", "index"] rather than a
-        // single token that FTS5 cannot parse.
         let terms: Vec<String> = query
             .split(|c: char| !c.is_alphanumeric() && c != '_')
             .filter(|w| w.len() >= 3)
@@ -124,10 +102,10 @@ pub fn fts_count(conn: &Connection, query: &str, limit: usize, phrase: bool, dat
         )?;
         return Ok(count as usize);
     }
-    // Date/kind/filename filter active: need JOIN to lines and files.
+    // Date/kind/filename filter active: need JOIN to files.
     let from = date.from.unwrap_or(i64::MIN);
     let to = date.to.unwrap_or(i64::MAX);
-    let filename_clause = if date.filename_only { "AND l.line_number = 0" } else { "" };
+    let filename_clause = if date.filename_only { "AND (lines_fts.rowid % 1000000) = 0" } else { "" };
 
     let mut p = ParamBinder::new();
     let fts_ph   = p.push(fts_query);
@@ -145,8 +123,7 @@ pub fn fts_count(conn: &Connection, query: &str, limit: usize, phrase: bool, dat
         "SELECT count(*) FROM (
              SELECT 1
              FROM lines_fts
-             JOIN lines l ON l.id = lines_fts.rowid
-             JOIN files f ON f.id = l.file_id
+             JOIN files f ON f.id = (lines_fts.rowid / 1000000)
              WHERE lines_fts MATCH {fts_ph}
                AND f.mtime BETWEEN {from_ph} AND {to_ph}
                {kind_clause}
@@ -176,9 +153,6 @@ pub fn fts_candidates(
         file_path: String,
         file_kind: FileKind,
         line_number: usize,
-        chunk_archive: Option<String>,
-        chunk_name: Option<String>,
-        line_offset: usize,
         file_id: i64,
         mtime: i64,
         size: Option<i64>,
@@ -187,19 +161,30 @@ pub fn fts_candidates(
     let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<RawRow> {
         let file_kind_str: String = row.get(1)?;
         Ok(RawRow {
-            file_path:     row.get(0)?,
-            file_kind:     FileKind::from(file_kind_str.as_str()),
-            line_number:   row.get::<_, i64>(2)? as usize,
-            chunk_archive: row.get(3)?,
-            chunk_name:    row.get(4)?,
-            line_offset:   row.get::<_, i64>(5)? as usize,
-            file_id:       row.get(6)?,
-            mtime:         row.get(7)?,
-            size:          row.get(8)?,
+            file_path:   row.get(0)?,
+            file_kind:   FileKind::from(file_kind_str.as_str()),
+            line_number: (row.get::<_, i64>(2)? % 1_000_000) as usize,
+            file_id:     row.get::<_, i64>(2)? / 1_000_000,  // decode from rowid
+            mtime:       row.get(3)?,
+            size:        row.get(4)?,
         })
     };
 
-    let filename_clause = if date.filename_only { "AND l.line_number = 0" } else { "" };
+    // Redefine map_row for actual SQL that returns separate columns.
+    let map_row2 = |row: &rusqlite::Row<'_>| -> rusqlite::Result<RawRow> {
+        let file_kind_str: String = row.get(1)?;
+        Ok(RawRow {
+            file_path:   row.get(0)?,
+            file_kind:   FileKind::from(file_kind_str.as_str()),
+            line_number: row.get::<_, i64>(2)? as usize,
+            file_id:     row.get(3)?,
+            mtime:       row.get(4)?,
+            size:        row.get(5)?,
+        })
+    };
+    let _ = map_row; // suppress unused warning
+
+    let filename_clause = if date.filename_only { "AND (lines_fts.rowid % 1000000) = 0" } else { "" };
 
     let raw: Vec<RawRow> = if date.is_active() || date.filename_only {
         let from = date.from.unwrap_or(i64::MIN);
@@ -218,12 +203,10 @@ pub fn fts_candidates(
         };
 
         let sql = format!(
-            "SELECT f.path, f.kind, l.line_number,
-                    l.chunk_archive, l.chunk_name, l.line_offset_in_chunk, f.id,
-                    f.mtime, f.size
+            "SELECT f.path, f.kind, (lines_fts.rowid % 1000000) AS line_number,
+                    f.id, f.mtime, f.size
              FROM lines_fts
-             JOIN lines l ON l.id = lines_fts.rowid
-             JOIN files f ON f.id = l.file_id
+             JOIN files f ON f.id = (lines_fts.rowid / 1000000)
              WHERE lines_fts MATCH {fts_ph}
                AND f.mtime BETWEEN {from_ph} AND {to_ph}
                {kind_clause}
@@ -232,20 +215,18 @@ pub fn fts_candidates(
         );
         let refs = p.as_refs();
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(refs.as_slice(), map_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt.query_map(refs.as_slice(), map_row2)?.collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     } else {
         let mut stmt = conn.prepare(
-            "SELECT f.path, f.kind, l.line_number,
-                    l.chunk_archive, l.chunk_name, l.line_offset_in_chunk, f.id,
-                    f.mtime, f.size
+            "SELECT f.path, f.kind, (lines_fts.rowid % 1000000) AS line_number,
+                    f.id, f.mtime, f.size
              FROM lines_fts
-             JOIN lines l ON l.id = lines_fts.rowid
-             JOIN files f ON f.id = l.file_id
+             JOIN files f ON f.id = (lines_fts.rowid / 1000000)
              WHERE lines_fts MATCH ?1
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![fts_query, limit as i64], map_row)?
+        let rows = stmt.query_map(params![fts_query, limit as i64], map_row2)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
@@ -255,15 +236,16 @@ pub fn fts_candidates(
     let mut results = Vec::with_capacity(raw.len());
 
     for row in raw {
-        let content = read_chunk_lines(
-            &mut chunk_cache, archive_mgr, conn,
+        let content_opt = read_chunk_for_file(
+            &mut chunk_cache, conn, archive_mgr,
             row.file_id,
-            row.chunk_archive.as_deref(),
-            row.chunk_name.as_deref(),
-        )
-            .get(row.line_offset)
-            .cloned()
-            .unwrap_or_default();
+            row.line_number as i64,
+        );
+        // Skip stale FTS entries (file deleted or content not yet archived).
+        let content = match content_opt {
+            Some(c) if !c.is_empty() => c,
+            _ => continue,
+        };
 
         // Split composite path into outer path + archive_path for search result compat.
         let (file_path, archive_path) = split_composite_path(&row.file_path);
@@ -294,13 +276,6 @@ pub(crate) struct DocumentGroup {
 pub type DocumentCandidates = (usize, Vec<DocumentGroup>);
 
 /// Document-level fuzzy candidate search.
-///
-/// Unlike `fts_candidates` (which requires all query terms on the *same* line),
-/// this finds files where each query term appears on *any* line, then surfaces
-/// one result per file with extra_matches carrying the best line per remaining token.
-///
-/// Returns `(total, Vec<(representative, extra_matches)>)`.
-/// `total` is the number of qualifying files before the limit is applied.
 pub fn document_candidates(
     conn: &Connection,
     archive_mgr: &ArchiveManager,
@@ -326,9 +301,9 @@ pub fn document_candidates(
     for token in &tokens {
         let fts_expr = format!("\"{}\"", token.replace('"', "\"\""));
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT l.file_id
+            "SELECT DISTINCT (lines_fts.rowid / 1000000) AS file_id
              FROM lines_fts
-             JOIN lines l ON l.id = lines_fts.rowid
+             JOIN files f ON f.id = (lines_fts.rowid / 1000000)
              WHERE lines_fts MATCH ?1
              LIMIT 100000",
         )?;
@@ -344,7 +319,7 @@ pub fn document_candidates(
         .reduce(|a, b| a.intersection(&b).copied().collect())
         .unwrap_or_default();
 
-    // Apply date/kind filter: keep only files that match mtime range and/or kind allowlist.
+    // Apply date/kind filter.
     if date.is_active() && !qualifying_ids.is_empty() {
         let from = date.from.unwrap_or(i64::MIN);
         let to = date.to.unwrap_or(i64::MAX);
@@ -382,8 +357,6 @@ pub fn document_candidates(
         .collect::<Vec<_>>()
         .join(" OR ");
 
-    // Fetch up to `tokens.len()` lines per qualifying file so we can pick the best
-    // line per token. We need enough rows to fill `limit` files × N tokens.
     let per_file_cap = tokens.len().max(1);
     let fetch_limit = (limit * 20 * per_file_cap).max(10_000) as i64;
 
@@ -391,21 +364,16 @@ pub fn document_candidates(
         file_path: String,
         file_kind: FileKind,
         line_number: usize,
-        chunk_archive: Option<String>,
-        chunk_name: Option<String>,
-        line_offset: usize,
         file_id: i64,
         mtime: i64,
         size: Option<i64>,
     }
 
     let mut stmt = conn.prepare(
-        "SELECT f.path, f.kind, l.line_number,
-                l.chunk_archive, l.chunk_name, l.line_offset_in_chunk, f.id,
-                f.mtime, f.size
+        "SELECT f.path, f.kind, (lines_fts.rowid % 1000000) AS line_number,
+                f.id, f.mtime, f.size
          FROM lines_fts
-         JOIN lines l ON l.id = lines_fts.rowid
-         JOIN files f ON f.id = l.file_id
+         JOIN files f ON f.id = (lines_fts.rowid / 1000000)
          WHERE lines_fts MATCH ?1
          ORDER BY lines_fts.rank
          LIMIT ?2",
@@ -413,11 +381,11 @@ pub fn document_candidates(
 
     // Collect up to `per_file_cap` raw rows per qualifying file.
     let mut file_rows: HashMap<i64, Vec<RawRow>> = HashMap::new();
-    let mut file_order: Vec<i64> = Vec::new(); // insertion order for stable output
+    let mut file_order: Vec<i64> = Vec::new();
 
     let mut rows = stmt.query(params![or_expr, fetch_limit])?;
     while let Some(row) = rows.next()? {
-        let file_id: i64 = row.get(6)?;
+        let file_id: i64 = row.get(3)?;
         if !qualifying_ids.contains(&file_id) {
             continue;
         }
@@ -428,15 +396,12 @@ pub fn document_candidates(
         if entry.len() < per_file_cap {
             let file_kind_str: String = row.get(1)?;
             entry.push(RawRow {
-                file_path:    row.get(0)?,
-                file_kind:    FileKind::from(file_kind_str.as_str()),
-                line_number:  row.get::<_, i64>(2)? as usize,
-                chunk_archive: row.get::<_, Option<String>>(3)?,
-                chunk_name:   row.get::<_, Option<String>>(4)?,
-                line_offset:  row.get::<_, i64>(5)? as usize,
+                file_path:   row.get(0)?,
+                file_kind:   FileKind::from(file_kind_str.as_str()),
+                line_number: row.get::<_, i64>(2)? as usize,
                 file_id,
-                mtime:        row.get(7)?,
-                size:         row.get(8)?,
+                mtime:       row.get(4)?,
+                size:        row.get(5)?,
             });
         }
         if file_order.len() >= limit && file_rows.get(&file_order[file_order.len()-1]).map_or(0, |v| v.len()) >= per_file_cap {
@@ -446,8 +411,6 @@ pub fn document_candidates(
 
     // Read content from ZIP archives, reusing a chunk cache.
     let mut chunk_cache: HashMap<(String, String), Vec<String>> = HashMap::new();
-    // For case-insensitive matching, compare lowercased tokens against lowercased content.
-    // For case-sensitive matching, compare tokens as-is.
     let tokens_cmp: Vec<String> = if case_sensitive {
         tokens.clone()
     } else {
@@ -463,15 +426,12 @@ pub fn document_candidates(
 
         // First row is the top FTS-ranked line → the representative.
         let rep_row = &rows[0];
-        let rep_content = read_chunk_lines(
-            &mut chunk_cache, archive_mgr, conn,
+        let rep_content = read_chunk_for_file(
+            &mut chunk_cache, conn, archive_mgr,
             rep_row.file_id,
-            rep_row.chunk_archive.as_deref(),
-            rep_row.chunk_name.as_deref(),
-        )
-            .get(rep_row.line_offset)
-            .cloned()
-            .unwrap_or_default();
+            rep_row.line_number as i64,
+        ).unwrap_or_default();
+        if rep_content.is_empty() { continue; } // stale FTS entry
         let rep_content_cmp = if case_sensitive { rep_content.clone() } else { rep_content.to_lowercase() };
         let (file_path, archive_path) = split_composite_path(&rep_row.file_path);
 
@@ -486,8 +446,6 @@ pub fn document_candidates(
             file_id,
         };
 
-        // For each token not already covered by the representative, find the first
-        // subsequent row that covers it.
         let mut uncovered: Vec<&str> = tokens_cmp
             .iter()
             .filter(|t| !rep_content_cmp.contains(t.as_str()))
@@ -499,17 +457,13 @@ pub fn document_candidates(
             if uncovered.is_empty() {
                 break;
             }
-            let content = read_chunk_lines(
-                &mut chunk_cache, archive_mgr, conn,
+            let content = read_chunk_for_file(
+                &mut chunk_cache, conn, archive_mgr,
                 extra_row.file_id,
-                extra_row.chunk_archive.as_deref(),
-                extra_row.chunk_name.as_deref(),
-            )
-                .get(extra_row.line_offset)
-                .cloned()
-                .unwrap_or_default();
+                extra_row.line_number as i64,
+            ).unwrap_or_default();
+            if content.is_empty() { continue; }
             let content_cmp = if case_sensitive { content.clone() } else { content.to_lowercase() };
-            // Only include this row if it covers at least one new token.
             let newly_covered: Vec<usize> = uncovered
                 .iter()
                 .enumerate()
@@ -517,7 +471,6 @@ pub fn document_candidates(
                 .map(|(i, _)| i)
                 .collect();
             if !newly_covered.is_empty() {
-                // Skip line_number=0 (metadata/path lines) — not useful as highlights.
                 if extra_row.line_number > 0 {
                     let (ep, ea) = split_composite_path(&extra_row.file_path);
                     extras.push(CandidateRow {
@@ -531,7 +484,6 @@ pub fn document_candidates(
                         file_id,
                     });
                 }
-                // Remove newly covered tokens (iterate in reverse to preserve indices).
                 for i in newly_covered.into_iter().rev() {
                     uncovered.swap_remove(i);
                 }
@@ -544,28 +496,26 @@ pub fn document_candidates(
     Ok((total, results))
 }
 
-/// Fetch alias paths grouped by their canonical file ID.
-/// Returns a map of canonical_id → list of alias paths.
-pub fn fetch_aliases_for_canonical_ids(
+/// Fetch duplicate paths grouped by file ID.
+/// Returns a map of file_id → list of other paths sharing the same content_hash.
+pub fn fetch_duplicates_for_file_ids(
     conn: &Connection,
-    canonical_ids: &[i64],
+    file_ids: &[i64],
 ) -> Result<HashMap<i64, Vec<String>>> {
     let mut map: HashMap<i64, Vec<String>> = HashMap::new();
-    if canonical_ids.is_empty() {
-        return Ok(map);
-    }
+    if file_ids.is_empty() { return Ok(map); }
     let mut stmt = conn.prepare(
-        "SELECT canonical_file_id, path FROM files
-         WHERE canonical_file_id = ?1
-         ORDER BY path",
+        "SELECT d1.file_id, f2.path
+         FROM duplicates d1
+         JOIN duplicates d2 ON d2.content_hash = d1.content_hash AND d2.file_id != d1.file_id
+         JOIN files f2 ON f2.id = d2.file_id
+         WHERE d1.file_id = ?1
+         ORDER BY f2.path",
     )?;
-    for &cid in canonical_ids {
-        let paths: Vec<String> = stmt
-            .query_map(params![cid], |row| row.get(1))?
+    for &fid in file_ids {
+        let paths: Vec<String> = stmt.query_map(params![fid], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
-        if !paths.is_empty() {
-            map.insert(cid, paths);
-        }
+        if !paths.is_empty() { map.insert(fid, paths); }
     }
     Ok(map)
 }
@@ -574,24 +524,23 @@ pub fn fetch_aliases_for_canonical_ids(
 mod tests {
     use super::*;
     use crate::archive::ArchiveManager;
+    use crate::db::encode_fts_rowid;
     use rusqlite::Connection;
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        conn.execute_batch(include_str!("../schema_v2.sql")).unwrap();
-        conn.execute_batch("DROP TABLE IF EXISTS pending_chunk_removes;").unwrap();
+        conn.execute_batch(include_str!("../schema_v3.sql")).unwrap();
         crate::db::register_scalar_functions(&conn).unwrap();
         conn
     }
 
     /// Insert a file with inline content and FTS entries. Returns the file_id.
-    /// `lines` is `(line_number, content)` pairs in order; the position in the
-    /// slice is used as `line_offset_in_chunk` for the inline path.
+    /// `lines` is `(line_number, content)` pairs in order.
     fn insert_inline_file(conn: &Connection, path: &str, mtime: i64, kind: &str, lines: &[(usize, &str)]) -> i64 {
         conn.execute(
-            "INSERT INTO files (path, mtime, kind) VALUES (?1, ?2, ?3)",
-            rusqlite::params![path, mtime, kind],
+            "INSERT INTO files (path, mtime, kind, line_count) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![path, mtime, kind, lines.len() as i64],
         ).unwrap();
         let file_id = conn.last_insert_rowid();
 
@@ -601,16 +550,11 @@ mod tests {
             rusqlite::params![file_id, content],
         ).unwrap();
 
-        for (offset, (line_number, line_content)) in lines.iter().enumerate() {
-            let line_id: i64 = conn.query_row(
-                "INSERT INTO lines (file_id, line_number, line_offset_in_chunk)
-                 VALUES (?1, ?2, ?3) RETURNING id",
-                rusqlite::params![file_id, *line_number as i64, offset as i64],
-                |r| r.get(0),
-            ).unwrap();
+        for (line_number, line_content) in lines.iter() {
+            let rowid = encode_fts_rowid(file_id, *line_number as i64);
             conn.execute(
                 "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
-                rusqlite::params![line_id, line_content],
+                rusqlite::params![rowid, line_content],
             ).unwrap();
         }
 
@@ -794,8 +738,6 @@ mod tests {
 
     #[test]
     fn fts_fuzzy_splits_on_dot() {
-        // "plan.index" should yield two tokens joined with AND, not a bare "plan.index"
-        // that causes an FTS5 syntax error.
         let q = build_fts_query("plan.index", false).unwrap();
         assert!(!q.contains('.'));
         assert!(q.contains("plan") && q.contains("index"));
@@ -803,10 +745,8 @@ mod tests {
 
     #[test]
     fn fts_fuzzy_splits_on_special_chars() {
-        // Non-alphanumeric chars other than _ are treated as separators.
         let q = build_fts_query("test^query", false).unwrap();
         assert!(!q.contains('^'));
-        // Both sides are long enough to survive the >=3 filter
         assert!(q.contains("test") && q.contains("query"));
     }
 

@@ -81,6 +81,28 @@ pub fn append_scan_history(conn: &Connection, scanned_at: i64) -> Result<()> {
     Ok(())
 }
 
+/// Count files whose content has not yet been written to a ZIP archive.
+///
+/// A file is "pending content" when it has a `content_hash` (i.e. content was
+/// extracted) but neither an inline `file_content` row nor any `content_chunks`
+/// row for its block exists yet.  This is the DB-level view of archive backlog,
+/// independent of how many `.gz` files remain in the `to-archive/` queue.
+pub fn get_files_pending_content(conn: &Connection) -> Result<usize> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM files f
+         WHERE f.content_hash IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM file_content fc WHERE fc.file_id = f.id)
+           AND NOT EXISTS (
+               SELECT 1 FROM content_blocks cb
+               JOIN content_chunks cc ON cc.block_id = cb.id
+               WHERE cb.content_hash = f.content_hash
+           )",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n as usize)
+}
+
 /// Return up to `limit` scan history points, oldest first.
 pub fn get_scan_history(conn: &Connection, limit: usize) -> Result<Vec<ScanHistoryPoint>> {
     let mut stmt = conn.prepare(

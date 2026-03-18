@@ -163,8 +163,7 @@ pub struct ArchiveManager {
 /// A chunk of file content to be stored
 #[derive(Debug, Clone)]
 pub struct Chunk {
-    pub file_id: i64,
-    pub file_path: String,  // kept for ZIP entry comment
+    pub block_id: i64,
     pub chunk_number: usize,
     pub content: String,
 }
@@ -204,9 +203,9 @@ impl ArchiveManager {
 
         for chunk in chunks {
             let archive_path = self.current_archive_path()?;
-            let chunk_name = format!("{}.{}", chunk.file_id, chunk.chunk_number);
+            let chunk_name = format!("{}.{}", chunk.block_id, chunk.chunk_number);
 
-            self.append_to_zip_with_comment(&archive_path, &chunk_name, chunk.content.as_bytes(), &chunk.file_path)?;
+            self.append_to_zip_with_comment(&archive_path, &chunk_name, chunk.content.as_bytes(), "")?;
 
             refs.push(ChunkRef {
                 archive_name: archive_path
@@ -459,67 +458,71 @@ fn parse_archive_number(filename: &str) -> Option<usize> {
         .and_then(|s| s.parse::<usize>().ok())
 }
 
-/// Information about where a line ended up after chunking
+/// Line range covered by a single chunk.
 #[derive(Debug, Clone)]
-pub struct LineMapping {
-    pub line_number: usize,
+pub struct ChunkRange {
     pub chunk_number: usize,
-    pub offset_in_chunk: usize,
+    /// First line_number stored in this chunk.
+    pub start_line: usize,
+    /// Last line_number stored in this chunk (inclusive).
+    pub end_line: usize,
 }
 
-/// Result of chunking: chunks + mapping of line numbers to their locations
+/// Result of chunking: chunks + one range per chunk
 pub struct ChunkResult {
     pub chunks: Vec<Chunk>,
-    pub line_mappings: Vec<LineMapping>,
+    pub ranges: Vec<ChunkRange>,
 }
 
-/// Chunk file content into fixed-size pieces, tracking where each line ends up
-pub fn chunk_lines(file_id: i64, file_path: &str, lines: &[(usize, String)]) -> ChunkResult {
+/// Chunk file content into fixed-size pieces, tracking the line range each chunk covers.
+pub fn chunk_lines(block_id: i64, lines: &[(usize, String)]) -> ChunkResult {
     let mut chunks = Vec::new();
-    let mut line_mappings = Vec::new();
+    let mut ranges = Vec::new();
     let mut current_chunk = String::new();
     let mut chunk_number = 0;
-    let mut offset_in_current_chunk = 0;
+    let mut chunk_start_line: Option<usize> = None;
+    let mut chunk_last_line: usize = 0;
 
     for (line_num, content) in lines {
         let line_text = format!("{}\n", content);
 
         if current_chunk.len() + line_text.len() > CHUNK_SIZE && !current_chunk.is_empty() {
             chunks.push(Chunk {
-                file_id,
-                file_path: file_path.to_string(),
+                block_id,
                 chunk_number,
                 content: current_chunk.clone(),
             });
+            ranges.push(ChunkRange {
+                chunk_number,
+                start_line: chunk_start_line.unwrap_or(0),
+                end_line: chunk_last_line,
+            });
             chunk_number += 1;
             current_chunk.clear();
-            offset_in_current_chunk = 0;
+            chunk_start_line = None;
         }
 
+        if chunk_start_line.is_none() {
+            chunk_start_line = Some(*line_num);
+        }
+        chunk_last_line = *line_num;
         current_chunk.push_str(&line_text);
-
-        line_mappings.push(LineMapping {
-            line_number: *line_num,
-            chunk_number,
-            offset_in_chunk: offset_in_current_chunk,
-        });
-
-        offset_in_current_chunk += 1;
     }
 
     if !current_chunk.is_empty() {
         chunks.push(Chunk {
-            file_id,
-            file_path: file_path.to_string(),
+            block_id,
             chunk_number,
             content: current_chunk,
         });
+        ranges.push(ChunkRange {
+            chunk_number,
+            start_line: chunk_start_line.unwrap_or(0),
+            end_line: chunk_last_line,
+        });
     }
 
-    ChunkResult {
-        chunks,
-        line_mappings,
-    }
+    ChunkResult { chunks, ranges }
 }
 
 #[cfg(test)]
@@ -530,10 +533,9 @@ mod tests {
         SharedArchiveState::new(dir.to_path_buf()).unwrap()
     }
 
-    fn make_chunk(file_id: i64, chunk_number: usize, content: &str) -> Chunk {
+    fn make_chunk(block_id: i64, chunk_number: usize, content: &str) -> Chunk {
         Chunk {
-            file_id,
-            file_path: format!("test/file_{file_id}.txt"),
+            block_id,
             chunk_number,
             content: content.to_string(),
         }
@@ -645,35 +647,34 @@ mod tests {
             (3, "c".repeat(500)),
         ];
 
-        let result = chunk_lines(0, "/test/file.txt", &lines);
+        let result = chunk_lines(42, &lines);
 
         assert_eq!(result.chunks.len(), 2);
         assert_eq!(result.chunks[0].chunk_number, 0);
         assert_eq!(result.chunks[1].chunk_number, 1);
+        assert_eq!(result.chunks[0].block_id, 42);
+        assert_eq!(result.chunks[1].block_id, 42);
 
-        assert_eq!(result.line_mappings.len(), 3);
-        assert_eq!(result.line_mappings[0].line_number, 1);
-        assert_eq!(result.line_mappings[0].chunk_number, 0);
-        assert_eq!(result.line_mappings[0].offset_in_chunk, 0);
+        assert_eq!(result.ranges.len(), 2);
+        assert_eq!(result.ranges[0].chunk_number, 0);
+        assert_eq!(result.ranges[0].start_line, 1);
+        assert_eq!(result.ranges[0].end_line, 2); // lines 1 and 2 fit in chunk 0
 
-        assert_eq!(result.line_mappings[1].line_number, 2);
-        assert_eq!(result.line_mappings[1].chunk_number, 0);
-        assert_eq!(result.line_mappings[1].offset_in_chunk, 1);
-
-        assert_eq!(result.line_mappings[2].line_number, 3);
-        assert_eq!(result.line_mappings[2].chunk_number, 1);
-        assert_eq!(result.line_mappings[2].offset_in_chunk, 0);
+        assert_eq!(result.ranges[1].chunk_number, 1);
+        assert_eq!(result.ranges[1].start_line, 3);
+        assert_eq!(result.ranges[1].end_line, 3);
     }
 
     #[test]
     fn test_chunk_single_large_line() {
         let lines = vec![(1, "x".repeat(2000))];
 
-        let result = chunk_lines(0, "/test/file.txt", &lines);
+        let result = chunk_lines(42, &lines);
 
         assert_eq!(result.chunks.len(), 1);
-        assert_eq!(result.line_mappings.len(), 1);
-        assert_eq!(result.line_mappings[0].offset_in_chunk, 0);
+        assert_eq!(result.ranges.len(), 1);
+        assert_eq!(result.ranges[0].start_line, 1);
+        assert_eq!(result.ranges[0].end_line, 1);
     }
 
     /// Two `ArchiveManager` instances sharing one `SharedArchiveState` must

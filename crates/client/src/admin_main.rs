@@ -492,11 +492,17 @@ fn format_status(stats: &find_common::api::StatsResponse) -> String {
             let secs = chrono_age_secs(ts);
             format_age(secs)
         }).unwrap_or_else(|| "never".to_string());
+        let pending_note = if s.files_pending_content > 0 {
+            format!(" ({} pending content)", s.files_pending_content)
+        } else {
+            String::new()
+        };
         writeln!(
             out,
-            "  {:20}  {:>6} files  {:>10}  last scan: {}",
+            "  {:20}  {:>6} files{}  {:>10}  last scan: {}",
             s.name,
             s.total_files,
+            pending_note,
             format_bytes(s.total_size as u64),
             age,
         ).unwrap();
@@ -538,11 +544,17 @@ fn format_stream_status(event: &find_common::api::StatsStreamEvent) -> String {
     let mut out = String::new();
     writeln!(out, "Sources (live):").unwrap();
     for s in &event.sources {
+        let pending_note = if s.files_pending_content > 0 {
+            format!(" ({} pending content)", s.files_pending_content)
+        } else {
+            String::new()
+        };
         writeln!(
             out,
-            "  {:20}  {:>6} files  {:>10}",
+            "  {:20}  {:>6} files{}  {:>10}",
             s.name,
             s.total_files,
+            pending_note,
             format_bytes(s.total_size as u64),
         ).unwrap();
     }

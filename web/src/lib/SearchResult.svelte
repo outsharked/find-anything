@@ -181,13 +181,13 @@
 				</button>
 			</span>
 		{/if}
-		{#if result.aliases && result.aliases.length > 0}
+		{#if result.duplicate_paths && result.duplicate_paths.length > 0}
 			<!-- svelte-ignore a11y-click-events-have-key-events -->
 			<span
 				class="alias-badge"
 				title={aliasesExpanded ? 'Hide duplicate paths' : 'Show duplicate paths'}
 				on:click|stopPropagation={() => (aliasesExpanded = !aliasesExpanded)}
-			>+{result.aliases.length} duplicate{result.aliases.length === 1 ? '' : 's'}</span>
+			>+{result.duplicate_paths.length} duplicate{result.duplicate_paths.length === 1 ? '' : 's'}</span>
 		{/if}
 		<div class="file-meta">
 			{#if result.kind && result.kind !== 'raw'}
@@ -199,9 +199,9 @@
 			<span class="meta-item" title="Last modified">{formatDate(result.mtime)}</span>
 		</div>
 	</div>
-	{#if aliasesExpanded && result.aliases && result.aliases.length > 0}
+	{#if aliasesExpanded && result.duplicate_paths && result.duplicate_paths.length > 0}
 		<div class="aliases">
-			{#each result.aliases as alias}
+			{#each result.duplicate_paths as alias}
 				<button class="alias-path" on:click|stopPropagation={() => openAlias(alias)}>{alias}</button>
 			{/each}
 		</div>

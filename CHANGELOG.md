@@ -9,6 +9,24 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **Schema v3: content-addressable archive storage (plan 076)** — replaces the `lines` table (one row per line) and `canonical_file_id` alias system with three new tables: `content_blocks` (hash → integer id), `content_archives` (ZIP name → integer id), and `content_chunks` (one row per chunk per block); FTS5 rowid is now encoded as `file_id × 1,000,000 + line_number`, eliminating the `lines` join table entirely; deduplication is tracked via an explicit `duplicates(content_hash, file_id)` junction table instead of the `ON DELETE SET NULL` alias pointer that caused phantom-canonical bugs; ZIP chunk names change from `{file_id}.{chunk_number}` to `{block_id}.{chunk_number}`, so files sharing identical content share ZIP chunks; ~25× fewer DB rows for large sources; **full re-index required** (delete `data_dir/sources/`, restart, run `find-scan --force`)
+- **`files_pending_content` stat** — per-source count of files whose content has not yet been written to a ZIP archive (DB-level archive backlog, independent of the `.gz` queue depth); shown in `find-admin status` as `(N pending content)` when non-zero; updated automatically when the archive queue drains
+- **`duplicate_paths` in file viewer** — `GET /api/v1/file` now returns a `duplicate_paths` field populated from the `duplicates` table; the file viewer displays these links so navigating to a file via a duplicate link shows all other copies
+
+### Fixed
+
+- **Archive batch duplicate block writes** — when two files in the same batch share a `content_hash`, the second would trigger a "removed stale chunk" rewrite of the ZIP; fixed by tracking `seen_block_ids` within each batch to skip redundant archive work
+- **`content_chunks` UNIQUE constraint on concurrent batches** — the pre-scan "already archived?" check raced with the commit in a concurrent batch; replaced `INSERT OR IGNORE` (which silently masks bugs) with a proper re-check inside the write transaction under the source lock, so a plain `INSERT` is only reached when the row is guaranteed absent
+- **`archive_queue` not updating in `find-admin status --watch`** — the archive loop never fired `stats_watch` after processing batches; now fires after each batch and triggers a full stats cache rebuild when the queue drains, so `files_pending_content` and `archive_queue` update live
+- **Stats panel shows "no sources indexed yet" after fresh install** — `apply_delta` silently dropped incremental updates for sources not yet in the cache (e.g. on first scan after deleting `sources/`); now inserts a new `CachedSourceStats` entry on first delta so the web UI shows live file counts immediately without waiting for a full rebuild
+- **File viewer not showing duplicates** — `FileViewer.svelte` built `duplicatePaths` from `metadata` line-0 entries (the old alias mechanism); in schema v3 those paths are never written to metadata; fixed by adding `duplicate_paths` to `FileResponse` and reading it in the file viewer
+
+### Changed
+
+- **`SearchResult.aliases` renamed to `duplicate_paths`** — field renamed to match the new `duplicates`-table-based implementation; no backwards compatibility shim (full re-index required anyway)
+
 ### Fixed
 
 - **Phantom canonical causes archive members to return zero content** — when `find-scan --force` re-indexes an archive whose member was the dedup canonical for another archive's member, SQLite's `ON DELETE SET NULL` promoted the alias to `canonical_file_id = NULL` with no content lines; the dedup query then selected this "phantom canonical" as the target for the newly re-indexed member, leaving both with zero content lines; fixed by adding `EXISTS (SELECT 1 FROM lines WHERE file_id = id LIMIT 1)` to the dedup query so contentless phantoms are never selected; regression test added documenting the full scenario

@@ -1,9 +1,8 @@
 /// Archive phase (phase 2) of the inbox worker.
 ///
 /// Reads `.gz` files from `inbox/to-archive/`, parses them, appends content
-/// chunks to ZIP archives, and updates `lines.chunk_archive` / `chunk_name` in
-/// SQLite. Separated from the phase-1 indexing loop so neither phase blocks the
-/// other.
+/// chunks to ZIP archives, and inserts `content_chunks` rows in SQLite.
+/// Separated from the phase-1 indexing loop so neither phase blocks the other.
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read;
@@ -74,7 +73,7 @@ pub(super) fn run_archive_batch(
 /// Process a batch of .gz files through the archive phase.
 ///
 /// Write serialisation: the archive thread holds the per-source
-/// `source_lock` only during SQLite write transactions (the UPDATE lines commit).
+/// `source_lock` only during SQLite write transactions.
 /// The lock is explicitly released before ZIP I/O so the indexing thread is not
 /// blocked during expensive disk work.
 fn process_archive_batch(
@@ -129,7 +128,6 @@ fn process_archive_batch(
         let source_lock = shared_archive_state.source_lock(source);
 
         // Coalesce upserts: last-writer-wins by submission order (mtime sort).
-        // Build a map: path → last IndexFile; also track delete_paths.
         let mut upsert_map: HashMap<String, IndexFile> = HashMap::new();
         let mut delete_set: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -148,34 +146,52 @@ fn process_archive_batch(
         // Create ArchiveManager for appending new chunks.
         let mut archive_mgr = ArchiveManager::new(Arc::clone(shared_archive_state));
 
-        // Collect (file_id, line_data, path) for files that need archiving.
+        // Collect work items for files that need archiving.
         struct ArchiveWork {
+            #[allow(dead_code)]
             file_id: i64,
+            block_id: i64,
+            #[allow(dead_code)]
+            content_hash: String,
             path: String,
             line_data: Vec<(usize, String)>,
         }
         let mut archive_works: Vec<ArchiveWork> = Vec::new();
+        // Track block_ids added in this batch to avoid duplicate writes for files
+        // that share the same content hash (content-addressable dedup).
+        let mut seen_block_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
         for (path, file) in &upsert_map {
-            // Look up file_id.
-            let file_id: Option<i64> = conn.query_row(
-                "SELECT id FROM files WHERE path = ?1",
+            // Look up file_id and content_hash.
+            let file_row: Option<(i64, Option<String>)> = conn.query_row(
+                "SELECT id, content_hash FROM files WHERE path = ?1",
                 rusqlite::params![path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional().unwrap_or(None);
+
+            let Some((file_id, Some(content_hash))) = file_row else {
+                continue; // file deleted or no content hash
+            };
+
+            // Look up block_id from content_blocks.
+            let block_id: Option<i64> = conn.query_row(
+                "SELECT id FROM content_blocks WHERE content_hash = ?1",
+                rusqlite::params![&content_hash],
                 |row| row.get(0),
             ).optional().unwrap_or(None);
 
-            let Some(file_id) = file_id else {
-                continue; // file deleted
+            let Some(block_id) = block_id else {
+                continue; // no content block registered
             };
 
-            // Check if already archived.
+            // Check if already archived (content_chunks has rows for this block_id).
             let already_archived: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM lines WHERE file_id = ?1 AND chunk_archive IS NOT NULL",
-                rusqlite::params![file_id],
+                "SELECT COUNT(*) FROM content_chunks WHERE block_id = ?1",
+                rusqlite::params![block_id],
                 |row| row.get(0),
             ).unwrap_or(0);
             if already_archived > 0 {
-                continue; // processed by a newer batch
+                continue; // already archived (possibly by another file with same hash)
             }
 
             // Check if inline (permanently stored in file_content).
@@ -188,27 +204,27 @@ fn process_archive_batch(
                 continue; // inline storage, no ZIP needed
             }
 
-            // Check if there are any lines at all (might be empty file).
-            let line_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM lines WHERE file_id = ?1",
-                rusqlite::params![file_id],
-                |row| row.get(0),
-            ).unwrap_or(0);
-            if line_count == 0 {
-                continue;
-            }
-
             let line_data: Vec<(usize, String)> = file.lines.iter()
                 .map(|l| (l.line_number, l.content.clone()))
                 .collect();
 
-            archive_works.push(ArchiveWork { file_id, path: path.clone(), line_data });
+            // Skip if no lines to archive.
+            if line_data.is_empty() {
+                continue;
+            }
+
+            // Skip if another file in this batch already queued this block_id.
+            if !seen_block_ids.insert(block_id) {
+                continue;
+            }
+
+            archive_works.push(ArchiveWork { file_id, block_id, content_hash, path: path.clone(), line_data });
         }
 
         // Append chunks and collect mappings.
         struct ArchivedFile {
-            file_id: i64,
-            line_mappings: Vec<archive::LineMapping>,
+            block_id: i64,
+            chunk_ranges: Vec<archive::ChunkRange>,
             chunk_refs: Vec<ChunkRef>,
         }
         let mut archived_files: Vec<ArchivedFile> = Vec::new();
@@ -216,12 +232,12 @@ fn process_archive_batch(
         let n_archive_works = archive_works.len();
         timed!(src_tag, format!("append chunks for {} files", n_archive_works), {
             for work in archive_works {
-                let chunk_result = archive::chunk_lines(work.file_id, &work.path, &work.line_data);
+                let chunk_result = archive::chunk_lines(work.block_id, &work.line_data);
                 match archive_mgr.append_chunks(chunk_result.chunks) {
                     Ok(chunk_refs) => {
                         archived_files.push(ArchivedFile {
-                            file_id: work.file_id,
-                            line_mappings: chunk_result.line_mappings,
+                            block_id: work.block_id,
+                            chunk_ranges: chunk_result.ranges,
                             chunk_refs,
                         });
                     }
@@ -232,45 +248,73 @@ fn process_archive_batch(
             }
         });
 
-        // --- SQLite write segment 2: update line refs ---
-        // Re-acquire source_lock for this write transaction.
+        // --- SQLite write segment 2: insert content_chunks rows ---
         if !archived_files.is_empty() {
-            let _guard = timed!(src_tag, "acquire source lock for line-ref update", {
+            let _guard = timed!(src_tag, "acquire source lock for chunk insert", {
                 source_lock.lock()
                     .map_err(|_| anyhow::anyhow!("source lock poisoned for {source}"))?
             });
-            timed!(src_tag, format!("update line refs for {} files", archived_files.len()), {
+            timed!(src_tag, format!("insert content_chunks for {} files", archived_files.len()), {
             let tx = conn.unchecked_transaction()?;
             for af in &archived_files {
-                // chunk_refs[i] corresponds to chunk i (by chunk_number order after sort).
+                // Re-check inside the transaction: another batch may have committed
+                // content_chunks for this block_id between our pre-scan check and now.
+                // This makes the check-then-insert atomic under the source lock.
+                let already_committed: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM content_chunks WHERE block_id = ?1",
+                    rusqlite::params![af.block_id],
+                    |r| r.get(0),
+                )?;
+                if already_committed > 0 {
+                    tracing::debug!(
+                        "block_id={} already committed by concurrent batch — skipping",
+                        af.block_id
+                    );
+                    continue;
+                }
+
+                // Build map from chunk_number → ChunkRef.
                 let mut chunk_ref_by_number: HashMap<usize, &ChunkRef> = HashMap::new();
                 for (i, cr) in af.chunk_refs.iter().enumerate() {
                     chunk_ref_by_number.insert(i, cr);
                 }
 
-                for mapping in &af.line_mappings {
-                    if let Some(chunk_ref) = chunk_ref_by_number.get(&mapping.chunk_number) {
-                        if let Err(e) = tx.execute(
-                            "UPDATE lines SET chunk_archive = ?1, chunk_name = ?2, line_offset_in_chunk = ?3
-                             WHERE file_id = ?4 AND line_number = ?5",
-                            rusqlite::params![
-                                chunk_ref.archive_name,
-                                chunk_ref.chunk_name,
-                                mapping.offset_in_chunk as i64,
-                                af.file_id,
-                                mapping.line_number as i64,
-                            ],
-                        ) {
-                            tracing::error!(
-                                "Archive batch: failed to update line ref for file_id={}: {e}",
-                                af.file_id
-                            );
-                        }
+                for range in &af.chunk_ranges {
+                    let Some(chunk_ref) = chunk_ref_by_number.get(&range.chunk_number) else {
+                        continue;
+                    };
+
+                    // Upsert archive name → id.
+                    tx.execute(
+                        "INSERT OR IGNORE INTO content_archives(name) VALUES(?1)",
+                        rusqlite::params![chunk_ref.archive_name],
+                    )?;
+                    let archive_id: i64 = tx.query_row(
+                        "SELECT id FROM content_archives WHERE name = ?1",
+                        rusqlite::params![chunk_ref.archive_name],
+                        |r| r.get(0),
+                    )?;
+
+                    if let Err(e) = tx.execute(
+                        "INSERT INTO content_chunks(block_id, chunk_number, archive_id, start_line, end_line)
+                         VALUES(?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            af.block_id,
+                            range.chunk_number as i64,
+                            archive_id,
+                            range.start_line as i64,
+                            range.end_line as i64,
+                        ],
+                    ) {
+                        tracing::error!(
+                            "Archive batch: failed to insert content_chunk for block_id={}: {e}",
+                            af.block_id
+                        );
                     }
                 }
             }
             tx.commit()?;
-            }); // timed! update line refs
+            }); // timed! insert content_chunks
         }
 
         if !archived_files.is_empty() {
@@ -310,16 +354,18 @@ mod tests {
     use find_common::api::{BulkRequest, FileKind, IndexFile, IndexLine};
     use find_common::config::NormalizationSettings;
 
+    use crate::db::encode_fts_rowid;
+
     fn setup_data_dir(data_dir: &Path) {
         std::fs::create_dir_all(data_dir.join("sources").join("content")).unwrap();
     }
 
-    fn read_line_refs(conn: &rusqlite::Connection, file_id: i64) -> Vec<(Option<String>, Option<String>)> {
+    fn read_chunk_ranges(conn: &rusqlite::Connection, block_id: i64) -> Vec<(i64, i64)> {
         let mut stmt = conn.prepare(
-            "SELECT chunk_archive, chunk_name FROM lines WHERE file_id = ?1 ORDER BY line_number"
+            "SELECT start_line, end_line FROM content_chunks WHERE block_id = ?1 ORDER BY chunk_number"
         ).unwrap();
-        stmt.query_map(rusqlite::params![file_id], |row| {
-            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?))
+        stmt.query_map(rusqlite::params![block_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         }).unwrap().map(|r| r.unwrap()).collect()
     }
 
@@ -363,7 +409,7 @@ mod tests {
                     },
                 ],
                 extract_ms: None,
-                content_hash: None,
+                content_hash: Some("testhash".to_string()),
                 is_new: true,
             }],
             delete_paths: vec![],
@@ -373,57 +419,56 @@ mod tests {
         }
     }
 
-    fn seed_db(data_dir: &Path, source: &str, path: &str) -> (rusqlite::Connection, i64) {
+    /// Seed the DB with a file + content_block + FTS entries (no content_chunks yet).
+    fn seed_db(data_dir: &Path, source: &str, path: &str) -> (rusqlite::Connection, i64, i64) {
         let db_path = data_dir.join("sources").join(format!("{source}.db"));
         std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         let conn = crate::db::open(&db_path).unwrap();
 
         conn.execute(
-            "INSERT INTO files (path, mtime, size, kind, indexed_at, extract_ms, content_hash, canonical_file_id)
-             VALUES (?1, 1000, 100, 'text', 0, NULL, NULL, NULL)",
+            "INSERT INTO files (path, mtime, size, kind, indexed_at, extract_ms, content_hash, line_count)
+             VALUES (?1, 1000, 100, 'text', 0, NULL, 'testhash', 2)",
             rusqlite::params![path],
         ).unwrap();
         let file_id: i64 = conn.last_insert_rowid();
 
         conn.execute(
-            "INSERT INTO lines (file_id, line_number, chunk_archive, chunk_name, line_offset_in_chunk)
-             VALUES (?1, 0, NULL, NULL, 0)",
-            rusqlite::params![file_id],
+            "INSERT OR IGNORE INTO content_blocks(content_hash) VALUES('testhash')",
+            [],
         ).unwrap();
-        conn.execute(
-            "INSERT INTO lines_fts(rowid, content) VALUES (last_insert_rowid(), ?1)",
-            rusqlite::params![path],
-        ).unwrap();
-        conn.execute(
-            "INSERT INTO lines (file_id, line_number, chunk_archive, chunk_name, line_offset_in_chunk)
-             VALUES (?1, 1, NULL, NULL, 0)",
-            rusqlite::params![file_id],
-        ).unwrap();
-        conn.execute(
-            "INSERT INTO lines_fts(rowid, content) VALUES (last_insert_rowid(), ?1)",
-            rusqlite::params!["hello world"],
+        let block_id: i64 = conn.query_row(
+            "SELECT id FROM content_blocks WHERE content_hash = 'testhash'",
+            [],
+            |r| r.get(0),
         ).unwrap();
 
-        (conn, file_id)
+        // FTS rows using encode_fts_rowid.
+        conn.execute(
+            "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
+            rusqlite::params![encode_fts_rowid(file_id, 0), path],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
+            rusqlite::params![encode_fts_rowid(file_id, 1), "hello world"],
+        ).unwrap();
+
+        (conn, file_id, block_id)
     }
 
     #[test]
-    fn chunks_written_and_line_refs_updated() {
+    fn chunks_written_and_content_chunks_inserted() {
         let data_tmp = tempfile::tempdir().unwrap();
         let to_archive_tmp = tempfile::tempdir().unwrap();
         let data_dir = data_tmp.path();
         let to_archive_dir = to_archive_tmp.path();
 
-        // Create required directories.
         setup_data_dir(data_dir);
 
         let source = "test_source";
         let path = "docs/readme.txt";
 
-        // Seed DB with a file + NULL chunk refs.
-        let (conn, file_id) = seed_db(data_dir, source, path);
+        let (conn, _file_id, block_id) = seed_db(data_dir, source, path);
 
-        // Write a .gz BulkRequest to to_archive_dir.
         let req = make_bulk_request(source, path, "hello world");
         write_bulk_gz(&to_archive_dir.join("batch_001.gz"), &req);
 
@@ -441,15 +486,9 @@ mod tests {
             .count();
         assert_eq!(gz_count, 0, "gz file should be removed after processing");
 
-        // Assert: line refs updated.
-        let archived_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM lines WHERE file_id = ?1 AND chunk_archive IS NOT NULL",
-                rusqlite::params![file_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(archived_count, 2, "both lines should have chunk refs set");
+        // Assert: content_chunks rows exist.
+        let ranges = read_chunk_ranges(&conn, block_id);
+        assert!(!ranges.is_empty(), "content_chunks should have entries after archiving");
 
         // Assert: at least one ZIP archive created.
         let content_dir = data_dir.join("sources").join("content");
@@ -471,7 +510,7 @@ mod tests {
         let to_archive_dir = to_archive_tmp.path();
 
         setup_data_dir(data_dir);
-        // No DB — file_id lookup will find nothing.
+        // No DB — file lookup will find nothing.
 
         let source = "ghost_source";
         let path = "nonexistent/file.txt";
@@ -504,34 +543,30 @@ mod tests {
         let source = "test_source";
         let path = "docs/readme.txt";
 
-        // Seed DB with NULL chunk refs.
-        let (conn, file_id) = seed_db(data_dir, source, path);
+        let (conn, _file_id, block_id) = seed_db(data_dir, source, path);
 
         let cfg = make_worker_config();
         let shared = crate::archive::SharedArchiveState::new(data_dir.to_path_buf()).unwrap();
 
-        // First run — writes chunks and updates line refs.
+        // First run — writes chunks and inserts content_chunks.
         let req = make_bulk_request(source, path, "hello world");
         write_bulk_gz(&to_archive_dir.join("first_001.gz"), &req);
         run_archive_batch(data_dir, to_archive_dir, cfg.clone(), &shared).unwrap();
 
-        // Capture line refs after first run.
-        let refs_after_first = read_line_refs(&conn, file_id);
-        assert!(
-            refs_after_first.iter().any(|(a, _)| a.is_some()),
-            "line refs should be set after first run"
-        );
+        // Capture ranges after first run.
+        let ranges_after_first = read_chunk_ranges(&conn, block_id);
+        assert!(!ranges_after_first.is_empty(), "content_chunks should be set after first run");
 
         // Second run — same content, should skip (already archived).
         let req2 = make_bulk_request(source, path, "hello world");
         write_bulk_gz(&to_archive_dir.join("second_001.gz"), &req2);
         run_archive_batch(data_dir, to_archive_dir, cfg, &shared).unwrap();
 
-        // Line refs should be identical to after-first-run state.
-        let refs_after_second = read_line_refs(&conn, file_id);
+        // Ranges should be identical to after-first-run state.
+        let ranges_after_second = read_chunk_ranges(&conn, block_id);
         assert_eq!(
-            refs_after_first, refs_after_second,
-            "line refs should not change on second run"
+            ranges_after_first, ranges_after_second,
+            "content_chunks should not change on second run"
         );
     }
 }

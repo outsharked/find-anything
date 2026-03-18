@@ -22,8 +22,8 @@ export interface SearchResult {
 	mtime: number;
 	size: number | null;
 	context_lines: ContextLine[];
-	/** Other paths with identical content (deduplication aliases). */
-	aliases?: string[];
+	/** Other paths with identical content. */
+	duplicate_paths?: string[];
 	/** Additional lines where query terms were found (document mode only). */
 	extra_matches?: ContextLine[];
 }

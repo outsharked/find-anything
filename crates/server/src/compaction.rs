@@ -493,27 +493,48 @@ mod tests {
 
     fn seed_db_with_chunk_ref(
         conn: &rusqlite::Connection,
-        chunk_archive: &str,
-        chunk_name: &str,
+        archive_name: &str,
+        block_id: i64,
+        chunk_number: i64,
+        start_line: i64,
+        end_line: i64,
     ) {
         conn.execute(
-            "INSERT INTO files (path, mtime, size, kind, indexed_at) \
-             VALUES ('test.txt', 1000, 100, 'text', 0)",
+            "INSERT INTO files (path, mtime, size, kind, indexed_at, content_hash, line_count) \
+             VALUES ('test.txt', 1000, 100, 'text', 0, 'hash', 2)",
             [],
         )
         .unwrap();
         let file_id: i64 = conn.last_insert_rowid();
+
+        // Insert content_block with explicit id.
         conn.execute(
-            "INSERT INTO lines (file_id, line_number, chunk_archive, chunk_name, \
-             line_offset_in_chunk) VALUES (?1, 1, ?2, ?3, 0)",
-            rusqlite::params![file_id, chunk_archive, chunk_name],
-        )
-        .unwrap();
+            "INSERT OR IGNORE INTO content_blocks(id, content_hash) VALUES(?1, 'hash')",
+            rusqlite::params![block_id],
+        ).unwrap();
+
+        // Upsert content_archives.
         conn.execute(
-            "INSERT INTO lines_fts(rowid, content) VALUES (last_insert_rowid(), 'hello')",
-            [],
-        )
-        .unwrap();
+            "INSERT OR IGNORE INTO content_archives(name) VALUES(?1)",
+            rusqlite::params![archive_name],
+        ).unwrap();
+        let archive_id: i64 = conn.query_row(
+            "SELECT id FROM content_archives WHERE name = ?1",
+            rusqlite::params![archive_name],
+            |r| r.get(0),
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO content_chunks(block_id, chunk_number, archive_id, start_line, end_line) \
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![block_id, chunk_number, archive_id, start_line, end_line],
+        ).unwrap();
+
+        let rowid = crate::db::encode_fts_rowid(file_id, 1);
+        conn.execute(
+            "INSERT INTO lines_fts(rowid, content) VALUES (?1, 'hello')",
+            rusqlite::params![rowid],
+        ).unwrap();
     }
 
     #[test]
@@ -523,13 +544,14 @@ mod tests {
         std::fs::create_dir_all(data_dir.join("sources/content/0000")).unwrap();
 
         // Create a ZIP archive with one chunk entry.
+        // In v3, chunk_name format is "{block_id}.{chunk_number}" = "42.0"
         let zip_path = data_dir.join("sources/content/0000/content_00001.zip");
-        write_test_zip(&zip_path, &[("test.txt.chunk0.txt", b"hello world")]);
+        write_test_zip(&zip_path, &[("42.0", b"hello world")]);
 
-        // Open source DB and insert a lines row referencing that chunk.
+        // Open source DB and insert rows referencing that chunk.
         let db_path = data_dir.join("sources/test_source.db");
         let conn = crate::db::open(&db_path).unwrap();
-        seed_db_with_chunk_ref(&conn, "content_00001.zip", "test.txt.chunk0.txt");
+        seed_db_with_chunk_ref(&conn, "content_00001.zip", 42, 0, 0, 10);
 
         let stats = scan_wasted_space(data_dir).unwrap();
         assert!(stats.total_bytes > 0, "expected total_bytes > 0");
