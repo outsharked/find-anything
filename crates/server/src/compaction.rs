@@ -323,6 +323,7 @@ pub fn start_compaction_scanner(
     stats_slot: Arc<std::sync::RwLock<Option<CompactionStats>>>,
     shared: Arc<SharedArchiveState>,
     cfg: CompactionConfig,
+    source_stats_cache: Arc<std::sync::RwLock<crate::stats_cache::SourceStatsCache>>,
 ) {
     let (hour, minute) = parse_hhmm(&cfg.start_time).unwrap_or_else(|| {
         tracing::warn!(
@@ -384,6 +385,16 @@ pub fn start_compaction_scanner(
                         pct, cfg.threshold_pct,
                     );
                 }
+            }
+
+            // Daily stats cache rebuild after compaction completes.
+            {
+                let cache = Arc::clone(&source_stats_cache);
+                let dd    = data_dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::stats_cache::full_rebuild(&dd, &cache);
+                }).await.ok();
+                tracing::debug!("stats_cache: daily full rebuild complete");
             }
         }
     });

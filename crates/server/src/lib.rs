@@ -170,6 +170,7 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         compaction_stats,
         Arc::clone(&state.archive_state),
         state.config.compaction.clone(),
+        Arc::clone(&source_stats_cache),
     );
 
     // Startup full rebuild of source stats cache (delayed 30 s to let the inbox
