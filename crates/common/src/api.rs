@@ -429,10 +429,15 @@ pub struct AppSettingsResponse {
     /// Defaults to 1 for backwards compatibility with older servers.
     #[serde(default = "default_content_line_start")]
     pub content_line_start: usize,
+    /// Number of spaces a tab character occupies in the file viewer.
+    /// Defaults to 4. Can be overridden per-user in the browser.
+    #[serde(default = "default_tab_width")]
+    pub tab_width: usize,
 }
 
 fn default_max_markdown_render_kb() -> usize { 512 }
 fn default_content_line_start() -> usize { 1 }
+fn default_tab_width() -> usize { 4 }
 
 // ── Stats types ───────────────────────────────────────────────────────────────
 

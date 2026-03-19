@@ -15,6 +15,8 @@
 	export let selection: LineSelection = [];
 	/** Whether to enable soft word-wrap. */
 	export let wordWrap: boolean = false;
+	/** Number of spaces a tab character occupies. */
+	export let tabWidth: number = 4;
 
 	const dispatch = createEventDispatcher<{
 		lineselect: { selection: LineSelection };
@@ -38,7 +40,7 @@
 	}
 </script>
 
-<table class="code-table" cellspacing="0" cellpadding="0">
+<table class="code-table" cellspacing="0" cellpadding="0" style="tab-size: {tabWidth}">
 	<tbody>
 		{#each codeLines as line, i}
 			{@const lineNum = lineOffsets[i] ?? i + 1}

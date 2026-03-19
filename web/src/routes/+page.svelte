@@ -11,7 +11,7 @@
 	import type { SearchResult, SourceInfo } from '$lib/api';
 	import { getToken, setToken } from '$lib/token';
 	import { startLiveUpdates, liveEvent } from '$lib/liveUpdates';
-	import { contextWindow, maxMarkdownRenderKb, fileViewPageSize, contentLineStart } from '$lib/settingsStore';
+	import { contextWindow, maxMarkdownRenderKb, fileViewPageSize, contentLineStart, tabWidth } from '$lib/settingsStore';
 	import { formatHash } from '$lib/lineSelection';
 	import type { LineSelection } from '$lib/lineSelection';
 	import { FilePath } from '$lib/filePath';
@@ -128,11 +128,12 @@
 		try {
 			const s = await getSettings();
 			// Use profile override if set; fall back to server default.
-			const profileWindow = get(profile).contextWindow;
-			contextWindow.set(profileWindow ?? s.context_window);
+			const p = get(profile);
+			contextWindow.set(p.contextWindow ?? s.context_window);
 			maxMarkdownRenderKb.set(s.max_markdown_render_kb ?? 512);
 			fileViewPageSize.set(s.file_view_page_size ?? 2000);
 			contentLineStart.set(s.content_line_start ?? 1);
+			tabWidth.set(p.tabWidth ?? s.tab_width ?? 4);
 		} catch { /* silent */ }
 	}
 

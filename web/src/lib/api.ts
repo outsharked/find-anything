@@ -277,6 +277,8 @@ export interface AppSettings {
 	 * Clients compute display line as: line_number - (content_line_start - 1).
 	 */
 	content_line_start?: number;
+	/** Number of spaces a tab character occupies in the file viewer. Defaults to 4. */
+	tab_width?: number;
 }
 
 export async function getSettings(): Promise<AppSettings> {

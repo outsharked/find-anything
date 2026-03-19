@@ -43,6 +43,7 @@ pub async fn get_settings(
         max_markdown_render_kb: state.config.server.max_markdown_render_kb,
         file_view_page_size: state.config.server.file_view_page_size,
         content_line_start: LINE_CONTENT_START,
+        tab_width: state.config.server.tab_width,
     })
     .into_response()
 }

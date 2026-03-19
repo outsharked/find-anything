@@ -5,6 +5,7 @@ export interface UserProfile {
 	wordWrap?: boolean;
 	markdownFormat?: boolean;
 	contextWindow?: number;
+	tabWidth?: number;
 	theme?: 'dark' | 'light' | 'system';
 }
 

@@ -4,7 +4,7 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
-[ ] Allow non-zip archive members to be streamable, if they are below a configrable threshold in size
+[ ] FEAT: Allow non-zip archive members to be streamable, if they are below a configrable threshold in size
 [ ] Regular download button should be available in archives too
 [ ] Frontent factoring: stuff like     "showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal); " -- logic should be centralized
 [ ] Write logs ferom extractors as structured json, optionally, for tool use error reporting: "As for why the member path isn't shown: the relay attaches file=Blog.zip because that's all the client knows at that point — the archive extractor subprocess's entire stderr is collected and relayed as a batch with the outer file as context. Symphonia fires inside that subprocess against a temp file, with no way to surface which archive member it was probing. There's no good fix  

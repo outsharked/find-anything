@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { profile } from '$lib/profile';
-	import { contextWindow } from '$lib/settingsStore';
+	import { contextWindow, tabWidth } from '$lib/settingsStore';
 
 	function setTheme(value: string) {
 		profile.update((p) => ({ ...p, theme: value as 'dark' | 'light' | 'system' }));
@@ -9,6 +9,11 @@
 	function setContextWindow(value: number) {
 		profile.update((p) => ({ ...p, contextWindow: value }));
 		contextWindow.set(value);
+	}
+
+	function setTabWidth(value: number) {
+		profile.update((p) => ({ ...p, tabWidth: value }));
+		tabWidth.set(value);
 	}
 </script>
 
@@ -26,6 +31,27 @@
 			<option value="light">Light</option>
 			<option value="system">Inherit from browser</option>
 		</select>
+	</div>
+</div>
+
+<div class="section-title" style="margin-top: 24px;">File viewer</div>
+<div class="pref-row">
+	<label class="pref-label" for="tab-width">Tab width</label>
+	<div class="pref-control">
+		<select
+			id="tab-width"
+			class="select"
+			value={$profile.tabWidth ?? $tabWidth}
+			on:change={(e) => setTabWidth(Number(e.currentTarget.value))}
+		>
+			<option value={1}>1</option>
+			<option value={2}>2</option>
+			<option value={4}>4</option>
+			<option value={8}>8</option>
+		</select>
+		{#if $profile.tabWidth !== undefined}
+			<button class="clear-btn" on:click={() => { profile.update(p => { const {tabWidth: _, ...rest} = p; return rest; }); tabWidth.set(4); }}>Reset</button>
+		{/if}
 	</div>
 </div>
 

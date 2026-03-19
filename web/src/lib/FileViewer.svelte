@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { createEventDispatcher, onMount, tick } from 'svelte';
 	import { getFile } from '$lib/api';
-	import { fileViewPageSize, contentLineStart } from '$lib/settingsStore';
+	import { fileViewPageSize, contentLineStart, tabWidth as serverTabWidth } from '$lib/settingsStore';
 	import { highlightFile } from '$lib/highlight';
 	import DirListing from './DirListing.svelte';
 	import AudioViewer from './AudioViewer.svelte';
@@ -129,6 +129,9 @@
 
 	// Word wrap preference (default: false for code, true for text files)
 	$: wordWrap = $profile.wordWrap ?? false;
+
+	// Tab width: user profile overrides server default.
+	$: tabWidth = $profile.tabWidth ?? $serverTabWidth;
 
 	// Markdown format preference
 	$: markdownFormat = $profile.markdownFormat ?? false;
@@ -595,6 +598,7 @@
 						{lineOffsets}
 						{selection}
 						{wordWrap}
+						{tabWidth}
 						on:lineselect={(e) => {
 							selection = e.detail.selection;
 							dispatch('lineselect', e.detail);

@@ -14,3 +14,6 @@ export const fileViewPageSize = writable(2000);
  * Used to compute display line number: display = line_number - (contentLineStart - 1).
  */
 export const contentLineStart = writable(1);
+
+/** Number of spaces a tab character occupies in the file viewer (server-configured, user-overridable). */
+export const tabWidth = writable(4);

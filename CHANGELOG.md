@@ -11,6 +11,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Configurable tab width** — `server.toml` gains a `tab_width` setting (default: 4) returned via `GET /api/v1/settings`; the file viewer applies it as `tab-size` CSS on the code table; users can override it per-browser in Preferences (1/2/4/8, with Reset to server default); previously browsers used their default of 8
+
 - **ZIP content store removed** — `ZipContentStore` and all `zip_store/` code deleted; `BackendType::Zip` removed from config; `SqliteContentStore` is now the only backend; `server/src/archive.rs` deleted; `zip` dependency dropped from `find-content-store`; UI and CLI text updated to remove ZIP references ("awaiting archive" → "awaiting write", etc.)
 - **Inline audio player** — audio files now open in a split-pane view (player on the left, metadata tags on the right), matching the image/video viewer layout; `AudioViewer.svelte` added
 - **Per-tag metadata display** — image, audio, and video viewers render each `[TYPE:key] value` tag on its own row instead of one joined string; `metaTags.ts` parser added with 8 unit tests
