@@ -8,7 +8,7 @@ pub(crate) mod stats_cache;
 pub(crate) mod upload;
 pub(crate) mod worker;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -24,9 +24,9 @@ use axum::{
 use tower_http::trace::TraceLayer;
 
 use find_common::api::{RecentFile, WorkerStatus};
-use find_common::config::ServerAppConfig;
+use find_common::config::{BackendType, ServerAppConfig};
 use archive::SharedArchiveState;
-use find_content_store::{ContentStore, ZipContentStore};
+use find_content_store::{ContentStore, MultiContentStore, SqliteContentStore, ZipContentStore};
 
 // ── Embedded web UI ────────────────────────────────────────────────────────────
 
@@ -98,6 +98,44 @@ pub struct AppState {
 
 // ── Server initialisation ──────────────────────────────────────────────────────
 
+/// Open the configured content store backend(s).
+///
+/// - Single backend named "default" (or any single-entry list): opens directly
+///   under `data_dir` for backward compatibility with existing data.
+/// - Multiple backends: each opens under `data_dir/stores/{name}/`.
+fn open_content_store(config: &ServerAppConfig, data_dir: &Path) -> Result<Arc<dyn ContentStore>> {
+    let backends = &config.storage.backends;
+    anyhow::ensure!(!backends.is_empty(), "storage.backends must not be empty");
+
+    let open_one = |name: &str, b: &find_common::config::BackendInstanceConfig, dir: &Path| -> Result<Arc<dyn ContentStore>> {
+        match b.backend_type {
+            BackendType::Zip => {
+                Ok(Arc::new(ZipContentStore::open(dir).with_context(|| format!("opening zip store '{name}'"))?))
+            }
+            BackendType::Sqlite => {
+                Ok(Arc::new(SqliteContentStore::open(dir, b.chunk_size_kb).with_context(|| format!("opening sqlite store '{name}'"))?))
+            }
+        }
+    };
+
+    if backends.len() == 1 {
+        // Single backend: use data_dir directly (backward compatible).
+        let b = &backends[0];
+        return open_one(&b.name, b, data_dir);
+    }
+
+    // Multiple backends: each gets its own subdirectory.
+    let stores_dir = data_dir.join("stores");
+    let mut stores: Vec<Arc<dyn ContentStore>> = Vec::with_capacity(backends.len());
+    for b in backends {
+        let dir = stores_dir.join(&b.name);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("creating store directory for '{}'", b.name))?;
+        stores.push(open_one(&b.name, b, &dir)?);
+    }
+    Ok(Arc::new(MultiContentStore { stores }))
+}
+
 /// Build `AppState`, create data directories, check source schemas, and spawn
 /// all background workers (inbox, upload cleanup, compaction scanner).
 pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> {
@@ -116,8 +154,8 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
     let inbox_paused = Arc::new(AtomicBool::new(false));
     let archive_state = SharedArchiveState::new(data_dir.clone())
         .context("initialising archive state")?;
-    let content_store: Arc<dyn ContentStore> =
-        Arc::new(ZipContentStore::open(&data_dir).context("opening content store")?);
+    let content_store: Arc<dyn ContentStore> = open_content_store(&config, &data_dir)
+        .context("opening content store")?;
     let initial_compaction_stats = compaction::load_cached_stats(&data_dir);
     let compaction_stats = Arc::new(std::sync::RwLock::new(initial_compaction_stats));
     let source_stats_cache = Arc::new(std::sync::RwLock::new(stats_cache::SourceStatsCache::default()));

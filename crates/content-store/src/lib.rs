@@ -1,8 +1,12 @@
 mod key;
+mod multi_store;
+mod sqlite_store;
 mod store;
 pub mod zip_store;
 
 pub use key::ContentKey;
+pub use multi_store::MultiContentStore;
+pub use sqlite_store::SqliteContentStore;
 pub use store::{CompactResult, ContentStore};
 pub use zip_store::ZipContentStore;
 

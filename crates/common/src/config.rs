@@ -530,6 +530,53 @@ pub fn extractor_config_from_extraction(extraction: &ExtractionSettings) -> Extr
     }
 }
 
+/// Which storage backend type to use for a content store instance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendType {
+    Zip,
+    Sqlite,
+}
+
+/// Configuration for a single named content store instance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendInstanceConfig {
+    /// Unique name for this instance. Used as the subdirectory name under
+    /// `data_dir/stores/{name}/` when multiple backends are configured.
+    pub name: String,
+    /// Storage backend type.
+    #[serde(rename = "type")]
+    pub backend_type: BackendType,
+    /// Target chunk size in KB. Defaults to 1 KB if not specified.
+    pub chunk_size_kb: Option<u32>,
+}
+
+/// Top-level `[storage]` config section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// List of backend instances. A single entry uses that backend directly.
+    /// Multiple entries write to all simultaneously; reads use the first with a hit.
+    /// Defaults to a single ZIP backend named "default".
+    #[serde(default = "StorageConfig::default_backends")]
+    pub backends: Vec<BackendInstanceConfig>,
+}
+
+impl StorageConfig {
+    fn default_backends() -> Vec<BackendInstanceConfig> {
+        vec![BackendInstanceConfig {
+            name: "default".to_string(),
+            backend_type: BackendType::Zip,
+            chunk_size_kb: None,
+        }]
+    }
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self { backends: Self::default_backends() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerAppConfig {
     pub server: ServerAppSettings,
@@ -545,6 +592,8 @@ pub struct ServerAppConfig {
     pub links: LinksConfig,
     #[serde(default)]
     pub log: LogConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
     /// Per-source server configuration (e.g. filesystem root for raw file serving).
     #[serde(default)]
     pub sources: std::collections::HashMap<String, ServerSourceConfig>,

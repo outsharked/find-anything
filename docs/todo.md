@@ -4,6 +4,9 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+[ ] Allow playing audio files
+[ ] Evaluate scoring algorithm: recent dates score higher; but if we use a better strategy for storing content, then 
+use the content
 [ ] BUG find-admin inbox-pause should also pause archiving. And it doesn't log except the API
 [ ] FEAT format tiomes as 4m22s
 [ ] archive/unfiled/OpenMULE-Win32.zip::resources/action.wav shows a duplicate. But when you click on it, it doesn't have a dup link back to the original.

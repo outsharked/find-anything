@@ -397,140 +397,26 @@ mod tests {
         ZipContentStore::open(dir).unwrap()
     }
 
-    fn key(s: &str) -> ContentKey {
-        ContentKey::new(s)
-    }
-
-    #[test]
-    fn put_then_contains() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open_store(tmp.path());
-        let k = key("aabbccddeeff00112233445566778899");
-        assert!(!store.contains(&k).unwrap());
-        store.put(&k, "line0\nline1\nline2").unwrap();
-        assert!(store.contains(&k).unwrap());
-    }
-
-    #[test]
-    fn put_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open_store(tmp.path());
-        let k = key("aabbccddeeff00112233445566778899");
-        assert!(store.put(&k, "hello").unwrap());
-        assert!(!store.put(&k, "hello").unwrap()); // second put is no-op
-    }
-
-    #[test]
-    fn get_lines_roundtrip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open_store(tmp.path());
-        let k = key("aabbccddeeff00112233445566778899");
-        let blob = "alpha\nbeta\ngamma\ndelta";
-        store.put(&k, blob).unwrap();
-
-        let lines = store.get_lines(&k, 0, 3).unwrap().unwrap();
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[0], (0, "alpha".to_string()));
-        assert_eq!(lines[1], (1, "beta".to_string()));
-        assert_eq!(lines[2], (2, "gamma".to_string()));
-        assert_eq!(lines[3], (3, "delta".to_string()));
-    }
-
-    #[test]
-    fn get_lines_sub_range() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open_store(tmp.path());
-        let k = key("aabbccddeeff00112233445566778899");
-        store.put(&k, "a\nb\nc\nd\ne").unwrap();
-
-        let lines = store.get_lines(&k, 1, 3).unwrap().unwrap();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], (1, "b".to_string()));
-        assert_eq!(lines[2], (3, "d".to_string()));
-    }
-
-    #[test]
-    fn get_lines_key_not_found() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open_store(tmp.path());
-        let k = key("aabbccddeeff00112233445566778899");
-        let result = store.get_lines(&k, 0, 5).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn delete_removes_blob() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open_store(tmp.path());
-        let k = key("aabbccddeeff00112233445566778899");
-        store.put(&k, "some content").unwrap();
-        assert!(store.contains(&k).unwrap());
-        store.delete(&k).unwrap();
-        assert!(!store.contains(&k).unwrap());
-        assert!(store.get_lines(&k, 0, 0).unwrap().is_none());
-    }
-
-    #[test]
-    fn compact_removes_orphaned_blobs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open_store(tmp.path());
-
-        let k_live   = key("aabbccddeeff00112233445566778899");
-        let k_orphan = key("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-
-        store.put(&k_live,   "live content").unwrap();
-        store.put(&k_orphan, "orphaned content").unwrap();
-
-        assert!(store.contains(&k_live).unwrap());
-        assert!(store.contains(&k_orphan).unwrap());
-
-        let live_keys: HashSet<ContentKey> = std::iter::once(k_live.clone()).collect();
-        let result = store.compact(&live_keys, false).unwrap();
-
-        assert!(result.chunks_removed > 0 || result.archives_deleted > 0 || result.archives_rewritten > 0);
-        assert!(store.contains(&k_live).unwrap());
-        assert!(!store.contains(&k_orphan).unwrap());
-    }
-
-    #[test]
-    fn compact_dry_run_does_not_remove() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open_store(tmp.path());
-        let k = key("aabbccddeeff00112233445566778899");
-        store.put(&k, "content").unwrap();
-
-        let live_keys = HashSet::new(); // no live keys → k is orphan
-        store.compact(&live_keys, true /* dry_run */).unwrap();
-
-        // Blob should still exist because dry_run=true.
-        assert!(store.contains(&k).unwrap());
-    }
-
+    /// Verify that many small blobs pack into a single ZIP archive rather than
+    /// each allocating their own file. This tests ZIP-specific storage layout.
     #[test]
     fn many_small_blobs_pack_into_one_archive() {
         let tmp = tempfile::tempdir().unwrap();
         let store = open_store(tmp.path());
 
-        // Store 20 distinct small blobs (each well under 1 KB).
-        let hashes: Vec<String> = (0..20)
-            .map(|i| format!("{:032x}", i))
-            .collect();
+        let hashes: Vec<String> = (0..20).map(|i| format!("{:032x}", i)).collect();
         for (i, hash) in hashes.iter().enumerate() {
-            store.put(&key(hash), &format!("content of file {i}")).unwrap();
+            store.put(&ContentKey::new(hash.as_str()), &format!("content of file {i}")).unwrap();
         }
 
-        // Count how many ZIP archives were created.
         let content_dir = tmp.path().join("sources").join("content");
         let archive_count: usize = std::fs::read_dir(&content_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
+            .into_iter().flatten().flatten()
             .filter(|e| e.path().is_dir())
             .flat_map(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten())
             .filter(|e| e.path().extension().map_or(false, |x| x == "zip"))
             .count();
 
-        // All 20 blobs should have packed into a single archive (they're tiny).
         assert_eq!(archive_count, 1, "20 small blobs should share one archive, got {archive_count}");
     }
 }
