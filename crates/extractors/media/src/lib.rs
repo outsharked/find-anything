@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn wav_mono_16bit_44khz() {
         let f = write_fixture(&minimal_wav(44100, 1, 16), ".wav");
-        let lines = extract_audio(f.path()).unwrap();
+        let lines = extract_audio(f.path(), "").unwrap();
         assert_eq!(lines.len(), 1, "audio produces one metadata line");
         assert!(has_containing(&lines, "[AUDIO:codec] PCM"),        "lines: {lines:?}");
         assert!(has_containing(&lines, "[AUDIO:sample_rate] 44100 Hz"));
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn wav_stereo_24bit_48khz() {
         let f = write_fixture(&minimal_wav(48000, 2, 24), ".wav");
-        let lines = extract_audio(f.path()).unwrap();
+        let lines = extract_audio(f.path(), "").unwrap();
         assert!(has_containing(&lines, "[AUDIO:sample_rate] 48000 Hz"), "lines: {lines:?}");
         assert!(has_containing(&lines, "[AUDIO:channels] 2 (stereo)"));
         assert!(has_containing(&lines, "[AUDIO:bit_depth] 24 bit"));
@@ -656,7 +656,7 @@ mod tests {
     #[test]
     fn mp3_extracts_id3v2_tags_and_stream_info() {
         let f = write_fixture(MP3_ID3V2, ".mp3");
-        let lines = extract_audio(f.path()).unwrap();
+        let lines = extract_audio(f.path(), "").unwrap();
         assert_eq!(lines.len(), 1, "audio produces one metadata line");
         let content = &lines[0].content;
         // Tags
@@ -677,7 +677,7 @@ mod tests {
     #[test]
     fn flac_extracts_vorbis_comment_tags_and_stream_info() {
         let f = write_fixture(FLAC_TAGGED, ".flac");
-        let lines = extract_audio(f.path()).unwrap();
+        let lines = extract_audio(f.path(), "").unwrap();
         assert_eq!(lines.len(), 1, "audio produces one metadata line");
         let content = &lines[0].content;
         // Vorbis comment tags
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn corrupt_audio_returns_empty_gracefully() {
         let f = write_fixture(b"this is not valid audio data at all", ".mp3");
-        let lines = extract_audio(f.path()).unwrap();
+        let lines = extract_audio(f.path(), "").unwrap();
         assert!(lines.is_empty(), "corrupt file should yield no lines, got: {lines:?}");
     }
 
