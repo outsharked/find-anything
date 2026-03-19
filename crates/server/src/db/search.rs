@@ -5,9 +5,7 @@ use rusqlite::{Connection, params};
 
 use find_common::api::FileKind;
 
-use crate::archive::ArchiveManager;
-
-use super::{read_chunk_for_file, split_composite_path};
+use super::split_composite_path;
 use super::{SQL_FTS_FILE_ID, SQL_FTS_FILENAME_ONLY, SQL_FTS_LINE_NUMBER};
 
 /// Combined search filter: optional date range (mtime), optional kind allowlist,
@@ -137,9 +135,9 @@ pub fn fts_count(conn: &Connection, query: &str, limit: usize, phrase: bool, dat
 }
 
 /// FTS5 trigram pre-filter. Returns up to `limit` candidate rows.
+/// Content is intentionally left empty; callers that need content must fetch it separately.
 pub fn fts_candidates(
     conn: &Connection,
-    archive_mgr: &ArchiveManager,
     query: &str,
     limit: usize,
     phrase: bool,
@@ -217,34 +215,18 @@ pub fn fts_candidates(
         rows
     };
 
-    // Read content from ZIP archives or inline storage, caching chunks to avoid redundant reads.
-    let mut chunk_cache: HashMap<(String, String), Vec<String>> = HashMap::new();
     let mut results = Vec::with_capacity(raw.len());
-
     for row in raw {
-        let content_opt = read_chunk_for_file(
-            &mut chunk_cache, conn, archive_mgr,
-            row.file_id,
-            row.line_number as i64,
-        );
-        // Skip stale FTS entries (file deleted or content not yet archived).
-        let content = match content_opt {
-            Some(c) if !c.is_empty() => c,
-            _ => continue,
-        };
-
-        // Split composite path into outer path + archive_path for search result compat.
         let (file_path, archive_path) = split_composite_path(&row.file_path);
-
         results.push(CandidateRow {
             file_path,
-            file_kind:    row.file_kind,
+            file_kind:   row.file_kind,
             archive_path,
-            line_number:  row.line_number,
-            content,
-            mtime:        row.mtime,
-            size:         row.size,
-            file_id:      row.file_id,
+            line_number: row.line_number,
+            content:     String::new(),
+            mtime:       row.mtime,
+            size:        row.size,
+            file_id:     row.file_id,
         });
     }
 
@@ -262,13 +244,12 @@ pub(crate) struct DocumentGroup {
 pub type DocumentCandidates = (usize, Vec<DocumentGroup>);
 
 /// Document-level fuzzy candidate search.
+/// Content is intentionally left empty; callers that need content must fetch it separately.
 pub fn document_candidates(
     conn: &Connection,
-    archive_mgr: &ArchiveManager,
     query: &str,
     limit: usize,
     date: DateFilter,
-    case_sensitive: bool,
 ) -> Result<DocumentCandidates> {
     use std::collections::HashSet;
 
@@ -395,88 +376,25 @@ pub fn document_candidates(
         }
     }
 
-    // Read content from ZIP archives, reusing a chunk cache.
-    let mut chunk_cache: HashMap<(String, String), Vec<String>> = HashMap::new();
-    let tokens_cmp: Vec<String> = if case_sensitive {
-        tokens.clone()
-    } else {
-        tokens.iter().map(|t| t.to_lowercase()).collect()
-    };
-
     let mut results = Vec::new();
     for file_id in file_order.into_iter().take(limit) {
         let rows = match file_rows.remove(&file_id) {
             Some(r) => r,
             None => continue,
         };
-
-        // First row is the top FTS-ranked line → the representative.
         let rep_row = &rows[0];
-        let rep_content = read_chunk_for_file(
-            &mut chunk_cache, conn, archive_mgr,
-            rep_row.file_id,
-            rep_row.line_number as i64,
-        ).unwrap_or_default();
-        if rep_content.is_empty() { continue; } // stale FTS entry
-        let rep_content_cmp = if case_sensitive { rep_content.clone() } else { rep_content.to_lowercase() };
         let (file_path, archive_path) = split_composite_path(&rep_row.file_path);
-
         let representative = CandidateRow {
-            file_path: file_path.clone(),
-            file_kind: rep_row.file_kind.clone(),
-            archive_path: archive_path.clone(),
+            file_path,
+            file_kind:   rep_row.file_kind.clone(),
+            archive_path,
             line_number: rep_row.line_number,
-            content: rep_content,
-            mtime: rep_row.mtime,
-            size: rep_row.size,
+            content:     String::new(),
+            mtime:       rep_row.mtime,
+            size:        rep_row.size,
             file_id,
         };
-
-        let mut uncovered: Vec<&str> = tokens_cmp
-            .iter()
-            .filter(|t| !rep_content_cmp.contains(t.as_str()))
-            .map(|t| t.as_str())
-            .collect();
-
-        let mut extras: Vec<CandidateRow> = Vec::new();
-        for extra_row in &rows[1..] {
-            if uncovered.is_empty() {
-                break;
-            }
-            let content = read_chunk_for_file(
-                &mut chunk_cache, conn, archive_mgr,
-                extra_row.file_id,
-                extra_row.line_number as i64,
-            ).unwrap_or_default();
-            if content.is_empty() { continue; }
-            let content_cmp = if case_sensitive { content.clone() } else { content.to_lowercase() };
-            let newly_covered: Vec<usize> = uncovered
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| content_cmp.contains(*t))
-                .map(|(i, _)| i)
-                .collect();
-            if !newly_covered.is_empty() {
-                if extra_row.line_number > 0 {
-                    let (ep, ea) = split_composite_path(&extra_row.file_path);
-                    extras.push(CandidateRow {
-                        file_path: ep,
-                        file_kind: extra_row.file_kind.clone(),
-                        archive_path: ea,
-                        line_number: extra_row.line_number,
-                        content,
-                        mtime: extra_row.mtime,
-                        size: extra_row.size,
-                        file_id,
-                    });
-                }
-                for i in newly_covered.into_iter().rev() {
-                    uncovered.swap_remove(i);
-                }
-            }
-        }
-
-        results.push(DocumentGroup { representative, members: extras });
+        results.push(DocumentGroup { representative, members: vec![] });
     }
 
     Ok((total, results))

@@ -71,10 +71,9 @@ pub fn open(db_path: &Path) -> Result<Connection> {
 
     // Idempotent index additions — safe to run on existing databases at any version.
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);"
-    ).context("creating mtime index")?;
-
-    // No additional idempotent migrations needed for v3 schema.
+        "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+         CREATE INDEX IF NOT EXISTS idx_content_chunks_block_start ON content_chunks(block_id, start_line);"
+    ).context("creating indexes")?;
 
     Ok(conn)
 }
@@ -199,6 +198,109 @@ pub fn read_chunk_for_file(
     let lines = read_chunk_lines_zip(cache, archive_mgr, &archive_name, &chunk_name);
     let offset = (line_number - start_line) as usize;
     lines.get(offset).cloned()
+}
+
+/// Batch-resolve line content for multiple `(file_id, line_number)` pairs.
+///
+/// Uses two SQL queries regardless of the number of pairs:
+/// 1. One query to fetch inline content for all file IDs.
+/// 2. One query to fetch all chunk metadata for non-inline file IDs.
+///
+/// This is the preferred entry point for bulk lookups (e.g. the FTS search
+/// path); `read_chunk_for_file` remains for single-item callers (context,
+/// file retrieval, etc.).
+pub fn read_content_batch(
+    chunk_cache: &mut HashMap<(String, String), Vec<String>>,
+    conn: &Connection,
+    archive_mgr: &ArchiveManager,
+    pairs: &[(i64, i64)], // (file_id, line_number)
+) -> HashMap<(i64, i64), String> {
+    if pairs.is_empty() {
+        return HashMap::new();
+    }
+
+    // Deduplicate file_ids while preserving insertion order for determinism.
+    let mut seen = std::collections::HashSet::new();
+    let file_ids: Vec<i64> = pairs
+        .iter()
+        .map(|(id, _)| *id)
+        .filter(|id| seen.insert(*id))
+        .collect();
+
+    // ── 1. Batch: inline storage ──────────────────────────────────────────
+    let ph: String = (1..=file_ids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT file_id, content FROM file_content WHERE file_id IN ({ph})");
+    let params_refs: Vec<&dyn rusqlite::ToSql> = file_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let mut inline_map: HashMap<i64, String> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(&sql) {
+        let _ = stmt
+            .query_map(params_refs.as_slice(), |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .map(|rows| rows.flatten().for_each(|(fid, content)| { inline_map.insert(fid, content); }));
+    }
+
+    // ── 2. Batch: chunk metadata for non-inline files ─────────────────────
+    struct ChunkMeta {
+        block_id:     i64,
+        archive_name: String,
+        chunk_number: i64,
+        start_line:   i64,
+        end_line:     i64,
+    }
+
+    let non_inline: Vec<i64> = file_ids.iter().filter(|id| !inline_map.contains_key(*id)).copied().collect();
+    let mut chunk_map: HashMap<i64, Vec<ChunkMeta>> = HashMap::new();
+
+    if !non_inline.is_empty() {
+        let ph: String = (1..=non_inline.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT f.id, cb.id, ca.name, cc.chunk_number, cc.start_line, cc.end_line
+             FROM files f
+             JOIN content_blocks cb ON cb.content_hash = f.content_hash
+             JOIN content_chunks cc ON cc.block_id = cb.id
+             JOIN content_archives ca ON ca.id = cc.archive_id
+             WHERE f.id IN ({ph})"
+        );
+        let params_refs: Vec<&dyn rusqlite::ToSql> = non_inline.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            let _ = stmt
+                .query_map(params_refs.as_slice(), |row| {
+                    Ok((row.get::<_, i64>(0)?, ChunkMeta {
+                        block_id:     row.get(1)?,
+                        archive_name: row.get(2)?,
+                        chunk_number: row.get(3)?,
+                        start_line:   row.get(4)?,
+                        end_line:     row.get(5)?,
+                    }))
+                })
+                .map(|rows| rows.flatten().for_each(|(fid, meta)| {
+                    chunk_map.entry(fid).or_default().push(meta);
+                }));
+        }
+    }
+
+    // ── 3. Resolve each (file_id, line_number) pair ───────────────────────
+    let mut result = HashMap::new();
+    for &(file_id, line_number) in pairs {
+        if let Some(inline) = inline_map.get(&file_id) {
+            if let Some(line) = inline.split('\n').nth(line_number as usize) {
+                if !line.is_empty() {
+                    result.insert((file_id, line_number), line.to_string());
+                }
+            }
+        } else if let Some(chunks) = chunk_map.get(&file_id) {
+            if let Some(chunk) = chunks.iter().find(|c| c.start_line <= line_number && c.end_line >= line_number) {
+                let chunk_name = format!("{}.{}", chunk.block_id, chunk.chunk_number);
+                let lines = read_chunk_lines_zip(chunk_cache, archive_mgr, &chunk.archive_name, &chunk_name);
+                let offset = (line_number - chunk.start_line) as usize;
+                if let Some(line) = lines.get(offset) {
+                    if !line.is_empty() {
+                        result.insert((file_id, line_number), line.clone());
+                    }
+                }
+            }
+        }
+    }
+    result
 }
 
 // ── Source-level helpers ──────────────────────────────────────────────────────

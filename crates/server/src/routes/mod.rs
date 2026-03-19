@@ -43,15 +43,11 @@ use crate::AppState;
 
 // ── Request logger middleware ──────────────────────────────────────────────────
 
-/// Middleware that logs every API request with its method, path, and remote
-/// address.
-///
-/// Destructive admin operations (POST/DELETE/PATCH on `/api/v1/admin/*`) are
-/// logged at INFO so they are always visible in production. Every other request
-/// is logged at DEBUG.
+/// Middleware that logs every API request with its method, path, remote
+/// address, response status, and elapsed time.  All events are at DEBUG level.
 pub async fn log_request(req: Request<axum::body::Body>, next: Next) -> Response {
-    let method = req.method().as_str();
-    let path   = req.uri().path();
+    let method = req.method().as_str().to_owned();
+    let path   = req.uri().path().to_owned();
 
     // Prefer X-Forwarded-For (set by reverse proxies); fall back to the TCP
     // peer address injected by `into_make_service_with_connect_info`.
@@ -67,16 +63,16 @@ pub async fn log_request(req: Request<axum::body::Body>, next: Next) -> Response
         })
         .unwrap_or_else(|| "-".to_string());
 
-    let is_destructive = matches!(method, "POST" | "DELETE" | "PATCH")
-        && path.starts_with("/api/v1/admin");
+    tracing::debug!(method = %method, path = %path, addr = %addr, "→ API");
+    let t0 = std::time::Instant::now();
 
-    if is_destructive {
-        tracing::info!(method, path, addr, "API request");
-    } else {
-        tracing::debug!(method, path, addr, "API request");
-    }
+    let response = next.run(req).await;
 
-    next.run(req).await
+    let status = response.status().as_u16();
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    tracing::debug!(method = %method, path = %path, addr = %addr, status, "← API {:.1}ms", ms);
+
+    response
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────

@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS content_chunks (
 CREATE INDEX IF NOT EXISTS idx_content_chunks_archive
     ON content_chunks(archive_id);
 
+CREATE INDEX IF NOT EXISTS idx_content_chunks_block_start
+    ON content_chunks(block_id, start_line);
+
 -- Inline content for small files (below inline_threshold_bytes server setting).
 -- Kept separate from `files` to avoid row-width bloat on the heavily-scanned files table.
 CREATE TABLE IF NOT EXISTS file_content (
