@@ -9,6 +9,7 @@
 	import type { LineSelection } from '$lib/lineSelection';
 	import type { FileViewState } from '$lib/appState';
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
+	import SearchHelp from '$lib/SearchHelp.svelte';
 
 	export let fileView: FileViewState;
 	export let showTree: boolean;
@@ -48,6 +49,7 @@
 		title="Toggle file tree (Ctrl+P to search files)"
 		on:click={() => dispatch('treeToggle')}
 	>◫</button>
+	<SearchHelp />
 	<div class="search-wrap">
 		<SearchBox
 			{query}

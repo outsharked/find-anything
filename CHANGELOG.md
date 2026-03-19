@@ -11,6 +11,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Search syntax help button** — a `?` circle button appears to the right of the tree-toggle in the search bar (both search and file-detail views); clicking opens a scrollable popup listing scope prefixes (`file:`, `doc:`), match prefixes (`exact:`, `regex:`), `type:` filters, natural-language date syntax, and quote matching; extracted into a reusable `SearchHelp.svelte` component
 - **Configurable tab width** — `server.toml` gains a `tab_width` setting (default: 4) returned via `GET /api/v1/settings`; the file viewer applies it as `tab-size` CSS on the code table; users can override it per-browser in Preferences (1/2/4/8, with Reset to server default); previously browsers used their default of 8
 
 - **ZIP content store removed** — `ZipContentStore` and all `zip_store/` code deleted; `BackendType::Zip` removed from config; `SqliteContentStore` is now the only backend; `server/src/archive.rs` deleted; `zip` dependency dropped from `find-content-store`; UI and CLI text updated to remove ZIP references ("awaiting archive" → "awaiting write", etc.)
@@ -20,6 +21,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **Archive member sizes stored at index time** — `MemberBatch` gains a `size: Option<u64>` field; ZIP, TAR, and 7z handlers populate it from the archive entry's declared uncompressed size; the subprocess (RAR/external) path uses `bytes.len()`; `build_member_index_files` forwards it to `IndexFile.size`; three new extractor tests and two server integration tests verify end-to-end storage and retrieval
 
 ### Fixed
+
+- **`regex:doc:` cross-line matching** — `DocRegex` mode now tests the regex against the full joined document text (with `dot_matches_new_line`) instead of per-line; previously patterns like `.*UART.*updates.*` matched nothing because `.` could not span newlines; the FTS pre-filter now uses `document_candidates` (per-token file intersection) so a file qualifies if each literal term appears *somewhere* in it, not necessarily on the same line
 
 - **Audio player hang / no duration** — `GET /api/v1/raw` now returns `Content-Length` and `Accept-Ranges: bytes` for direct file downloads, and handles `Range:` requests with a proper 206 Partial Content response; browsers require this to display audio/video duration and enable seeking
 - **Audio/video inline viewer for non-ZIP archive members** — `canViewInline` now requires `canServeArchiveMember` (true only when every archive in the composite path is a ZIP); RAR/TAR/7z members no longer show a broken player

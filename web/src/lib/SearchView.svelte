@@ -7,6 +7,7 @@
 	import type { SearchResult } from '$lib/api';
 	import { parseSearchPrefixes } from '$lib/searchPrefixes';
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
+	import SearchHelp from '$lib/SearchHelp.svelte';
 
 	export let query: string;
 	export let scope: SearchScope = 'line';
@@ -88,6 +89,7 @@
 		title="Toggle file tree"
 		on:click={() => dispatch('treeToggle')}
 	>◫</button>
+	<SearchHelp />
 	<div class="search-wrap">
 		<SearchBox
 			bind:this={searchBox}

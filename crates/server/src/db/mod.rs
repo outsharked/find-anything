@@ -285,6 +285,36 @@ pub fn read_content_batch(
     result
 }
 
+/// Read all content lines for a file and return them as a single joined string.
+/// Used by DocRegex mode to test a regex against the full document.
+/// Returns an empty string if content is not available.
+pub fn read_file_document(conn: &Connection, content_store: &dyn ContentStore, file_id: i64) -> String {
+    // 1. Inline storage (test fixtures and small files).
+    let inline: Option<String> = conn.query_row(
+        "SELECT content FROM file_content WHERE file_id = ?1",
+        params![file_id],
+        |r| r.get(0),
+    ).optional().ok().flatten();
+    if let Some(content) = inline {
+        return content;
+    }
+
+    // 2. Content-hash storage.
+    let hash: Option<String> = conn.query_row(
+        "SELECT content_hash FROM files WHERE id = ?1 AND content_hash IS NOT NULL",
+        params![file_id],
+        |r| r.get(0),
+    ).optional().ok().flatten();
+    let Some(hash) = hash else { return String::new(); };
+
+    let key = ContentKey::new(hash.as_str());
+    // i64::MAX as usize avoids the usize::MAX → -1 cast that would break the SQL range query.
+    match content_store.get_lines(&key, 0, i64::MAX as usize) {
+        Ok(Some(lines)) => lines.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
+}
+
 // ── Source-level helpers ──────────────────────────────────────────────────────
 
 /// Delete singleton entries from the `duplicates` table.

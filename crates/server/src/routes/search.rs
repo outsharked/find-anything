@@ -277,19 +277,37 @@ pub async fn search(
                         return Ok((source_total, results));
                     }
                     SearchMode::DocRegex => {
-                        // Literal fragments FTS pre-filter → fts_candidates → group by file → regex post-filter.
+                        // DocRegex: literal fragments FTS pre-filter at the file level,
+                        // then apply the regex to the full joined document text so that
+                        // patterns like `.*UART.*updates.*` can span multiple lines.
                         let fts_terms = regex_to_fts_terms(&query);
-                        let re = regex::RegexBuilder::new(&query).case_insensitive(!case_sensitive).build()?;
-                        let mut candidates = db::fts_candidates(&conn, &fts_terms, scoring_limit, false, date_filter)?;
-                        // Read content for regex post-filtering (ZIP reads needed for regex correctness).
-                        let pairs: Vec<(i64, i64)> = candidates.iter().map(|c| (c.file_id, c.line_number as i64)).collect();
-                        let content_map = db::read_content_batch(&conn, cs.as_ref(), &pairs);
-                        candidates.retain_mut(|c| {
-                            let content = content_map.get(&(c.file_id, c.line_number as i64)).cloned().unwrap_or_default();
-                            if re.is_match(&content) { c.content = content; true } else { false }
-                        });
-                        let source_total = candidates.len();
-                        let result_pairs = group_by_file(candidates, &source_name);
+                        let re = regex::RegexBuilder::new(&query)
+                            .case_insensitive(!case_sensitive)
+                            .dot_matches_new_line(true)
+                            .build()?;
+                        // Use document_candidates so the FTS pre-filter intersects per-token
+                        // file sets — a file qualifies if each literal term appears *somewhere*
+                        // in it (not necessarily on the same line).
+                        let (_, doc_groups) = db::document_candidates(&conn, &fts_terms, scoring_limit, date_filter)?;
+                        let mut result_pairs: Vec<ScoredResult> = Vec::new();
+                        for group in doc_groups {
+                            let file_id = group.representative.file_id;
+                            let doc_text = db::read_file_document(&conn, cs.as_ref(), file_id);
+                            if re.is_match(&doc_text) {
+                                let mut rep = group.representative;
+                                // Find the line where the first match starts for the snippet.
+                                if let Some(m) = re.find(&doc_text) {
+                                    let line_idx = doc_text[..m.start()].chars().filter(|&c| c == '\n').count();
+                                    let matched_line = doc_text.lines().nth(line_idx).unwrap_or("").to_string();
+                                    rep.content = matched_line;
+                                    // line_number is 0-based in the inline doc; add 1 for display
+                                    // (keeps consistent with the 1-based FTS line numbering).
+                                    rep.line_number = line_idx + 1;
+                                }
+                                result_pairs.push(ScoredResult { result: make_result(&source_name, &rep, 0, vec![]), file_id });
+                            }
+                        }
+                        let source_total = result_pairs.len();
                         let file_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
                         let dups_map = db::fetch_duplicates_for_file_ids(&conn, &file_ids)?;
                         let results: Vec<SearchResult> = result_pairs
