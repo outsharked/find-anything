@@ -27,10 +27,19 @@ use shared::SharedArchiveState;
 ///
 /// # Thread safety
 ///
-/// Writes use `db_conn` (a `Mutex<Connection>`) for serialisation.
+/// Writes use two locks:
+/// - `writer` — a `Mutex<ArchiveManager>` that is held only during ZIP I/O.
+///   Keeping it alive across `put` calls lets successive writes pack into the
+///   same archive rather than each allocating a new one.
+/// - `db_conn` — a `Mutex<Connection>` held only during the SQLite commit.
+///
+/// The two locks are never held simultaneously, so there is no deadlock risk.
 /// Reads open a fresh read-only connection per call (WAL mode).
 pub struct ZipContentStore {
     data_dir: PathBuf,
+    /// Persistent writer: retains the "current archive" across `put` calls so
+    /// small blobs pack together instead of each getting their own ZIP.
+    writer: Mutex<ArchiveManager>,
     /// Exclusive write connection to content.db.
     db_conn: Mutex<rusqlite::Connection>,
     /// Shared archive atomics and per-archive rewrite locks.
@@ -43,8 +52,10 @@ impl ZipContentStore {
         let conn = db::open_write(data_dir).context("opening content.db")?;
         let shared = SharedArchiveState::new(data_dir.to_path_buf())
             .context("initialising archive state")?;
+        let writer = ArchiveManager::new(Arc::clone(&shared));
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
+            writer: Mutex::new(writer),
             db_conn: Mutex::new(conn),
             shared,
         })
@@ -73,15 +84,16 @@ impl ContentStore for ZipContentStore {
         }
 
         // Write chunks to ZIP archives (outside DB lock).
-        // Each chunk gets an ArchiveManager that uses the shared state.
-        let mut mgr = ArchiveManager::new(Arc::clone(&self.shared));
+        // Use the persistent writer so successive puts pack into the same archive.
         let mut chunk_refs: Vec<(ChunkRef, usize, usize)> = Vec::new(); // (ref, start_pos, end_pos)
-
-        for blob_chunk in &blob_chunks {
-            let chunk_name = format!("{}.{}", key_prefix, blob_chunk.chunk_num);
-            let cref = mgr.append_raw(&chunk_name, blob_chunk.content.as_bytes())?;
-            chunk_refs.push((cref, blob_chunk.start_pos, blob_chunk.end_pos));
-        }
+        {
+            let mut mgr = self.writer.lock().map_err(|_| anyhow::anyhow!("writer lock poisoned"))?;
+            for blob_chunk in &blob_chunks {
+                let chunk_name = format!("{}.{}", key_prefix, blob_chunk.chunk_num);
+                let cref = mgr.append_raw(&chunk_name, blob_chunk.content.as_bytes())?;
+                chunk_refs.push((cref, blob_chunk.start_pos, blob_chunk.end_pos));
+            }
+        } // writer lock released before acquiring db_conn
 
         // Write metadata to content.db inside the lock.
         let conn = self.db_conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
@@ -492,5 +504,33 @@ mod tests {
 
         // Blob should still exist because dry_run=true.
         assert!(store.contains(&k).unwrap());
+    }
+
+    #[test]
+    fn many_small_blobs_pack_into_one_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = open_store(tmp.path());
+
+        // Store 20 distinct small blobs (each well under 1 KB).
+        let hashes: Vec<String> = (0..20)
+            .map(|i| format!("{:032x}", i))
+            .collect();
+        for (i, hash) in hashes.iter().enumerate() {
+            store.put(&key(hash), &format!("content of file {i}")).unwrap();
+        }
+
+        // Count how many ZIP archives were created.
+        let content_dir = tmp.path().join("sources").join("content");
+        let archive_count: usize = std::fs::read_dir(&content_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .flat_map(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten())
+            .filter(|e| e.path().extension().map_or(false, |x| x == "zip"))
+            .count();
+
+        // All 20 blobs should have packed into a single archive (they're tiny).
+        assert_eq!(archive_count, 1, "20 small blobs should share one archive, got {archive_count}");
     }
 }
