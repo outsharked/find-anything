@@ -61,7 +61,7 @@ enum Command {
     InboxPause,
     /// Resume inbox processing after a pause
     InboxResume,
-    /// Remove orphaned chunks from ZIP archives to reclaim disk space
+    /// Remove orphaned chunks from the content store to reclaim disk space
     Compact {
         /// Report what would be freed without modifying any files
         #[arg(long)]
@@ -84,7 +84,7 @@ enum Command {
         #[arg(long, short = 'f')]
         follow: bool,
     },
-    /// Delete all indexed data for a source (DB + content chunks in ZIP archives)
+    /// Delete all indexed data for a source (DB + content chunks)
     DeleteSource {
         /// Name of the source to delete
         source: String,
@@ -233,7 +233,7 @@ async fn main() -> Result<()> {
                     );
                 }
                 println!();
-                println!("Archive queue ({}): requests indexed, awaiting ZIP content write", status.archive_queue);
+                println!("Write queue ({}): requests indexed, awaiting content write", status.archive_queue);
                 println!();
                 println!("Failed ({}):", status.failed.len());
                 for item in &status.failed {
@@ -520,11 +520,11 @@ fn format_status(stats: &find_common::api::StatsResponse) -> String {
     }
     writeln!(out).unwrap();
     if stats.inbox_paused {
-        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive  {}",
+        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting write  {}",
             stats.inbox_pending, stats.failed_requests, stats.archive_queue,
             "PAUSED".yellow()).unwrap();
     } else {
-        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive",
+        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting write",
             stats.inbox_pending, stats.failed_requests, stats.archive_queue).unwrap();
     }
     writeln!(out, "Content:  {} file(s) ({})", stats.content_file_count, format_bytes(stats.content_size_bytes)).unwrap();
@@ -571,11 +571,11 @@ fn format_stream_status(event: &find_common::api::StatsStreamEvent) -> String {
     }
     writeln!(out).unwrap();
     if event.inbox_paused {
-        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive  {}",
+        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting write  {}",
             event.inbox_pending, event.failed_requests, event.archive_queue,
             "PAUSED".yellow()).unwrap();
     } else {
-        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting archive",
+        writeln!(out, "Inbox:    {} pending, {} failed, {} awaiting write",
             event.inbox_pending, event.failed_requests, event.archive_queue).unwrap();
     }
     writeln!(out, "Content:  {} file(s) ({})", event.content_file_count, format_bytes(event.content_size_bytes)).unwrap();

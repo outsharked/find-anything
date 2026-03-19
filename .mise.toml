@@ -26,7 +26,7 @@ run = "cargo watch -w crates -x 'run -p find-server -- --config config/server.to
 
 [tasks.server-once]
 description = "Start the Rust API server (single run, no watching)"
-run = "cargo run -p find-server -- --config config/server.toml"
+run = "cargo run -p find-server --bin find-server -- --config config/server.toml"
 
 [tasks.dev]
 description = "Start Rust API + Vite dev server (full dev environment with live reload)"
@@ -36,7 +36,7 @@ mkdir -p web/build
 # "kill -TERM -$API_PID" reaches cargo-watch AND all its children
 # (cargo run, find-server).  Without this, kill only hits cargo-watch
 # and find-server keeps running, holding port 8765.
-RUST_LOG=debug setsid cargo watch -w crates -x 'run -p find-server -- --config config/server.toml' &
+RUST_LOG=debug setsid cargo watch -w crates -x 'run -p find-server --bin find-server -- --config config/server.toml' &
 API_PID=$!
 trap "kill -TERM -$API_PID 2>/dev/null" EXIT INT TERM
 pnpm --dir web dev

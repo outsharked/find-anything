@@ -11,8 +11,6 @@ use find_common::api::{RecentFile, WorkerStatus};
 use find_common::config::NormalizationSettings;
 use find_content_store::ContentStore;
 
-use crate::archive::SharedArchiveState;
-
 
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -66,7 +64,6 @@ type StatusHandle = std::sync::Arc<std::sync::Mutex<WorkerStatus>>;
 /// stays under the clippy argument-count limit.
 pub struct WorkerHandles {
     pub status: StatusHandle,
-    pub archive_state: Arc<SharedArchiveState>,
     pub content_store: Arc<dyn ContentStore>,
     pub inbox_paused: Arc<AtomicBool>,
     /// Broadcast channel for live activity events sent to SSE subscribers.
@@ -123,7 +120,7 @@ pub async fn start_inbox_worker(
     cfg: WorkerConfig,
     handles: WorkerHandles,
 ) -> anyhow::Result<()> {
-    let WorkerHandles { status, archive_state: shared_archive_state, content_store, inbox_paused, recent_tx, source_stats_cache, stats_watch } = handles;
+    let WorkerHandles { status, content_store, inbox_paused, recent_tx, source_stats_cache, stats_watch } = handles;
     let stats_watch_archive = Arc::clone(&stats_watch);
     let source_stats_cache_archive = Arc::clone(&source_stats_cache);
     let inbox_dir = data_dir.join("inbox");
@@ -151,7 +148,6 @@ pub async fn start_inbox_worker(
         let to_archive_dir_clone = to_archive_dir.clone();
         let status = status.clone();
         let archive_notify = Arc::clone(&archive_notify);
-        let shared = Arc::clone(&shared_archive_state);
         let cfg_index = cfg.clone();
 
         tokio::spawn(async move {
@@ -160,7 +156,6 @@ pub async fn start_inbox_worker(
                 status,
                 cfg: cfg_index,
                 archive_notify,
-                shared_archive: shared,
                 recent_tx,
                 source_stats_cache,
                 stats_watch,

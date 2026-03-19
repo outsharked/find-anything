@@ -16,10 +16,18 @@ use crate::{ContentKey, ContentStore};
 
 pub struct WriteBenchOpts {
     pub num_blobs: usize,
-    /// Target size of each blob in bytes.
+    /// Median blob size in bytes. Actual sizes follow a log-normal distribution
+    /// so that the mix of small/medium/large files is realistic.
     pub blob_size_bytes: usize,
+    /// Log-normal σ (spread). 0.0 = fixed size; 1.5 = realistic file-size spread
+    /// (~1 KB–10 MB from a 4 KB median). Ignored when `blob_size_bytes` is 0.
+    pub blob_size_sigma: f64,
     /// RNG seed. Same seed → identical blobs and keys on every run.
     pub seed: u64,
+    /// Vocabulary for synthetic text generation. Should be frequency-ordered
+    /// (most common words first); sampling is biased toward the front of the
+    /// list to approximate a Zipf distribution.
+    pub wordlist: Vec<String>,
 }
 
 pub struct WriteBenchResult {
@@ -44,21 +52,28 @@ impl WriteBenchResult {
 
 /// Write phase: generate and store synthetic blobs.
 ///
-/// Returns the result and the list of inserted keys (for use in `bench_read`).
+/// Returns the result and a list of `(key, line_count)` pairs for use in `bench_read`.
+/// Blob sizes follow a log-normal distribution around `blob_size_bytes` when
+/// `blob_size_sigma > 0`, producing a realistic mix of small and large files.
 pub fn bench_write(
     store: &dyn ContentStore,
     opts: &WriteBenchOpts,
-) -> Result<(WriteBenchResult, Vec<ContentKey>)> {
-    let mut keys = Vec::with_capacity(opts.num_blobs);
+) -> Result<(WriteBenchResult, Vec<(ContentKey, usize)>)> {
+    let mut key_meta: Vec<(ContentKey, usize)> = Vec::with_capacity(opts.num_blobs);
     let mut bytes_written: u64 = 0;
+
+    // Separate RNG for size sampling so blob content is unaffected by sigma.
+    let mut size_rng = StdRng::seed_from_u64(opts.seed.wrapping_add(0x5eed_5eed_5eed_5eed));
 
     let t0 = Instant::now();
     for i in 0..opts.num_blobs {
-        let blob = synthetic_blob(opts.seed, i, opts.blob_size_bytes);
+        let size = sample_lognormal(&mut size_rng, opts.blob_size_bytes, opts.blob_size_sigma);
+        let blob = synthetic_blob(opts.seed, i, size, &opts.wordlist);
         let key = blob_key(opts.seed, i);
+        let line_count = blob.bytes().filter(|&b| b == b'\n').count();
         bytes_written += blob.len() as u64;
         store.put(&key, &blob)?;
-        keys.push(key);
+        key_meta.push((key, line_count));
     }
     let elapsed = t0.elapsed();
 
@@ -68,7 +83,7 @@ pub fn bench_write(
             bytes_written,
             elapsed,
         },
-        keys,
+        key_meta,
     ))
 }
 
@@ -77,8 +92,9 @@ pub fn bench_write(
 pub struct ReadBenchOpts {
     pub num_reads: usize,
     pub concurrency: usize,
-    /// Keys to sample from — returned by `bench_write` or built from an existing store.
-    pub keys: Vec<ContentKey>,
+    /// Keys and their line counts — returned by `bench_write`.
+    /// Line count is used to pick read windows proportional to blob size.
+    pub keys: Vec<(ContentKey, usize)>,
     pub seed: u64,
 }
 
@@ -143,11 +159,14 @@ pub fn bench_read(store: &dyn ContentStore, opts: &ReadBenchOpts) -> Result<Read
                 let mut local: Vec<Duration> = Vec::with_capacity(reads_this_thread);
 
                 for _ in 0..reads_this_thread {
-                    let key = &keys[rng.random_range(0..keys.len())];
-                    // Request a mid-file range (avoids line 0 which is always
-                    // the path and would be cached trivially).
-                    let lo: usize = rng.random_range(1..20);
-                    let hi: usize = lo + rng.random_range(1..15);
+                    let (key, line_count) = &keys[rng.random_range(0..keys.len())];
+                    // Window size: ~10% of the blob's lines, clamped to [5, 500].
+                    // This keeps read ranges proportional to blob size — a 50-line
+                    // file gets a 5-line window, a 5000-line file gets a 500-line window.
+                    let window = (line_count / 10).clamp(5, 500);
+                    let max_lo = line_count.saturating_sub(window).max(1);
+                    let lo = if max_lo > 1 { rng.random_range(1..max_lo) } else { 1 };
+                    let hi = lo + window;
 
                     let t0 = Instant::now();
                     let _ = store.get_lines(key, lo, hi);
@@ -171,6 +190,22 @@ pub fn bench_read(store: &dyn ContentStore, opts: &ReadBenchOpts) -> Result<Read
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Sample a blob size from a log-normal distribution with the given median.
+///
+/// Uses the Box-Muller transform to produce a standard normal variate, then
+/// exponentiates: `size = exp(ln(median) + σ * N(0,1))`.
+/// When `sigma == 0.0` or `median == 0`, returns `median` unchanged.
+/// Result is clamped to a minimum of 64 bytes.
+fn sample_lognormal(rng: &mut StdRng, median: usize, sigma: f64) -> usize {
+    if sigma == 0.0 || median == 0 {
+        return median;
+    }
+    let u1 = rng.random::<f64>().max(1e-10);
+    let u2 = rng.random::<f64>();
+    let z = (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos();
+    (((median as f64).ln() + sigma * z).exp() as usize).max(64)
+}
+
 /// Generate a deterministic content key for blob index `i` under `seed`.
 pub fn blob_key(seed: u64, i: usize) -> ContentKey {
     // 64 hex chars from two u64 values derived from seed and index.
@@ -179,30 +214,35 @@ pub fn blob_key(seed: u64, i: usize) -> ContentKey {
     ContentKey::new(format!("{a:016x}{b:016x}{a:016x}{b:016x}").as_str())
 }
 
-/// Generate a synthetic text blob of approximately `target_bytes`.
+/// Generate a deterministic synthetic text blob of approximately `target_bytes`.
 ///
-/// Produces line-delimited ASCII text with lines of ~60–80 chars,
-/// matching realistic file content so chunking behaviour is representative.
-fn synthetic_blob(seed: u64, i: usize, target_bytes: usize) -> String {
-    if target_bytes == 0 {
+/// Words are drawn from `wordlist` with a Zipf-like bias: squaring a uniform
+/// variate before indexing means the front of the list (common words) is sampled
+/// much more often than the tail, approximating natural language frequency
+/// distribution and producing compression ratios representative of real text.
+fn synthetic_blob(seed: u64, i: usize, target_bytes: usize, wordlist: &[String]) -> String {
+    if target_bytes == 0 || wordlist.is_empty() {
         return String::new();
     }
 
+    let n = wordlist.len() as f64;
     let mut rng = StdRng::seed_from_u64(seed ^ (i as u64).wrapping_mul(0x517cc1b727220a95));
-    let mut out = String::with_capacity(target_bytes + 80);
+    let mut out = String::with_capacity(target_bytes + 120);
 
     while out.len() < target_bytes {
-        // Line length 40–80 chars.
-        let line_len: usize = rng.random_range(40..=80);
-        for _ in 0..line_len {
-            // Printable ASCII 32–126 (space to tilde), skewing toward word chars.
-            let ch = if rng.random_bool(0.85) {
-                rng.random_range(b'a'..=b'z') as char
-            } else {
-                rng.random_range(b' '..=b'~') as char
-            };
-            out.push(ch);
+        let target_line_len = rng.random_range(40..=80usize);
+        let mut line = String::new();
+        while line.len() < target_line_len {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            // Zipf approximation: square a uniform variate so low indices
+            // (common words) are sampled far more often than high indices.
+            let u: f64 = rng.random();
+            let idx = (u * u * n) as usize;
+            line.push_str(&wordlist[idx]);
         }
+        out.push_str(&line);
         out.push('\n');
     }
 
@@ -222,10 +262,18 @@ mod tests {
         (SqliteContentStore::open(dir.path(), None, None, None).unwrap(), dir)
     }
 
+    fn test_wordlist() -> Vec<String> {
+        "the a and to of in is it that for on are with as be this was by from or an have".
+            split_whitespace().map(str::to_string).collect()
+    }
+
     #[test]
     fn write_bench_produces_nonzero_throughput() {
         let (store, _dir) = make_store();
-        let opts = WriteBenchOpts { num_blobs: 50, blob_size_bytes: 512, seed: 42 };
+        let opts = WriteBenchOpts {
+            num_blobs: 50, blob_size_bytes: 512, blob_size_sigma: 0.0, seed: 42,
+            wordlist: test_wordlist(),
+        };
         let (result, keys) = bench_write(&store, &opts).unwrap();
         assert_eq!(result.blobs_written, 50);
         assert!(result.bytes_written > 0);
@@ -237,7 +285,10 @@ mod tests {
     #[test]
     fn read_bench_produces_nonzero_latencies() {
         let (store, _dir) = make_store();
-        let write_opts = WriteBenchOpts { num_blobs: 50, blob_size_bytes: 512, seed: 99 };
+        let write_opts = WriteBenchOpts {
+            num_blobs: 50, blob_size_bytes: 512, blob_size_sigma: 0.0, seed: 99,
+            wordlist: test_wordlist(),
+        };
         let (_, keys) = bench_write(&store, &write_opts).unwrap();
 
         let read_opts = ReadBenchOpts { num_reads: 100, concurrency: 2, keys, seed: 99 };
@@ -245,6 +296,18 @@ mod tests {
         assert_eq!(result.reads, 100);
         assert_eq!(result.latencies.len(), 100);
         assert!(result.percentile(0.99) > Duration::ZERO);
+    }
+
+    #[test]
+    fn lognormal_sizes_vary_around_median() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let median = 4096usize;
+        let sizes: Vec<usize> = (0..200).map(|_| sample_lognormal(&mut rng, median, 1.5)).collect();
+        // With σ=1.5 the distribution spans ~3 orders of magnitude; all values must be ≥ 64.
+        assert!(sizes.iter().all(|&s| s >= 64));
+        // At least some blobs should be smaller and some larger than the median.
+        assert!(sizes.iter().any(|&s| s < median));
+        assert!(sizes.iter().any(|&s| s > median));
     }
 
     #[test]
@@ -256,13 +319,10 @@ mod tests {
 
     #[test]
     fn synthetic_blob_reaches_target_size() {
+        let wl = test_wordlist();
         for target in [128, 512, 4096, 16384] {
-            let blob = synthetic_blob(7, 0, target);
-            assert!(
-                blob.len() >= target,
-                "blob len {} < target {target}",
-                blob.len()
-            );
+            let blob = synthetic_blob(7, 0, target, &wl);
+            assert!(blob.len() >= target, "blob len {} < target {target}", blob.len());
         }
     }
 

@@ -139,6 +139,26 @@ pub fn row_count(conn: &Connection) -> Result<u64> {
     Ok(n as u64)
 }
 
+/// Return the total bytes of data stored for blobs whose key is not in `live_keys`.
+/// Used for dry-run compaction to report orphaned bytes without deleting anything.
+pub fn orphaned_data_bytes(conn: &Connection, live_keys: &[&str]) -> Result<u64> {
+    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS _live_keys2 (key TEXT PRIMARY KEY)")?;
+    conn.execute_batch("DELETE FROM _live_keys2")?;
+    {
+        let mut stmt = conn.prepare("INSERT OR IGNORE INTO _live_keys2(key) VALUES(?1)")?;
+        for key in live_keys {
+            stmt.execute(rusqlite::params![key])?;
+        }
+    }
+    let bytes: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM blobs WHERE key NOT IN (SELECT key FROM _live_keys2)",
+        [],
+        |r| r.get(0),
+    )?;
+    conn.execute_batch("DROP TABLE IF EXISTS _live_keys2")?;
+    Ok(bytes as u64)
+}
+
 /// Return the on-disk size of `blobs.db` in bytes.
 pub fn db_size_bytes(data_dir: &Path) -> u64 {
     std::fs::metadata(data_dir.join("blobs.db"))

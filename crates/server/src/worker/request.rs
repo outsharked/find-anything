@@ -4,8 +4,8 @@
 ///  - Phase 1 (this module): decode the `.gz`, update SQLite (deletes, renames,
 ///    upserts), write the activity log, and write a normalised `.gz` to
 ///    `inbox/to-archive/` for the archive phase.
-///  - Phase 2 (archive_batch): read from `to-archive/`, coalesce chunks, rewrite
-///    ZIP archives, and update chunk refs in SQLite.
+///  - Phase 2 (archive_batch): read from `to-archive/`, store content in the
+///    `ContentStore`.
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -18,7 +18,6 @@ use tokio::sync::broadcast;
 use find_common::api::{BulkRequest, IndexingFailure, RecentAction, RecentFile};
 use find_common::path::is_composite;
 
-use crate::archive::SharedArchiveState;
 use crate::db;
 use crate::normalize;
 
@@ -40,7 +39,6 @@ pub(super) struct IndexerHandles {
     pub status:             StatusHandle,
     pub cfg:                WorkerConfig,
     pub archive_notify:     Arc<tokio::sync::Notify>,
-    pub shared_archive:     Arc<SharedArchiveState>,
     pub recent_tx:          broadcast::Sender<RecentFile>,
     pub source_stats_cache: Arc<std::sync::RwLock<crate::stats_cache::SourceStatsCache>>,
     pub stats_watch:        Arc<tokio::sync::watch::Sender<u64>>,
@@ -63,10 +61,9 @@ pub(super) async fn process_request_async(
         let to_archive_dir = ctx.to_archive_dir.clone();
         let status = handles.status.clone();
         let cfg = handles.cfg.clone();
-        let shared_archive = Arc::clone(&handles.shared_archive);
         let recent_tx = handles.recent_tx.clone();
         let stats_watch = Arc::clone(&handles.stats_watch);
-        move || process_request_phase1(&data_dir, &request_path, &to_archive_dir, &status, cfg, &shared_archive, &recent_tx, &stats_watch)
+        move || process_request_phase1(&data_dir, &request_path, &to_archive_dir, &status, cfg, &recent_tx, &stats_watch)
     });
 
     let timed_result = tokio::time::timeout(request_timeout, blocking_task).await;
@@ -133,16 +130,14 @@ pub(super) async fn process_request_async(
 
 // ── Phase 1: synchronous request processing ───────────────────────────────────
 
-/// Phase 1: process a single inbox request — SQLite only, no ZIP I/O.
+/// Phase 1: process a single inbox request — SQLite only, no content store I/O.
 /// Writes a normalized `.gz` to `to_archive_dir` for the archive phase.
-#[allow(clippy::too_many_arguments)]
 fn process_request_phase1(
     data_dir: &Path,
     request_path: &Path,
     to_archive_dir: &Path,
     status: &StatusHandle,
     cfg: WorkerConfig,
-    shared_archive_state: &Arc<SharedArchiveState>,
     recent_tx: &tokio::sync::broadcast::Sender<RecentFile>,
     stats_watch: &Arc<tokio::sync::watch::Sender<u64>>,
 ) -> Result<crate::stats_cache::SourceStatsDelta> {
@@ -195,13 +190,6 @@ fn process_request_phase1(
 
     let db_path = data_dir.join("sources").join(format!("{}.db", request.source));
     let mut conn = timed!(tag, "open db", { db::open(&db_path)? });
-
-    // Acquire the per-source write lock before any SQLite writes.
-    let source_lock = shared_archive_state.source_lock(&request.source);
-    let _source_guard = timed!(tag, "acquire source lock", {
-        source_lock.lock()
-            .map_err(|_| anyhow::anyhow!("source lock poisoned for {}", request.source))?
-    });
 
     // Process deletes (SQLite only — orphaned ZIP chunks cleaned up by compaction).
     if !request.delete_paths.is_empty() {
@@ -452,7 +440,7 @@ mod tests {
         WorkerConfig {
             request_timeout: std::time::Duration::from_secs(30),
             inline_threshold_bytes: 0,
-            archive_batch_size: 100,
+            archive_batch_size: 100, // used by archive_batch phase
             activity_log_max_entries: 1000,
             normalization: find_common::config::NormalizationSettings::default(),
         }
@@ -507,7 +495,6 @@ mod tests {
     #[test]
     fn upsert_writes_db_record_and_archive_gz() {
         let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
-        let shared = crate::archive::SharedArchiveState::new(data_dir.clone()).unwrap();
         let (recent_tx, _rx) = tokio::sync::broadcast::channel::<RecentFile>(16);
 
         let req = BulkRequest {
@@ -528,7 +515,6 @@ mod tests {
             &to_archive_dir,
             &make_status(),
             make_worker_config(),
-            &shared,
             &recent_tx,
             &make_stats_watch(),
         )
@@ -554,7 +540,6 @@ mod tests {
     #[test]
     fn delete_removes_db_record() {
         let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
-        let shared = crate::archive::SharedArchiveState::new(data_dir.clone()).unwrap();
         let (recent_tx, _rx) = tokio::sync::broadcast::channel::<RecentFile>(16);
 
         // First, index the file.
@@ -574,7 +559,6 @@ mod tests {
             &to_archive_dir,
             &make_status(),
             make_worker_config(),
-            &shared,
             &recent_tx,
             &make_stats_watch(),
         )
@@ -611,7 +595,6 @@ mod tests {
             to_archive_dir2.path(),
             &make_status(),
             make_worker_config(),
-            &shared,
             &recent_tx,
             &make_stats_watch(),
         )
@@ -641,7 +624,6 @@ mod tests {
     #[test]
     fn rename_updates_path_in_db() {
         let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
-        let shared = crate::archive::SharedArchiveState::new(data_dir.clone()).unwrap();
         let (recent_tx, _rx) = tokio::sync::broadcast::channel::<RecentFile>(16);
 
         // Index file at original path.
@@ -661,7 +643,6 @@ mod tests {
             &to_archive_dir,
             &make_status(),
             make_worker_config(),
-            &shared,
             &recent_tx,
             &make_stats_watch(),
         )
@@ -691,7 +672,6 @@ mod tests {
             to_archive_dir2.path(),
             &make_status(),
             make_worker_config(),
-            &shared,
             &recent_tx,
             &make_stats_watch(),
         )
@@ -723,7 +703,6 @@ mod tests {
     #[test]
     fn empty_files_no_archive_gz_written() {
         let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
-        let shared = crate::archive::SharedArchiveState::new(data_dir.clone()).unwrap();
         let (recent_tx, _rx) = tokio::sync::broadcast::channel::<RecentFile>(16);
 
         let req = BulkRequest {
@@ -743,7 +722,6 @@ mod tests {
             &to_archive_dir,
             &make_status(),
             make_worker_config(),
-            &shared,
             &recent_tx,
             &make_stats_watch(),
         )
@@ -767,7 +745,6 @@ mod tests {
     #[test]
     fn deletes_processed_before_upserts_in_same_request() {
         let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
-        let shared = crate::archive::SharedArchiveState::new(data_dir.clone()).unwrap();
         let (recent_tx, _rx) = tokio::sync::broadcast::channel::<RecentFile>(16);
 
         // First, seed the file so there is something to delete.
@@ -787,7 +764,6 @@ mod tests {
             &to_archive_dir,
             &make_status(),
             make_worker_config(),
-            &shared,
             &recent_tx,
             &make_stats_watch(),
         )
@@ -810,7 +786,6 @@ mod tests {
             &to_archive_dir,
             &make_status(),
             make_worker_config(),
-            &shared,
             &recent_tx,
             &make_stats_watch(),
         )
@@ -845,7 +820,6 @@ mod tests {
     #[test]
     fn normalization_applied_to_text_file() {
         let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
-        let shared = crate::archive::SharedArchiveState::new(data_dir.clone()).unwrap();
         let (recent_tx, _rx) = tokio::sync::broadcast::channel::<find_common::api::RecentFile>(16);
 
         // Build a line longer than the default max_line_length (120 chars).
@@ -890,7 +864,7 @@ mod tests {
         process_request_phase1(
             &data_dir, &request_path, &to_archive_dir,
             &make_status(), cfg,
-            &shared, &recent_tx, &make_stats_watch(),
+            &recent_tx, &make_stats_watch(),
         ).unwrap();
 
         // Read the normalized gz and verify lines were wrapped.
@@ -921,7 +895,6 @@ mod tests {
     #[test]
     fn normalization_skipped_for_non_text_file() {
         let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
-        let shared = crate::archive::SharedArchiveState::new(data_dir.clone()).unwrap();
         let (recent_tx, _rx) = tokio::sync::broadcast::channel::<find_common::api::RecentFile>(16);
 
         let exif_line = "DateTimeOriginal: 2024:01:15 14:30:00";
@@ -962,7 +935,7 @@ mod tests {
         process_request_phase1(
             &data_dir, &request_path, &to_archive_dir,
             &make_status(), cfg,
-            &shared, &recent_tx, &make_stats_watch(),
+            &recent_tx, &make_stats_watch(),
         ).unwrap();
 
         let normalized = read_to_archive_gz(&to_archive_dir);

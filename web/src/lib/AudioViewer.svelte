@@ -2,6 +2,7 @@
 	import { createEventDispatcher } from 'svelte';
 	import { parseMetaTags } from '$lib/metaTags';
 
+	/** URL to stream the audio file. */
 	export let src: string;
 	/** Extracted metadata lines (line_number === 1, starting with '['). */
 	export let metaLines: { content: string }[] = [];
@@ -9,19 +10,17 @@
 	export let duplicatePaths: string[] = [];
 
 	const dispatch = createEventDispatcher<{ openDuplicate: { path: string } }>();
-
-	$: hasMeta = metaLines.length > 0 || duplicatePaths.length > 0;
 </script>
 
-<div class="video-split-panel">
-	<div class="video-split-left">
+<div class="audio-split-panel">
+	<div class="audio-split-left">
 		<!-- svelte-ignore a11y-media-has-caption -->
-		<video controls {src} class="video-player">
-			Your browser does not support the video tag.
-		</video>
+		<audio controls {src} class="audio-player">
+			Your browser does not support the audio element.
+		</audio>
 	</div>
-	{#if hasMeta}
-		<div class="video-split-right">
+	<div class="audio-split-right">
+		{#if metaLines.length > 0 || duplicatePaths.length > 0}
 			{#each duplicatePaths as dup}
 				<div class="meta-row duplicate-row">
 					<span class="duplicate-label">DUPLICATE:</span>
@@ -36,12 +35,14 @@
 					</div>
 				{/each}
 			{/each}
-		</div>
-	{/if}
+		{:else}
+			<div class="no-content">No metadata available.</div>
+		{/if}
+	</div>
 </div>
 
 <style>
-	.video-split-panel {
+	.audio-split-panel {
 		flex: 1;
 		display: flex;
 		flex-direction: row;
@@ -49,25 +50,24 @@
 		min-height: 0;
 	}
 
-	.video-split-left {
+	.audio-split-left {
 		flex: 1;
+		overflow: auto;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: var(--bg);
-		overflow: auto;
-		padding: 16px;
+		border-right: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+		padding: 32px 16px;
 		min-width: 0;
 	}
 
-	.video-player {
-		max-width: 100%;
-		max-height: 100%;
+	.audio-player {
+		width: 100%;
+		max-width: 480px;
 		outline: none;
-		border-radius: 4px;
 	}
 
-	.video-split-right {
+	.audio-split-right {
 		width: 300px;
 		flex-shrink: 0;
 		overflow-y: auto;
@@ -76,7 +76,13 @@
 		font-size: 12px;
 		color: var(--text-muted);
 		background: var(--bg-secondary);
-		border-left: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+	}
+
+	.no-content {
+		padding: 24px;
+		color: var(--text-dim);
+		font-size: 13px;
+		text-align: center;
 	}
 
 	.meta-row {

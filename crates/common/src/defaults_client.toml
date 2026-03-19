@@ -170,4 +170,9 @@ ignore = [
     # These fire for every unrecognised glyph name in a non-standard font
     # and are harmless — the glyph is skipped and extraction continues.
     "pdf_extract: unknown glyph name",
+    # Suppress symphonia probe-EOF errors for short/corrupt audio members inside
+    # archives. Symphonia tries multiple format probers in sequence; each emits
+    # this when the file is too short. extract_audio() handles the error gracefully
+    # (returns empty) so these are purely noise.
+    "symphonia_core::probe: probe reach EOF",
 ]

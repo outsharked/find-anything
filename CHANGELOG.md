@@ -11,6 +11,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **ZIP content store removed** — `ZipContentStore` and all `zip_store/` code deleted; `BackendType::Zip` removed from config; `SqliteContentStore` is now the only backend; `server/src/archive.rs` deleted; `zip` dependency dropped from `find-content-store`; UI and CLI text updated to remove ZIP references ("awaiting archive" → "awaiting write", etc.)
+- **Inline audio player** — audio files now open in a split-pane view (player on the left, metadata tags on the right), matching the image/video viewer layout; `AudioViewer.svelte` added
+- **Per-tag metadata display** — image, audio, and video viewers render each `[TYPE:key] value` tag on its own row instead of one joined string; `metaTags.ts` parser added with 8 unit tests
+- **`imageMeta.ts` rewritten using `parseMetaTags`** — the old `^`-anchored regex patterns only matched when the dimension tag appeared first in the joined string; the new implementation uses `parseMetaTags` + a `Map` lookup so tags are found regardless of order
+- **Archive member sizes stored at index time** — `MemberBatch` gains a `size: Option<u64>` field; ZIP, TAR, and 7z handlers populate it from the archive entry's declared uncompressed size; the subprocess (RAR/external) path uses `bytes.len()`; `build_member_index_files` forwards it to `IndexFile.size`; three new extractor tests and two server integration tests verify end-to-end storage and retrieval
+
+### Fixed
+
+- **Audio player hang / no duration** — `GET /api/v1/raw` now returns `Content-Length` and `Accept-Ranges: bytes` for direct file downloads, and handles `Range:` requests with a proper 206 Partial Content response; browsers require this to display audio/video duration and enable seeking
+- **Audio/video inline viewer for non-ZIP archive members** — `canViewInline` now requires `canServeArchiveMember` (true only when every archive in the composite path is a ZIP); RAR/TAR/7z members no longer show a broken player
+- **Symphonia probe-EOF logged at WARN with member context** — probe failures for short/corrupt audio members were silently swallowed (ERROR emitted by symphonia, ignored); `extract_audio` now accepts a `label` parameter and emits `warn!("audio probe failed for '...'")` with the member path; the raw symphonia ERROR is suppressed via the `[log] ignore` list in both `defaults_client.toml` and `defaults_server.toml`
+
 - **Optional gzip compression for `SqliteContentStore`** — `BackendInstanceConfig` gains a `compress: Option<bool>` field; when `true`, each chunk is gzip-compressed before storage and decompressed transparently on read (magic-byte detection, so uncompressed and compressed databases are both readable by the same code); `blobs.db` schema changes `data TEXT` → `data BLOB`; two new server.toml backends (`sqlite_4k_gz`, `sqlite_12k_gz`) for A/B benchmarking; contract test suite expanded from 24 to 36 tests (12 per backend: zip, sqlite, sqlite_compressed)
 
 - **Backend-neutral stats and compaction output** — `find-admin status` no longer hard-codes "ZIP files"; the label is now "Content: N file(s)" and accurately reflects the active backend (47 ZIP archives or 1 SQLite database); `SqliteContentStore::storage_stats()` now returns `(1, bytes)` instead of `(row_count, bytes)` so the file count is never a meaningless chunk row number; `ContentStore::archive_stats()` renamed to `storage_stats()`; `CompactResult`/`CompactResponse` fields renamed `archives_*` → `units_*`; compaction messages use "storage unit(s)" throughout; web UI global metrics updated to match

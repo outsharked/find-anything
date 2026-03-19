@@ -4,6 +4,7 @@ use std::path::Path;
 
 use find_extract_types::{IndexLine, LINE_METADATA};
 use find_extract_types::ExtractorConfig;
+use tracing::warn;
 
 /// Extract metadata from media files (images, audio, video).
 ///
@@ -29,7 +30,7 @@ pub fn extract(path: &Path, _cfg: &ExtractorConfig) -> anyhow::Result<Vec<IndexL
     if is_image_ext(&ext) {
         extract_image(path)
     } else if is_audio_ext(&ext) {
-        extract_audio(path)
+        extract_audio(path, &path.to_string_lossy())
     } else if is_video_ext(&ext) {
         extract_video(path)
     } else {
@@ -52,6 +53,11 @@ pub fn extract_from_bytes(bytes: &[u8], entry_name: &str, cfg: &ExtractorConfig)
         .tempfile()?;
     tmp.write_all(bytes)?;
     tmp.flush()?;
+    // Pass entry_name (not the temp path) so probe-failure warnings include the
+    // original member name rather than an opaque temp-file path.
+    if is_audio_ext(ext) {
+        return extract_audio(tmp.path(), entry_name);
+    }
     extract(tmp.path(), cfg)
 }
 
@@ -275,7 +281,7 @@ pub fn is_image_ext(ext: &str) -> bool {
 // AUDIO EXTRACTION
 // ============================================================================
 
-fn extract_audio(path: &Path) -> anyhow::Result<Vec<IndexLine>> {
+fn extract_audio(path: &Path, label: &str) -> anyhow::Result<Vec<IndexLine>> {
     use symphonia::core::codecs::CODEC_TYPE_NULL;
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::io::MediaSourceStream;
@@ -297,7 +303,10 @@ fn extract_audio(path: &Path) -> anyhow::Result<Vec<IndexLine>> {
         .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
     {
         Ok(p) => p,
-        Err(_) => return Ok(vec![]),
+        Err(e) => {
+            warn!("audio probe failed for '{}': {e}", label);
+            return Ok(vec![]);
+        }
     };
 
     let mut format = probed.format;

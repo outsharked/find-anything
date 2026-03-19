@@ -15,6 +15,7 @@ path = "src/main.rs"
 find-extract-types = { path = "../../extract-types" }
 anyhow = { workspace = true }
 serde = { workspace = true }
+tracing = { workspace = true }
 
 # Image EXIF
 kamadak-exif = "0.5"

@@ -4,11 +4,13 @@
 	import { fileViewPageSize, contentLineStart } from '$lib/settingsStore';
 	import { highlightFile } from '$lib/highlight';
 	import DirListing from './DirListing.svelte';
+	import AudioViewer from './AudioViewer.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import MarkdownViewer from './MarkdownViewer.svelte';
 	import CodeViewer from './CodeViewer.svelte';
 	import PdfViewer from './PdfViewer.svelte';
 	import VideoViewer from './VideoViewer.svelte';
+	import { parseMetaTags } from '$lib/metaTags';
 	import FileStatusBanner from './FileStatusBanner.svelte';
 	import {
 		type LineSelection,
@@ -60,7 +62,7 @@
 	$: if (preferOriginal !== _prevPreferOriginal) {
 		_prevPreferOriginal = preferOriginal;
 		if (fileKind !== null) {
-			showOriginal = fileKind === 'image' || fileKind === 'video' || (fileKind === 'pdf' && !isEncrypted && preferOriginal);
+			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal);
 		}
 	}
 	// For images: false = split view (image + metadata side-by-side), true = full-width image
@@ -83,9 +85,18 @@
 	// For inline image display, use the composite path for archive members so the
 	// server extracts the member from the outer ZIP.
 	$: rawInlinePath = archivePath ? `${path}::${archivePath}` : path;
-	// Images, PDFs, and videos can be shown inline, including archive members.
-	// The server extracts archive members from the outer ZIP via composite paths.
-	$: canViewInline = fileKind === 'image' || (fileKind === 'pdf' && !isEncrypted) || fileKind === 'video';
+	// For archive members, the raw endpoint only supports ZIP archives — RAR/TAR/7z members
+	// cannot be extracted for inline viewing.  All archives in the composite path (outer +
+	// any intermediate) must be ZIPs for the server to serve the member.
+	$: canServeArchiveMember = !isArchiveMember || (
+		outerExt === 'zip' &&
+		(archivePath ?? '').split('::').slice(0, -1).every(
+			part => (part.split('.').pop() ?? '').toLowerCase() === 'zip'
+		)
+	);
+	// Images, PDFs, videos, and audio can be shown inline when the file is directly accessible
+	// or is a member of a ZIP archive.
+	$: canViewInline = canServeArchiveMember && (fileKind === 'image' || (fileKind === 'pdf' && !isEncrypted) || fileKind === 'video' || fileKind === 'audio');
 	// For images the browser can't render natively, request server-side PNG conversion.
 	// Check the member's own extension for archive members.
 	const BROWSER_IMAGE_EXTS = new Set(['jpg','jpeg','png','gif','webp','svg','svgz','avif','bmp','ico']);
@@ -236,7 +247,7 @@
 		indexingError = data.indexing_error ?? null;
 		isEncrypted = fileKind === 'pdf' && data.lines.length === 1 && data.lines[0] === 'Content encrypted';
 		if (isInitial) {
-			showOriginal = fileKind === 'image' || fileKind === 'video' || (fileKind === 'pdf' && !isEncrypted && preferOriginal);
+			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal);
 			imageFullWidth = false;
 		}
 	}
@@ -264,7 +275,7 @@
 		}
 		if (isInitial) {
 			isEncrypted = fileKind === 'pdf' && data.lines.length === 1 && data.lines[0] === 'Content encrypted';
-			showOriginal = fileKind === 'image' || fileKind === 'video' || (fileKind === 'pdf' && !isEncrypted && preferOriginal);
+			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal);
 			imageFullWidth = false;
 		}
 	}
@@ -456,14 +467,14 @@
 					{markdownFormat ? 'Plain' : 'Formatted'}
 				</button>
 			{/if}
-			{#if canViewInline && (fileKind === 'image' || fileKind === 'pdf' || fileKind === 'video')}
+			{#if canViewInline && (fileKind === 'image' || fileKind === 'pdf' || fileKind === 'video' || fileKind === 'audio')}
 				{#if fileKind === 'image'}
 					{#if imageFullWidth}
 						<button class="toolbar-btn" on:click={() => imageFullWidth = false}>View Split</button>
 					{:else}
 						<button class="toolbar-btn" on:click={() => imageFullWidth = true}>View Extracted</button>
 					{/if}
-				{:else}
+				{:else if fileKind !== 'audio'}
 					<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}
 							title="Toggle original file view">
 						{showOriginal ? 'View Extracted' : 'View Original'}
@@ -500,8 +511,20 @@
 					{duplicatePaths}
 					on:openDuplicate={(e) => openDuplicate(e.detail.path)}
 				/>
+			{:else if fileKind === 'audio'}
+				<AudioViewer
+					src={rawInlineUrl}
+					{metaLines}
+					{duplicatePaths}
+					on:openDuplicate={(e) => openDuplicate(e.detail.path)}
+				/>
 			{:else if fileKind === 'video'}
-				<VideoViewer src={rawInlineUrl} />
+				<VideoViewer
+					src={rawInlineUrl}
+					{metaLines}
+					{duplicatePaths}
+					on:openDuplicate={(e) => openDuplicate(e.detail.path)}
+				/>
 			{:else}
 				<!-- PDF / other inline kind -->
 				<PdfViewer src={rawInlineUrl} />
@@ -530,7 +553,12 @@
 							</div>
 						{/each}
 						{#each metaLines as meta}
-							<div class="meta-row">{meta.content}</div>
+							{#each parseMetaTags(meta.content) as tag}
+								<div class="meta-row">
+									<span class="tag-label">[{tag.label}]</span>
+									<span class="tag-value">{tag.value}</span>
+								</div>
+							{/each}
 						{/each}
 					</div>
 				{/if}
@@ -679,17 +707,26 @@
 	}
 
 	.meta-panel {
-		padding: 8px 16px;
-		background: var(--bg-secondary);
-		border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+		padding: 12px 16px;
 		font-family: var(--font-mono);
 		font-size: 12px;
-		color: var(--text-muted);
 	}
 
 	.meta-row {
 		padding: 2px 0;
 		line-height: 1.6;
+		display: flex;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+
+	.tag-label {
+		color: var(--text-dim);
+		flex-shrink: 0;
+	}
+
+	.tag-value {
+		color: var(--text-muted);
 	}
 
 	.duplicate-row {

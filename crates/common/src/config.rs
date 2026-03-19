@@ -534,7 +534,6 @@ pub fn extractor_config_from_extraction(extraction: &ExtractionSettings) -> Extr
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendType {
-    Zip,
     Sqlite,
 }
 
@@ -563,7 +562,7 @@ pub struct BackendInstanceConfig {
 pub struct StorageConfig {
     /// List of backend instances. A single entry uses that backend directly.
     /// Multiple entries write to all simultaneously; reads use the first with a hit.
-    /// Defaults to a single ZIP backend named "default".
+    /// Defaults to a single SQLite backend named "default".
     #[serde(default = "StorageConfig::default_backends")]
     pub backends: Vec<BackendInstanceConfig>,
 }
@@ -572,7 +571,7 @@ impl StorageConfig {
     fn default_backends() -> Vec<BackendInstanceConfig> {
         vec![BackendInstanceConfig {
             name: "default".to_string(),
-            backend_type: BackendType::Zip,
+            backend_type: BackendType::Sqlite,
             chunk_size_kb: None,
             max_read_connections: None,
             compress: None,

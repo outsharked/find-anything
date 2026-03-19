@@ -1,3 +1,5 @@
+import { parseMetaTags } from './metaTags';
+
 /**
  * Parse image pixel dimensions from indexed metadata lines.
  *
@@ -11,24 +13,19 @@
 export function parseImageDimensions(
 	lines: { content: string }[]
 ): { width: number; height: number } | null {
-	let pixelW: number | null = null;
-	let pixelH: number | null = null;
-	let imageW: number | null = null;
-	let imageH: number | null = null;
-	let basicW: number | null = null;
-	let basicH: number | null = null;
+	const allTags = lines.flatMap(l => parseMetaTags(l.content));
+	const tagMap = new Map(allTags.map(t => [t.label, t.value]));
+	const getInt = (k: string) => { const v = tagMap.get(k); return v !== undefined ? parseInt(v) : null; };
 
-	for (const l of lines) {
-		let m: RegExpMatchArray | null;
-		if ((m = l.content.match(/^\[EXIF:PixelXDimension\]\s+(\d+)/)))      pixelW = parseInt(m[1]);
-		else if ((m = l.content.match(/^\[EXIF:PixelYDimension\]\s+(\d+)/))) pixelH = parseInt(m[1]);
-		else if ((m = l.content.match(/^\[EXIF:ImageWidth\]\s+(\d+)/)))      imageW = parseInt(m[1]);
-		else if ((m = l.content.match(/^\[EXIF:ImageLength\]\s+(\d+)/)))     imageH = parseInt(m[1]);
-		else if ((m = l.content.match(/^\[IMAGE:dimensions\]\s+(\d+)x(\d+)/))) {
-			basicW = parseInt(m[1]);
-			basicH = parseInt(m[2]);
-		}
-	}
+	const pixelW = getInt('EXIF:PixelXDimension');
+	const pixelH = getInt('EXIF:PixelYDimension');
+	const imageW = getInt('EXIF:ImageWidth');
+	const imageH = getInt('EXIF:ImageLength');
+
+	const dimStr = tagMap.get('IMAGE:dimensions');
+	const dimMatch = dimStr?.match(/^(\d+)x(\d+)/);
+	const basicW = dimMatch ? parseInt(dimMatch[1]) : null;
+	const basicH = dimMatch ? parseInt(dimMatch[2]) : null;
 
 	const w = pixelW ?? imageW ?? basicW;
 	const h = pixelH ?? imageH ?? basicH;

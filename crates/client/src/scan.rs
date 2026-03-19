@@ -583,7 +583,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
 
                     let mut members_submitted: usize = 0;
                     for batch in member_batches {
-                        for file in build_member_index_files(rel_path, mtime, size, batch.lines, batch.content_hash) {
+                        for file in build_member_index_files(rel_path, mtime, batch.size, batch.lines, batch.content_hash) {
                             ctx.batch_bytes += index_file_bytes(&file);
                             members_submitted += 1;
                             ctx.batch.push(file);
@@ -688,7 +688,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
 
                     let content_hash = member_batch.content_hash;
                     let member_mtime = member_batch.mtime.unwrap_or(mtime);
-                    for file in build_member_index_files(rel_path, member_mtime, size, member_batch.lines, content_hash) {
+                    for file in build_member_index_files(rel_path, member_mtime, member_batch.size, member_batch.lines, content_hash) {
                         ctx.batch_bytes += index_file_bytes(&file);
                         members_submitted += 1;
                         ctx.batch.push(file);

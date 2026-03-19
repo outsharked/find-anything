@@ -281,6 +281,7 @@ pub async fn run_external_tempdir(
                 content_hash: None,
                 skip_reason: None,
                 mtime: None,
+                size: Some(bytes.len() as u64),
             });
 
             let inner_cfg = ExtractorConfig {
@@ -304,6 +305,7 @@ pub async fn run_external_tempdir(
                     content_hash: batch.content_hash,
                     skip_reason: batch.skip_reason,
                     mtime: batch.mtime,
+                    size: batch.size,
                 });
             }).unwrap_or_else(|e| {
                 warn!("failed to recurse into nested archive {}: {e:#}", member_rel);
@@ -333,7 +335,7 @@ pub async fn run_external_tempdir(
             line_number: 0,
             content: format!("[PATH] {}", member_rel),
         });
-        members.push(MemberBatch { lines: content_lines, content_hash, skip_reason: None, mtime: None });
+        members.push(MemberBatch { lines: content_lines, content_hash, skip_reason: None, mtime: None, size: Some(bytes.len() as u64) });
     }
 
     ExternalOutcome::OkMembers(members)

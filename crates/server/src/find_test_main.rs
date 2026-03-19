@@ -32,6 +32,11 @@ enum Command {
         #[arg(long)]
         data_dir: Option<PathBuf>,
 
+        /// URL of a newline-delimited word list for synthetic text generation.
+        /// Words should be frequency-ordered (most common first).
+        #[arg(long, default_value = "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-no-swears.txt")]
+        wordlist_url: String,
+
         /// Named backend(s) to benchmark (default: all configured)
         #[arg(long)]
         backend: Vec<String>,
@@ -44,9 +49,13 @@ enum Command {
         #[arg(long, default_value = "1000")]
         blobs: usize,
 
-        /// Average blob size in KB
+        /// Median blob size in KB (log-normal distribution)
         #[arg(long, default_value = "4")]
         blob_size_kb: usize,
+
+        /// Log-normal σ for blob size spread (0 = fixed size, 1.5 = realistic spread)
+        #[arg(long, default_value = "1.5")]
+        blob_size_sigma: f64,
 
         /// Number of get_lines() calls in the read phase
         #[arg(long, default_value = "2000")]
@@ -90,21 +99,42 @@ fn main() -> Result<()> {
         Command::BenchStorage {
             config,
             data_dir,
+            wordlist_url,
             backend,
             mode,
             blobs,
             blob_size_kb,
+            blob_size_sigma,
             reads,
             mut concurrency,
             seed,
             json,
         } => {
+            let wordlist = fetch_wordlist(&wordlist_url)?;
             run_bench_storage(
-                &config, data_dir, backend, mode, blobs, blob_size_kb,
-                reads, &mut concurrency, seed, json,
+                &config, data_dir, backend, mode, blobs, blob_size_kb, blob_size_sigma,
+                reads, &mut concurrency, seed, json, wordlist,
             )
         }
     }
+}
+
+fn fetch_wordlist(url: &str) -> Result<Vec<String>> {
+    eprintln!("Fetching wordlist from {url}…");
+    let body = reqwest::blocking::get(url)
+        .with_context(|| format!("GET {url}"))?
+        .error_for_status()
+        .with_context(|| format!("bad status from {url}"))?
+        .text()
+        .context("reading wordlist body")?;
+    let words: Vec<String> = body.lines()
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    anyhow::ensure!(!words.is_empty(), "wordlist at {url} is empty");
+    eprintln!("  {} words loaded.", words.len());
+    Ok(words)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -115,10 +145,12 @@ fn run_bench_storage(
     mode: BenchMode,
     blobs: usize,
     blob_size_kb: usize,
+    blob_size_sigma: f64,
     reads: usize,
     concurrency: &mut Vec<usize>,
     seed: u64,
     json: bool,
+    wordlist: Vec<String>,
 ) -> Result<()> {
     let config_str = std::fs::read_to_string(config_path)
         .with_context(|| format!("reading config: {config_path}"))?;
@@ -174,7 +206,9 @@ fn run_bench_storage(
         let write_opts = WriteBenchOpts {
             num_blobs: blobs,
             blob_size_bytes: blob_size_kb * 1024,
+            blob_size_sigma,
             seed,
+            wordlist: wordlist.clone(),
         };
 
         // Write phase — always run to obtain keys for the read phase.
@@ -185,7 +219,7 @@ fn run_bench_storage(
                 keys
             }
             BenchMode::Write | BenchMode::All => {
-                eprint!("  write ({blobs} blobs × {blob_size_kb} KB)… ");
+                eprint!("  write ({blobs} blobs, median {blob_size_kb} KB, σ={blob_size_sigma:.1})… ");
                 let (result, keys) = bench_write(ns.store.as_ref(), &write_opts)?;
                 eprintln!("{:.1} MB/s  ({:.0} blobs/s)", result.mb_per_sec(), result.blobs_per_sec());
                 row.write = Some(result);

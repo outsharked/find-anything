@@ -408,18 +408,23 @@ pub fn fetch_duplicates_for_file_ids(
 ) -> Result<HashMap<i64, Vec<String>>> {
     let mut map: HashMap<i64, Vec<String>> = HashMap::new();
     if file_ids.is_empty() { return Ok(map); }
-    let mut stmt = conn.prepare(
-        "SELECT f2.path
+
+    let mut p = ParamBinder::new();
+    let id_phs = file_ids.iter().map(|&id| p.push(id)).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT d1.file_id, f2.path
          FROM duplicates d1
          JOIN duplicates d2 ON d2.content_hash = d1.content_hash AND d2.file_id != d1.file_id
          JOIN files f2 ON f2.id = d2.file_id
-         WHERE d1.file_id = ?1
-         ORDER BY f2.path",
-    )?;
-    for &fid in file_ids {
-        let paths: Vec<String> = stmt.query_map(params![fid], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        if !paths.is_empty() { map.insert(fid, paths); }
+         WHERE d1.file_id IN ({id_phs})
+         ORDER BY d1.file_id, f2.path"
+    );
+    let refs = p.as_refs();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(refs.as_slice(), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (fid, path) = row?;
+        map.entry(fid).or_default().push(path);
     }
     Ok(map)
 }
@@ -427,7 +432,6 @@ pub fn fetch_duplicates_for_file_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::archive::ArchiveManager;
     use crate::db::encode_fts_rowid;
     use rusqlite::Connection;
 
@@ -463,12 +467,6 @@ mod tests {
         }
 
         file_id
-    }
-
-    fn dummy_mgr() -> (tempfile::TempDir, ArchiveManager) {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = ArchiveManager::new_for_reading(dir.path().to_path_buf());
-        (dir, mgr)
     }
 
     // ── fts_candidates SQL tests ─────────────────────────────────────────────

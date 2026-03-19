@@ -304,20 +304,24 @@ impl ContentStore for SqliteContentStore {
 
     fn compact(&self, live_keys: &HashSet<ContentKey>, dry_run: bool) -> Result<CompactResult> {
         let conn = self.write_conn.lock().map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
+        let live: Vec<&str> = live_keys.iter().map(|k| k.as_str()).collect();
+
+        if dry_run {
+            let orphaned_bytes = db::orphaned_data_bytes(&conn, &live)?;
+            return Ok(CompactResult {
+                units_scanned: 1,
+                units_rewritten: 0,
+                units_deleted: 0,
+                chunks_removed: 0,
+                bytes_freed: orphaned_bytes,
+            });
+        }
 
         let before_rows = db::row_count(&conn)?;
         let before_bytes = db::db_size_bytes(&self.data_dir);
 
-        let deleted_rows = if dry_run {
-            0
-        } else {
-            let live: Vec<&str> = live_keys.iter().map(|k| k.as_str()).collect();
-            db::delete_orphan_blobs(&conn, &live)?
-        };
-
-        if !dry_run {
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
-        }
+        let deleted_rows = db::delete_orphan_blobs(&conn, &live)?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
 
         let after_rows = db::row_count(&conn)?;
         let after_bytes = db::db_size_bytes(&self.data_dir);

@@ -139,7 +139,7 @@ pub fn build_index_files(
 pub fn build_member_index_files(
     outer_path: &str,
     mtime: i64,
-    _size: i64,
+    member_size: Option<u64>,
     member_lines: Vec<IndexLine>,
     content_hash: Option<String>,
 ) -> Vec<IndexFile> {
@@ -191,7 +191,7 @@ pub fn build_member_index_files(
         result.push(IndexFile {
             path: composite_path,
             mtime,
-            size: None, // Individual member sizes are unknown; outer archive size is counted separately
+            size: member_size.map(|s| s as i64),
             kind: member_kind,
             lines,
             extract_ms: None,
@@ -303,7 +303,6 @@ mod tests {
         let report = files.iter().find(|f| f.path == "data.zip::report.txt").unwrap();
         assert_eq!(report.kind, FileKind::Text);
         assert_eq!(report.mtime, 10);
-        assert_eq!(report.size, None); // archive member sizes are not available
         // archive_path stripped from member lines.
         assert!(report.lines.iter().all(|l| l.archive_path.is_none()));
         // Path line present.
@@ -372,6 +371,25 @@ mod tests {
         let bytes = super::index_file_bytes(&files[0]);
         // Only the path line: len("[PATH] empty.txt") = 16.
         assert_eq!(bytes, 16);
+    }
+
+    // ── build_member_index_files ───────────────────────────────────────────
+
+    #[test]
+    fn member_size_propagates_to_index_file() {
+        let lines = vec![line(Some("notes.txt"), LINE_CONTENT_START, "hello")];
+        let files = build_member_index_files("data.zip", 1000, Some(4096), lines, None);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "data.zip::notes.txt");
+        assert_eq!(files[0].size, Some(4096));
+    }
+
+    #[test]
+    fn member_size_none_when_not_available() {
+        let lines = vec![line(Some("notes.txt"), LINE_CONTENT_START, "hello")];
+        let files = build_member_index_files("data.zip", 1000, None, lines, None);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].size, None);
     }
 
     #[test]

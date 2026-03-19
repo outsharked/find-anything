@@ -3,21 +3,13 @@
 //! Every `ContentStore` implementation must pass this full suite.  The
 //! `contract_tests!` macro stamps out a `mod` for each concrete type so each
 //! case appears in test output as e.g.
-//!   `contract::zip_store::get_lines_roundtrip`
 //!   `contract::sqlite_store::get_lines_roundtrip`
 
 use std::collections::HashSet;
-use find_content_store::{ContentKey, ContentStore, SqliteContentStore, ZipContentStore};
+use find_content_store::{ContentKey, ContentStore, SqliteContentStore};
 use tempfile::TempDir;
 
 // ── Per-store setup helpers ───────────────────────────────────────────────────
-
-fn make_zip_store() -> (ZipContentStore, TempDir) {
-    let dir = TempDir::new().unwrap();
-    std::fs::create_dir_all(dir.path().join("sources").join("content")).unwrap();
-    let store = ZipContentStore::open(dir.path()).unwrap();
-    (store, dir)
-}
 
 fn make_sqlite_store() -> (SqliteContentStore, TempDir) {
     let dir = TempDir::new().unwrap();
@@ -196,6 +188,5 @@ macro_rules! contract_tests {
     };
 }
 
-contract_tests!(zip_store,              make_zip_store());
 contract_tests!(sqlite_store,           make_sqlite_store());
 contract_tests!(sqlite_store_compressed, make_sqlite_store_compressed());

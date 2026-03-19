@@ -9,7 +9,21 @@ use axum::{
 };
 use serde::Deserialize;
 use tokio::fs::File;
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use tokio_util::io::ReaderStream;
+
+/// Parse an HTTP `Range: bytes=<start>-[end]` header value.
+/// Only single-range requests are supported; multi-range is not.
+/// Returns `(start, end)` where `end` is `None` for open-ended ranges.
+fn parse_byte_range(range: &str) -> Option<(u64, Option<u64>)> {
+    let s = range.strip_prefix("bytes=")?;
+    // Reject multi-range (contains comma).
+    if s.contains(',') { return None; }
+    let (start_str, end_str) = s.split_once('-')?;
+    let start: u64 = start_str.trim().parse().ok()?;
+    let end: Option<u64> = if end_str.trim().is_empty() { None } else { end_str.trim().parse().ok() };
+    Some((start, end))
+}
 
 use find_common::path::split_composite;
 
@@ -200,22 +214,64 @@ pub async fn get_raw(
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
 
-    // Default: stream the file as-is.
-    let file = match File::open(&canonical_full).await {
-        Ok(f) => f,
+    // Default: stream the file, with byte-range support for audio/video seeking.
+    let file_size = match tokio::fs::metadata(&canonical_full).await {
+        Ok(m) => m.len(),
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
 
     let mime = mime_guess::from_path(&canonical_full).first_or_octet_stream();
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, mime.essence_str())
-        .header(header::CONTENT_DISPOSITION, disposition)
-        .body(body)
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    // Parse Range header if present.
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_byte_range);
+
+    if let Some((start, end_opt)) = range {
+        let end = end_opt.unwrap_or(file_size.saturating_sub(1)).min(file_size.saturating_sub(1));
+        if start > end || start >= file_size {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{file_size}"))],
+            )
+                .into_response();
+        }
+        let length = end - start + 1;
+        let mut file = match File::open(&canonical_full).await {
+            Ok(f) => f,
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        };
+        if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        let stream = ReaderStream::new(file.take(length));
+        let body = Body::from_stream(stream);
+        Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_TYPE, mime.essence_str())
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{file_size}"))
+            .header(header::CONTENT_LENGTH, length.to_string())
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_DISPOSITION, disposition)
+            .body(body)
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    } else {
+        let file = match File::open(&canonical_full).await {
+            Ok(f) => f,
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        };
+        let stream = ReaderStream::new(file);
+        let body = Body::from_stream(stream);
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, mime.essence_str())
+            .header(header::CONTENT_LENGTH, file_size.to_string())
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_DISPOSITION, disposition)
+            .body(body)
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    }
 }
 
 /// Serve a member from a ZIP archive at `outer_path` within the source root.
@@ -383,9 +439,12 @@ async fn serve_archive_member(
         }
 
         let mime = mime_guess::from_path(&leaf_name).first_or_octet_stream();
+        let content_length = bytes.len();
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime.essence_str())
+            .header(header::CONTENT_LENGTH, content_length.to_string())
+            .header(header::ACCEPT_RANGES, "none")
             .header(header::CONTENT_DISPOSITION, format!("inline; filename=\"{filename}\""))
             .body(Body::from(bytes))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())

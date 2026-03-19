@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { createEventDispatcher } from 'svelte';
+	import { parseMetaTags } from '$lib/metaTags';
 
 	/** URL of the image (or converted PNG for unsupported formats). */
 	export let src: string;
@@ -59,7 +60,12 @@
 					</div>
 				{/each}
 				{#each metaLines as meta}
-					<div class="meta-row">{meta.content}</div>
+					{#each parseMetaTags(meta.content) as tag}
+						<div class="meta-row">
+							<span class="tag-label">[{tag.label}]</span>
+							<span class="tag-value">{tag.value}</span>
+						</div>
+					{/each}
 				{/each}
 			{:else}
 				<div class="no-content">No metadata available.</div>
@@ -164,6 +170,18 @@
 	.meta-row {
 		padding: 2px 0;
 		line-height: 1.6;
+		display: flex;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+
+	.tag-label {
+		color: var(--text-dim);
+		flex-shrink: 0;
+	}
+
+	.tag-value {
+		color: var(--text-muted);
 	}
 
 	.duplicate-row {

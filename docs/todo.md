@@ -4,11 +4,15 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
-[ ] Allow playing audio files
+[ ] Allow non-zip archive members to be streamable, if they are below a configrable threshold in size
+[ ] Regular download button should be available in archives too
+[ ] Frontent factoring: stuff like     "showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal); " -- logic should be centralized
+[ ] Write logs ferom extractors as structured json, optionally, for tool use error reporting: "As for why the member path isn't shown: the relay attaches file=Blog.zip because that's all the client knows at that point — the archive extractor subprocess's entire stderr is collected and relayed as a batch with the outer file as context. Symphonia fires inside that subprocess against a temp file, with no way to surface which archive member it was probing. There's no good fix  
+  for that without restructuring how the archive extractor emits its logs (e.g. writing structured JSON stderr instead of plain text)." (Symphonia errors don't show full path to file in client scanner)
 [ ] Evaluate scoring algorithm: recent dates score higher; but if we use a better strategy for storing content, then 
 use the content
 [ ] BUG find-admin inbox-pause should also pause archiving. And it doesn't log except the API
-[ ] FEAT format tiomes as 4m22s
+[ ] FEAT format times as 4m22s
 [ ] archive/unfiled/OpenMULE-Win32.zip::resources/action.wav shows a duplicate. But when you click on it, it doesn't have a dup link back to the original.
 [ ] Add image zoom/pan controls to normal detail view
 [ ] BUG: back arrow browser navigation doesn't work at all
@@ -47,6 +51,7 @@ use the content
 
 ### Completed Items
 
+[x] Allow playing audio files
 [x] FEAT: Use human readable numbers Mar 17 15:01:26 findanything find-server[312010]:  INFO compaction scan: 2553268401/4119151881 bytes orphaned (62.0%) in 632.3s
 [x] BUG: Is RAR content indexed? Do we compute hashes of all files? For example 1992-04-05 - The Fox Theatre - Boulder, CO part 1 - Copy.rar::I 01 Llama.mp3 is a duplicate of 1992-04-05 - The Fox Theatre - Boulder, CO part 1 - Copy (2).rar::I 01 Llama.mp3 but not marked as so
 [x] CHORE: Analysis of testing gaps

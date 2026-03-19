@@ -1,7 +1,11 @@
 mod helpers;
 use helpers::{make_text_bulk, TestServer};
 
-use find_common::api::{FileKind, FileResponse, SearchResponse, SourceInfo, StatsResponse, TreeResponse};
+use find_common::api::{
+    BulkRequest, DirEntry, FileKind, FileResponse, IndexFile, IndexLine, SearchResponse,
+    SourceInfo, StatsResponse, TreeResponse, SCANNER_VERSION, LINE_PATH, LINE_METADATA,
+    LINE_CONTENT_START,
+};
 
 #[tokio::test]
 async fn test_bulk_index_then_search() {
@@ -195,4 +199,93 @@ async fn test_sources_list_after_indexing() {
         sources.iter().any(|s| s.name == "my-unique-source"),
         "expected my-unique-source in sources list"
     );
+}
+
+/// Build a BulkRequest that submits an archive member with a known size.
+/// The outer archive file and one member are both included so the server can
+/// navigate to the member via the tree endpoint.
+fn make_archive_member_bulk(source: &str, archive_path: &str, member_name: &str, member_size: i64) -> BulkRequest {
+    let composite = format!("{archive_path}::{member_name}");
+
+    let outer = IndexFile {
+        path: archive_path.to_string(),
+        mtime: 1_700_000_000,
+        size: Some(9999),
+        kind: FileKind::Archive,
+        lines: vec![
+            IndexLine { archive_path: None, line_number: LINE_PATH, content: format!("[PATH] {archive_path}") },
+            IndexLine { archive_path: None, line_number: LINE_METADATA, content: String::new() },
+        ],
+        extract_ms: None,
+        content_hash: None,
+        scanner_version: SCANNER_VERSION,
+        is_new: true,
+    };
+
+    let member = IndexFile {
+        path: composite.clone(),
+        mtime: 1_700_000_000,
+        size: Some(member_size),
+        kind: FileKind::Text,
+        lines: vec![
+            IndexLine { archive_path: None, line_number: LINE_PATH, content: format!("[PATH] {composite}") },
+            IndexLine { archive_path: None, line_number: LINE_METADATA, content: String::new() },
+            IndexLine { archive_path: None, line_number: LINE_CONTENT_START, content: "hello from member".to_string() },
+        ],
+        extract_ms: None,
+        content_hash: None,
+        scanner_version: SCANNER_VERSION,
+        is_new: true,
+    };
+
+    BulkRequest {
+        source: source.to_string(),
+        files: vec![outer, member],
+        delete_paths: vec![],
+        scan_timestamp: Some(1_700_000_000),
+        indexing_failures: vec![],
+        rename_paths: vec![],
+    }
+}
+
+#[tokio::test]
+async fn test_archive_member_size_stored_and_retrieved_via_file_endpoint() {
+    let srv = TestServer::spawn().await;
+    let req = make_archive_member_bulk("docs", "pkg.zip", "readme.txt", 4096);
+    srv.post_bulk(&req).await;
+    srv.wait_for_idle().await;
+
+    let resp: FileResponse = srv
+        .client
+        .get(srv.url("/api/v1/file?source=docs&path=pkg.zip::readme.txt"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.size, Some(4096), "archive member size should be stored and returned");
+}
+
+#[tokio::test]
+async fn test_archive_member_size_stored_and_retrieved_via_tree_endpoint() {
+    let srv = TestServer::spawn().await;
+    let req = make_archive_member_bulk("docs", "bundle.zip", "data.txt", 8192);
+    srv.post_bulk(&req).await;
+    srv.wait_for_idle().await;
+
+    let resp: TreeResponse = srv
+        .client
+        .get(srv.url("/api/v1/tree?source=docs&prefix=bundle.zip::"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let entry: &DirEntry = resp.entries.iter().find(|e| e.name == "data.txt")
+        .expect("data.txt not found in tree listing");
+    assert_eq!(entry.size, Some(8192), "archive member size should be visible in tree listing");
 }

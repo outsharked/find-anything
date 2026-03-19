@@ -73,7 +73,8 @@ pub fn open(db_path: &Path) -> Result<Connection> {
 
     // Idempotent index additions — safe to run on existing databases at any version.
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);"
+        "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+         CREATE INDEX IF NOT EXISTS idx_duplicates_file_id ON duplicates(file_id);"
     ).context("creating indexes")?;
 
     Ok(conn)

@@ -1,4 +1,3 @@
-pub(crate) mod archive;
 pub(crate) mod compaction;
 pub(crate) mod db;
 pub(crate) mod fuzzy;
@@ -25,7 +24,6 @@ use tower_http::trace::TraceLayer;
 
 use find_common::api::{RecentFile, WorkerStatus};
 use find_common::config::ServerAppConfig;
-use archive::SharedArchiveState;
 use find_content_store::{ContentStore, MultiContentStore, open_backend};
 
 // ── Embedded web UI ────────────────────────────────────────────────────────────
@@ -80,10 +78,7 @@ pub struct AppState {
     pub config: ServerAppConfig,
     pub data_dir: PathBuf,
     pub worker_status: Arc<std::sync::Mutex<WorkerStatus>>,
-    /// New content store — the single source of truth for ZIP archive I/O.
     pub content_store: Arc<dyn ContentStore>,
-    /// Kept for the archive worker transition; removed in step 15.
-    pub archive_state: Arc<SharedArchiveState>,
     pub inbox_paused: Arc<AtomicBool>,
     pub compaction_stats: Arc<std::sync::RwLock<Option<compaction::CompactionStats>>>,
     pub source_stats_cache: Arc<std::sync::RwLock<stats_cache::SourceStatsCache>>,
@@ -137,8 +132,6 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
     let under_systemd = std::env::var("INVOCATION_ID").is_ok();
     let worker_status = Arc::new(std::sync::Mutex::new(WorkerStatus::Idle));
     let inbox_paused = Arc::new(AtomicBool::new(false));
-    let archive_state = SharedArchiveState::new(data_dir.clone())
-        .context("initialising archive state")?;
     let content_store: Arc<dyn ContentStore> = open_content_store(&config, &data_dir)
         .context("opening content store")?;
     let initial_compaction_stats = compaction::load_cached_stats(&data_dir);
@@ -158,7 +151,6 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         data_dir: data_dir.clone(),
         worker_status: Arc::clone(&worker_status),
         content_store: Arc::clone(&content_store),
-        archive_state: Arc::clone(&archive_state),
         inbox_paused: Arc::clone(&inbox_paused),
         compaction_stats: Arc::clone(&compaction_stats),
         source_stats_cache: Arc::clone(&source_stats_cache),
@@ -184,7 +176,6 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
     };
     let worker_handles = worker::WorkerHandles {
         status: worker_status,
-        archive_state,
         content_store: Arc::clone(&content_store),
         inbox_paused,
         recent_tx: state.recent_tx.clone(),

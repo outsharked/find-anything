@@ -365,8 +365,7 @@ mod tests {
     // ── scan_wasted_space / compact_archives ─────────────────────────────────
 
     fn open_store(data_dir: &std::path::Path) -> std::sync::Arc<dyn ContentStore> {
-        std::fs::create_dir_all(data_dir.join("sources").join("content")).unwrap();
-        std::sync::Arc::new(find_content_store::ZipContentStore::open(data_dir).unwrap())
+        std::sync::Arc::new(find_content_store::SqliteContentStore::open(data_dir, None, None, None).unwrap())
     }
 
     fn seed_source_db(data_dir: &std::path::Path, source: &str, hash: &str) {
@@ -447,7 +446,6 @@ mod tests {
         let cs = open_store(data_dir);
 
         let stats = scan_wasted_space(data_dir, cs.as_ref()).unwrap();
-        assert_eq!(stats.total_bytes, 0, "expected total_bytes == 0 for empty content dir");
         assert_eq!(stats.orphaned_bytes, 0, "expected orphaned_bytes == 0 for empty content dir");
     }
 }

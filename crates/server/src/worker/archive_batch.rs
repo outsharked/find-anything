@@ -210,16 +210,16 @@ mod tests {
 
     use find_common::api::{BulkRequest, FileKind, IndexFile, IndexLine};
     use find_common::config::NormalizationSettings;
-    use find_content_store::{ContentKey, ContentStore, ZipContentStore};
+    use find_content_store::{ContentKey, ContentStore, SqliteContentStore};
 
     use crate::db::encode_fts_rowid;
 
-    fn setup_data_dir(data_dir: &Path) {
-        std::fs::create_dir_all(data_dir.join("sources").join("content")).unwrap();
+    fn setup_data_dir(_data_dir: &Path) {
+        // No extra setup needed for SqliteContentStore.
     }
 
     fn open_content_store(data_dir: &Path) -> Arc<dyn ContentStore> {
-        Arc::new(ZipContentStore::open(data_dir).unwrap())
+        Arc::new(SqliteContentStore::open(data_dir, None, None, None).unwrap())
     }
 
     fn write_bulk_gz(path: &Path, req: &BulkRequest) {

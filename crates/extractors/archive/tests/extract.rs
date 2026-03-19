@@ -363,6 +363,64 @@ fn solid_7z_block_content_extracted() {
     }
 }
 
+/// Every content batch from the solid 7z must carry a non-None, non-zero size.
+#[test]
+fn solid_7z_members_have_size() {
+    let mut batches: Vec<MemberBatch> = Vec::new();
+    extract_streaming(&solid_block_7z(), &default_cfg(), &mut |b| batches.push(b)).unwrap();
+
+    for batch in &batches {
+        if batch.skip_reason.is_some() || batch.lines.is_empty() { continue; }
+        assert!(
+            batch.size.is_some(),
+            "7z batch has no size: archive_paths={:?}",
+            batch.lines.iter().filter_map(|l| l.archive_path.as_deref()).collect::<Vec<_>>()
+        );
+        assert!(
+            batch.size.unwrap() > 0,
+            "7z batch has zero size: archive_paths={:?}",
+            batch.lines.iter().filter_map(|l| l.archive_path.as_deref()).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Every content batch from a ZIP (including recursively extracted inner archives)
+/// must carry a non-None, non-zero size for all non-directory, non-skip batches.
+#[test]
+fn zip_and_inner_archive_members_have_size() {
+    let mut batches: Vec<MemberBatch> = Vec::new();
+    extract_streaming(&fixtures_zip(), &default_cfg(), &mut |b| batches.push(b)).unwrap();
+
+    for batch in &batches {
+        if batch.skip_reason.is_some() || batch.lines.is_empty() { continue; }
+        assert!(
+            batch.size.is_some(),
+            "batch has no size: archive_paths={:?}",
+            batch.lines.iter().filter_map(|l| l.archive_path.as_deref()).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// TAR members extracted directly must carry non-None sizes.
+#[test]
+fn tgz_members_have_size() {
+    let mut batches: Vec<MemberBatch> = Vec::new();
+    extract_streaming(&fixtures_tgz(), &default_cfg(), &mut |b| batches.push(b)).unwrap();
+
+    let content_batches: Vec<_> = batches.iter()
+        .filter(|b| b.skip_reason.is_none() && !b.lines.is_empty())
+        .collect();
+
+    assert!(!content_batches.is_empty(), "no content batches from fixtures.tgz");
+    for batch in content_batches {
+        assert!(
+            batch.size.is_some(),
+            "tgz batch has no size: archive_paths={:?}",
+            batch.lines.iter().filter_map(|l| l.archive_path.as_deref()).collect::<Vec<_>>()
+        );
+    }
+}
+
 /// The skip_reason field must be absent for successfully extracted members.
 #[test]
 fn solid_7z_block_no_skip_reason() {

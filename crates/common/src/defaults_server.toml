@@ -23,17 +23,17 @@ activity_log_max_entries = 10000
 # ── Search ───────────────────────────────────────────────────────────────────
 
 [search]
-default_limit       = 50
-max_limit           = 500
+default_limit = 50
+max_limit = 500
 fts_candidate_limit = 2000
-context_window      = 1
+context_window = 1
 
 # ── Extraction ───────────────────────────────────────────────────────────────
 
 [extraction]
 max_content_size_mb = 10
-max_line_length     = 120
-max_archive_depth   = 10
+max_line_length = 120
+max_archive_depth = 10
 
 # ── Log ──────────────────────────────────────────────────────────────────────
 
