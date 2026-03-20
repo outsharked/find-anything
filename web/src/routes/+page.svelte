@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import { pushState as svelteKitPushState, replaceState as svelteKitReplaceState, afterNavigate } from '$app/navigation';
+	import { pushState as svelteKitPushState, replaceState as svelteKitReplaceState } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { get } from 'svelte/store';
 	import SearchView from '$lib/SearchView.svelte';
@@ -139,8 +139,15 @@
 
 	// ── History ─────────────────────────────────────────────────────────────────
 
+	/** Tracks how many openFileView pushes sit above the current search baseline.
+	 *  Stored in each history entry so forward navigation can restore the correct depth. */
+	let navDepth = 0;
+	/** Set to true while we're programmatically going back through file-view entries
+	 *  on a new search, to suppress the afterNavigate handler during that movement. */
+	let isResettingHistory = false;
+
 	function captureState(): AppState {
-		return { query, mode: toServerMode(scope, matchType), selectedSources, ...expandFileView(fileView) };
+		return { query, mode: toServerMode(scope, matchType), selectedSources, navDepth, ...expandFileView(fileView) };
 	}
 
 	function pushState() {
@@ -177,18 +184,6 @@
 
 	// ── Lifecycle ───────────────────────────────────────────────────────────────
 
-	// Handle browser back/forward through states pushed by pushState() above.
-	// afterNavigate fires after SvelteKit has updated $page.state, so reading
-	// get(page).state here gives the restored AppState. The 'popstate' type
-	// covers both deep history entries (state present) and entries predating our
-	// app (state absent — fall back to URL params).
-	afterNavigate(({ type }) => {
-		if (type !== 'popstate') return;
-		const s = get(page).state as SerializedAppState;
-		if (s?.view) applyState(deserializeState(s));
-		else applyState(restoreFromParams(new URLSearchParams(location.search)));
-	});
-
 	onMount(() => {
 		const stopLive = startLiveUpdates();
 
@@ -216,13 +211,36 @@
 			}
 		}
 
+		// Handle browser back/forward. We use a native popstate listener rather
+		// than SvelteKit's afterNavigate because our search entries are created
+		// with native history.replaceState (bypassing SvelteKit), which causes
+		// afterNavigate to receive stale $page.state and not trigger Svelte updates.
+		// URL params are always the authoritative source of truth; navDepth is the
+		// only extra field, read from history.state for file entries.
+		function handlePopstate() {
+			if (isResettingHistory) return;
+			const params = new URLSearchParams(location.search);
+			const state = restoreFromParams(params);
+			const s = history.state as SerializedAppState;
+			if (params.get('view') === 'file' && s?.navDepth != null) {
+				state.navDepth = s.navDepth;
+			}
+			navDepth = state.navDepth;
+			applyState(state);
+			if (state.view !== 'file') {
+				tick().then(() => { if (mainContent) mainContent.scrollTop = savedScrollTop; });
+			}
+		}
+
 		window.addEventListener('keydown', handleKeydown, { capture: true });
+		window.addEventListener('popstate', handlePopstate);
 		// Scroll events as a secondary trigger: when the window is scrollable
 		// and the user scrolls near the sentinel, load more results.
 		mainContent.addEventListener('scroll', checkScroll, { passive: true });
 		return () => {
 			stopLive();
 			window.removeEventListener('keydown', handleKeydown, { capture: true });
+			window.removeEventListener('popstate', handlePopstate);
 			mainContent.removeEventListener('scroll', checkScroll);
 		};
 	});
@@ -319,7 +337,22 @@
 		noMoreResults = false;
 		loadOffset = 0;
 		if (push) {
-			replaceSearchState();
+			if (navDepth > 0 && !isResettingHistory) {
+				// Go back through all open file-view entries so that pressing back
+				// after the new search doesn't resurface old documents.
+				isResettingHistory = true;
+				const depth = navDepth;
+				navDepth = 0;
+				fileView = null;
+				history.go(-depth);
+				await new Promise<void>((r) => window.addEventListener('popstate', () => r(), { once: true }));
+				isResettingHistory = false;
+				// Push the new search entry on top — this removes the orphaned
+				// file-view entries from the forward history stack.
+				pushState();
+			} else {
+				replaceSearchState();
+			}
 			window.scrollTo(0, 0);
 		}
 		try {
@@ -382,6 +415,7 @@
 	/** Transition to file/directory panel state and push a history entry. */
 	function openFileView(fv: FileViewState) {
 		fileView = fv;
+		navDepth++;
 		pushState();
 	}
 
@@ -427,10 +461,19 @@
 	}
 
 	async function handleBack() {
-		fileView = null;
-		pushState();
-		await tick();
-		if (mainContent) mainContent.scrollTop = savedScrollTop;
+		if (navDepth > 0) {
+			// navDepth is optimistically decremented; afterNavigate will confirm it.
+			navDepth--;
+			history.back();
+			// Scroll restoration is handled in afterNavigate once the state is restored.
+		} else {
+			// Arrived via direct URL (no session history to go back through).
+			fileView = null;
+			const s = captureState();
+			svelteKitReplaceState(buildUrl(s), serializeState(s));
+			await tick();
+			if (mainContent) mainContent.scrollTop = savedScrollTop;
+		}
 	}
 
 	// ── Command palette ──────────────────────────────────────────────────────────

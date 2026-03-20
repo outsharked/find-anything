@@ -26,6 +26,9 @@ export interface AppState {
 	fileSelection: LineSelection;
 	panelMode: PanelMode;
 	currentDirPrefix: string;
+	/** Number of openFileView pushes above the current search baseline.
+	 *  Stored in history so forward/back navigation can restore the correct depth. */
+	navDepth: number;
 }
 
 // Serializable form stored in history.state via SvelteKit's pushState/replaceState.
@@ -93,6 +96,7 @@ export function restoreFromParams(
 		fileSelection: parseHash(location.hash),
 		panelMode: (params.get('panel') ?? 'file') as PanelMode,
 		currentDirPrefix: params.get('dir') ?? '',
+		navDepth: 0,
 		showTree: v === 'file',
 	};
 }

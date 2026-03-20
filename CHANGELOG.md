@@ -36,6 +36,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **PathBar copy buttons** — clicking "Copy share link" no longer also triggers the "Copied" state on the "Copy path" button; `fallbackCopy` now takes a callback instead of hardcoding `showCopied()`
 - **PathBar tooltip positioning** — replaced native `title` attribute (which positioned the tooltip far from the cursor in flex layouts) with a CSS `::after` pseudo-element tooltip that appears above the button, right-aligned to its edge
 
+### Fixed
+
+- **Browser back/forward navigation** — back and forward now correctly update the file viewer and left-nav tree without requiring a page reload; root cause was `afterNavigate` receiving stale `$page.state` from entries created via native `history.replaceState`, preventing Svelte updates; replaced with a native `popstate` listener that always reconstructs state from URL params; the in-app ← button now calls `history.back()` instead of pushing a duplicate history entry; running a new search while viewing files rewinds the file-view history stack so that back goes to the new search, not old documents; `navDepth` tracks the number of file-view entries above the search baseline and is stored in each history entry
+
 ### Added
 
 - **"Open in Explorer" — `findanything://` protocol handler** — new `find-handler` crate implements a binary that receives `findanything://open?path=...` URLs and opens the file location in the OS file manager; Windows uses `explorer.exe /select,"path"` for local drive-letter paths with UNC/virtual-path fallback to parent folder; console flash eliminated via `windows_subsystem = "windows"` and `CREATE_NO_WINDOW`; button shows `cursor: progress` during launch; settings panel adds per-source root path inputs and "Handler installed" checkbox that gates the button; install via PowerShell one-liner (HKCU, no admin); Linux registered via `.desktop` / `xdg-mime`; Inno Setup installer includes `find-handler.exe` and registers `findanything://` in HKCR; release CI publishes `find-handler.exe` and `install-handler.ps1` as standalone assets
