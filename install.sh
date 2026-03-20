@@ -106,7 +106,7 @@ tar -xzf "${TMPDIR}/${TARBALL}" -C "${TMPDIR}"
 mkdir -p "$INSTALL_DIR"
 EXTRACTED_DIR="${TMPDIR}/find-anything-${VERSION}-${PLATFORM}"
 
-BINARIES="find-anything find-scan find-watch find-server find-admin \
+BINARIES="find-anything find-scan find-watch find-server find-admin find-handler \
   find-extract-text find-extract-pdf find-extract-media find-extract-archive \
   find-extract-html find-extract-office find-extract-epub"
 
@@ -115,6 +115,24 @@ for bin in $BINARIES; do
     install -m 755 "${EXTRACTED_DIR}/${bin}" "${INSTALL_DIR}/${bin}"
   fi
 done
+
+# ── Register findanything:// protocol handler (Linux only) ────────────────────
+
+if [ "$OS_NAME" = "linux" ] && [ -f "${INSTALL_DIR}/find-handler" ]; then
+  DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  mkdir -p "$DESKTOP_DIR"
+  cat > "$DESKTOP_DIR/find-handler.desktop" <<EOF
+[Desktop Entry]
+Name=Find Anything Protocol Handler
+Exec=${INSTALL_DIR}/find-handler %u
+Type=Application
+NoDisplay=true
+MimeType=x-scheme-handler/findanything;
+EOF
+  if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default find-handler.desktop x-scheme-handler/findanything
+  fi
+fi
 
 echo ""
 echo "Installed to: ${INSTALL_DIR}"

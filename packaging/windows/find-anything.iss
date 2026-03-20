@@ -51,6 +51,7 @@ Source: "{#BinDir}\find-watch.exe";          DestDir: "{app}"; Flags: ignorevers
 Source: "{#BinDir}\find-admin.exe";          DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\find-server.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\find-tray.exe";           DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinDir}\find-handler.exe";        DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\find-extract-text.exe";     DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\find-extract-dispatch.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\find-extract-pdf.exe";    DestDir: "{app}"; Flags: ignoreversion
@@ -76,6 +77,11 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
 ; Add install dir to user PATH
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
   ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}'))
+
+; Register findanything:// custom URL scheme — dispatches to find-handler.exe
+Root: HKCR; Subkey: "findanything";                       ValueType: string; ValueName: "";           ValueData: "URL:Find Anything Protocol"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "findanything";                       ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCR; Subkey: "findanything\shell\open\command";    ValueType: string; ValueName: "";           ValueData: """{app}\find-handler.exe"" ""%1"""
 
 [Run]
 ; find-watch install and find-tray launch are triggered from CurStepChanged

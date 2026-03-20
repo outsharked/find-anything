@@ -118,6 +118,7 @@ jobs:
             "find-watch"
             "find-server"
             "find-admin"
+            "find-handler"
             "find-extract-text"
             "find-extract-pdf"
             "find-extract-media"
@@ -133,9 +134,13 @@ jobs:
             cp "${BINDIR}/${bin}${EXT}" "dist/${ARTIFACT}/"
           done
 
-          # Windows: also include find-tray.exe; package as zip.
+          # Windows: also include find-tray.exe; publish find-handler.exe and
+          # install-handler.ps1 as standalone release assets; package as zip.
           if [[ "$EXT" == ".exe" ]]; then
             cp "${BINDIR}/find-tray${EXT}" "dist/${ARTIFACT}/" 2>/dev/null || true
+            # Standalone assets for lightweight protocol-handler-only install.
+            cp "${BINDIR}/find-handler${EXT}" "dist/find-handler.exe"
+            cp "packaging/windows/install-handler.ps1" "dist/install-handler.ps1"
             cd dist
             7z a "${ARTIFACT}.zip" "${ARTIFACT}/"
             echo "ARTIFACT_PATH=dist/${ARTIFACT}.zip" >> "$GITHUB_ENV"
@@ -202,4 +207,5 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*.exe
+            dist/*.ps1
           generate_release_notes: true

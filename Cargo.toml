@@ -16,6 +16,7 @@ members = [
     "crates/extractors/dispatch",
     "crates/windows/service",
     "crates/windows/tray",
+    "crates/handler",
 ]
 resolver = "2"
 

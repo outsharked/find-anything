@@ -11,8 +11,10 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] FEAT: Render SVG by default
 [ ] CHORE: address clippy too_many_arguments issues
 [ ] FEAT: Allow non-zip archive members to be streamable, if they are below a configrable threshold in size
-[ ] Frontent factoring: stuff like     "showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal); " -- logic should be centralized. 
+[ ] CHORE: Frontent factoring: stuff like     "showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal); " -- logic should be centralized. 
  - use general purpose functions to return type, not isMarkdown, isRTF etc
+[ ] CHORE: refactor front end to split svg assets out into files, etc
+
 [ ] Evaluate scoring algorithm: recent dates score higher; but if we use a better strategy for storing content, then 
 use the content
 [ ] BUG find-admin inbox-pause should also pause archiving. And it doesn't log except the API
@@ -30,7 +32,6 @@ use the content
 [ ] FEAT: UX to retry failed scans (admin page)
 [ ] BUG: Searching on ".png" doesn't work is that improvable
 [ ] CHORE: Include **/AppData/**, **/bin/**, **/obj/**, **/\*.log by default, "**/pnpm/\*\*", vscode-remote-wsl
-[ ] CHORE: refactor front end to split svg assets out into files, etc
 [ ] CHORE: Server install should also be able to chain client install
 [ ] CHORE: Code quality: avoid optional typescript parameters; default values should be set at as high a level as possible and propagated conclusively. Add to claude.md
 [ ] FEAT: Custom protocol handler (chrome) to allow exploring the file location. Requires client config for roots.

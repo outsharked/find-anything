@@ -1491,6 +1491,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "find-handler"
+version = "0.6.2"
+dependencies = [
+ "url",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

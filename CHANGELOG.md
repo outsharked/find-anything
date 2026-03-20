@@ -38,6 +38,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **"Open in Explorer" — `findanything://` protocol handler** — new `find-handler` crate implements a binary that receives `findanything://open?path=...` URLs and opens the file location in the OS file manager; Windows uses `explorer.exe /select,"path"` for local drive-letter paths with UNC/virtual-path fallback to parent folder; console flash eliminated via `windows_subsystem = "windows"` and `CREATE_NO_WINDOW`; button shows `cursor: progress` during launch; settings panel adds per-source root path inputs and "Handler installed" checkbox that gates the button; install via PowerShell one-liner (HKCU, no admin); Linux registered via `.desktop` / `xdg-mime`; Inno Setup installer includes `find-handler.exe` and registers `findanything://` in HKCR; release CI publishes `find-handler.exe` and `install-handler.ps1` as standalone assets
+
 - **RTF viewer** — `.rtf` files now have a "Formatted / Plain" toggle in the toolbar; when formatted mode is on, the raw bytes are fetched and rendered client-side via `rtf.js` (dynamically imported — only downloaded when first used); rendered DOM elements are serialised to HTML and displayed through the existing `MarkdownViewer` prose styles; handles Windows code-page encoding correctly; falls back to "RTF rendering failed" on error
 
 - **Test coverage improvement (plans 084–085)** — extensive unit and integration tests across the codebase, raising line coverage from ~65% toward ~78%:

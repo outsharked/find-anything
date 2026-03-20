@@ -12,6 +12,7 @@
 	import PdfViewer from './PdfViewer.svelte';
 	import VideoViewer from './VideoViewer.svelte';
 	import { parseMetaTags } from '$lib/metaTags';
+	import { buildExplorerUrl } from '$lib/explorerUrl';
 	import FileStatusBanner from './FileStatusBanner.svelte';
 	import {
 		type LineSelection,
@@ -187,6 +188,25 @@
 
 	function toggleRtfFormat() {
 		$profile.rtfFormat = !rtfFormat;
+	}
+
+	// "Open in Explorer" — visible when a source root is configured for this source.
+	// For archive members we use the outer file path (Explorer can select the archive
+	// but cannot navigate into a virtual member path).
+	$: canOpenInExplorer = !!($profile.sourceRoots?.[source]?.trim()) && !!$profile.handlerInstalled;
+
+	let explorerLaunching = false;
+
+	function openInExplorer() {
+		const root = ($profile.sourceRoots ?? {})[source] ?? '';
+		if (!root) return;
+		const a = document.createElement('a');
+		a.href = buildExplorerUrl(root, path);
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		explorerLaunching = true;
+		setTimeout(() => (explorerLaunching = false), 3000);
 	}
 
 	// True when the markdown content exceeds the server-configured size cap.
@@ -538,6 +558,9 @@
 				<button class="toolbar-btn" on:click={() => triggerDownload(rawUrl, fileName)}>
 					{isArchiveMember || fileKind === 'archive' ? 'Download Archive' : 'Download'}
 				</button>
+			{/if}
+			{#if canOpenInExplorer}
+				<button class="toolbar-btn" style={explorerLaunching ? 'cursor: progress' : ''} on:click={openInExplorer}>Open in Explorer</button>
 			{/if}
 			<div class="metadata">
 				{#if fileKind && fileKind !== 'raw'}
