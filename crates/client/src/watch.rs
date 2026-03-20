@@ -29,11 +29,11 @@ pub struct WatchOptions {
 }
 
 /// One configured source as used by the watcher.
-#[allow(dead_code)] // root_str is stored but only used in construction
-struct WatchSource {
+pub(crate) struct WatchSource {
     root:        PathBuf,
     source_name: String,
     /// Normalised root path as a `String` (forward-slash separators).
+    #[allow(dead_code)] // stored but only used during construction
     root_str:    String,
     /// Compiled include glob patterns (empty = include everything).
     includes:    GlobSet,
@@ -100,7 +100,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
     let batch_limit  = config.scan.batch_size;
 
     // Channel: notify (blocking thread) → tokio event loop.
-    let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(1000);
+    let (tx, rx) = mpsc::channel::<notify::Result<Event>>(1000);
 
     let mut watcher = RecommendedWatcher::new(
         move |res| {
@@ -119,6 +119,36 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
         info!("watching {:?} ({n} directories registered)", src.root);
     }
 
+    let scan = config.scan.clone();
+    let extractor_dir = config.watch.extractor_dir.clone();
+    let mut register_dir = |path: &Path| {
+        watch_tree(&mut watcher, path, None, &global_excludes, &scan);
+    };
+
+    run_event_loop(rx, &api, &source_map, batch_window, batch_limit, &scan, &extractor_dir, &mut register_dir).await
+}
+
+/// The inner event-processing loop, separated from watcher setup so it can be
+/// driven by synthetic events in tests.
+///
+/// Reads from `rx` until the channel is closed, accumulating filesystem events
+/// into debounce windows and flushing batches to the server via `api`.
+/// `register_dir` is called when a new directory is created; in production it
+/// registers an inotify watch; in tests it is a no-op.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_event_loop<F>(
+    mut rx: mpsc::Receiver<notify::Result<Event>>,
+    api: &ApiClient,
+    source_map: &SourceMap,
+    batch_window: Duration,
+    batch_limit: usize,
+    scan: &ScanConfig,
+    extractor_dir: &Option<String>,
+    register_dir: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&Path),
+{
     // Accumulator: path → what to do.
     let mut pending: HashMap<PathBuf, AccumulatedKind> = HashMap::new();
     // Paths whose very first event in this window was a Create (i.e. never previously indexed).
@@ -178,7 +208,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
         let fresh_creates = std::mem::take(&mut first_seen_creates);
 
         // Detect rename pairs and process them; removes paired entries from batch.
-        process_renames(&mut batch, &source_map, &config.scan, &config.watch.extractor_dir, &api, &fresh_creates).await;
+        process_renames(&mut batch, source_map, scan, extractor_dir, api, &fresh_creates).await;
 
         for (abs_path, kind) in batch {
             // Skip paths that contain '::' — those are archive member paths
@@ -190,7 +220,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
 
             // Find which source this file belongs to (also returns the source root).
             let Some((source_name, rel_path, source_root, source_includes)) =
-                find_source(&abs_path, &source_map)
+                find_source(&abs_path, source_map)
             else {
                 continue;
             };
@@ -203,7 +233,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
 
             // Resolve per-directory effective config: check for .noindex and .index files
             // on the ancestor chain. No caching is needed for watch (events are infrequent).
-            let (eff_scan, skip) = resolve_watch_config(&abs_path, &source_root, &config.scan);
+            let (eff_scan, skip) = resolve_watch_config(&abs_path, &source_root, scan);
             if skip {
                 tracing::debug!("skipping {} (in .noindex subtree)", abs_path.display());
                 continue;
@@ -234,7 +264,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
                     continue;
                 }
             };
-            if is_excluded(&abs_path, &source_map, &eff_excludes) {
+            if is_excluded(&abs_path, source_map, &eff_excludes) {
                 continue;
             }
 
@@ -245,7 +275,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
                     // Pass None for terminals: the dir is already inside the included
                     // area (we got an event for it), so no further path pruning is needed.
                     if abs_path.is_dir() {
-                        watch_tree(&mut watcher, &abs_path, None, &global_excludes, &config.scan);
+                        register_dir(&abs_path);
                         continue;
                     }
                     // Only process if it exists and is a regular file.
@@ -254,12 +284,12 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
                     }
                     let is_new = matches!(kind, AccumulatedKind::Create);
                     if let Err(e) = handle_update(
-                        &api,
+                        api,
                         &source_name,
                         &abs_path,
                         &rel_path,
                         &eff_scan,
-                        &config.watch.extractor_dir,
+                        extractor_dir,
                         is_new,
                     )
                     .await
@@ -268,7 +298,7 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
                     }
                 }
                 AccumulatedKind::Delete => {
-                    if let Err(e) = handle_delete(&api, &source_name, &rel_path).await {
+                    if let Err(e) = handle_delete(api, &source_name, &rel_path).await {
                         warn!("delete {}: {e:#}", abs_path.display());
                     }
                 }
@@ -1080,5 +1110,133 @@ mod tests {
         k = collapse(&k, &c());
         k = collapse(&k, &u());
         assert_eq!(k, c());
+    }
+
+    // ── accumulate ────────────────────────────────────────────────────────────
+
+    fn make_event(kind: notify::EventKind, path: &str) -> notify::Result<notify::Event> {
+        Ok(notify::Event {
+            kind,
+            paths: vec![PathBuf::from(path)],
+            attrs: Default::default(),
+        })
+    }
+
+    #[test]
+    fn accumulate_create_event() {
+        let mut pending = HashMap::new();
+        let mut first_seen = HashSet::new();
+        let path = PathBuf::from("/tmp/foo.txt");
+        accumulate(&mut pending, &mut first_seen,
+            make_event(notify::EventKind::Create(notify::event::CreateKind::Any), "/tmp/foo.txt"));
+        assert_eq!(pending.get(&path), Some(&AccumulatedKind::Create));
+        assert!(first_seen.contains(&path), "first create should be tracked in first_seen_creates");
+    }
+
+    #[test]
+    fn accumulate_update_event() {
+        let mut pending = HashMap::new();
+        let mut first_seen = HashSet::new();
+        let path = PathBuf::from("/tmp/bar.txt");
+        accumulate(&mut pending, &mut first_seen,
+            make_event(
+                notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Any)),
+                "/tmp/bar.txt",
+            ));
+        assert_eq!(pending.get(&path), Some(&AccumulatedKind::Update));
+        assert!(!first_seen.contains(&path), "update should not be recorded in first_seen_creates");
+    }
+
+    #[test]
+    fn accumulate_remove_event() {
+        let mut pending = HashMap::new();
+        let mut first_seen = HashSet::new();
+        let path = PathBuf::from("/tmp/baz.txt");
+        accumulate(&mut pending, &mut first_seen,
+            make_event(notify::EventKind::Remove(notify::event::RemoveKind::Any), "/tmp/baz.txt"));
+        assert_eq!(pending.get(&path), Some(&AccumulatedKind::Delete));
+    }
+
+    #[test]
+    fn accumulate_error_event_is_ignored() {
+        let mut pending = HashMap::new();
+        let mut first_seen = HashSet::new();
+        let err = Err(notify::Error { kind: notify::ErrorKind::Generic("oops".into()), paths: vec![] });
+        accumulate(&mut pending, &mut first_seen, err);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn accumulate_create_then_delete_collapses_to_delete() {
+        let mut pending = HashMap::new();
+        let mut first_seen = HashSet::new();
+        let p = "/tmp/ephemeral.txt";
+        accumulate(&mut pending, &mut first_seen,
+            make_event(notify::EventKind::Create(notify::event::CreateKind::Any), p));
+        accumulate(&mut pending, &mut first_seen,
+            make_event(notify::EventKind::Remove(notify::event::RemoveKind::Any), p));
+        assert_eq!(pending.get(&PathBuf::from(p)), Some(&AccumulatedKind::Delete));
+    }
+
+    // ── find_source ───────────────────────────────────────────────────────────
+
+    fn make_source_map_raw(roots: &[(&str, &str)]) -> SourceMap {
+        roots.iter().map(|(name, path)| WatchSource {
+            root:        PathBuf::from(path),
+            source_name: name.to_string(),
+            root_str:    path.to_string(),
+            includes:    build_globset(&[]).unwrap_or_default(),
+            terminals:   None,
+        }).collect()
+    }
+
+    #[test]
+    fn find_source_returns_most_specific_root() {
+        let map = make_source_map_raw(&[
+            ("general",  "/data"),
+            ("specific", "/data/projects"),
+        ]);
+        let path = PathBuf::from("/data/projects/foo.txt");
+        let (name, rel, _, _) = find_source(&path, &map).expect("should match");
+        assert_eq!(name, "specific");
+        assert_eq!(rel, "foo.txt");
+    }
+
+    #[test]
+    fn find_source_returns_none_for_unknown_path() {
+        let map = make_source_map_raw(&[("src", "/data")]);
+        assert!(find_source(&PathBuf::from("/other/foo.txt"), &map).is_none());
+    }
+
+    #[test]
+    fn find_source_rel_path_uses_forward_slashes() {
+        let map = make_source_map_raw(&[("src", "/data")]);
+        let path = PathBuf::from("/data/a/b/c.txt");
+        let (_, rel, _, _) = find_source(&path, &map).expect("should match");
+        assert_eq!(rel, "a/b/c.txt");
+    }
+
+    // ── is_excluded ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_excluded_matches_glob() {
+        let map = make_source_map_raw(&[("src", "/data")]);
+        let excludes = build_globset(&["*.log".to_string()]).unwrap();
+        assert!(is_excluded(&PathBuf::from("/data/debug.log"), &map, &excludes));
+    }
+
+    #[test]
+    fn is_excluded_non_matching_glob() {
+        let map = make_source_map_raw(&[("src", "/data")]);
+        let excludes = build_globset(&["*.log".to_string()]).unwrap();
+        assert!(!is_excluded(&PathBuf::from("/data/readme.txt"), &map, &excludes));
+    }
+
+    #[test]
+    fn is_excluded_path_outside_source_is_not_excluded() {
+        let map = make_source_map_raw(&[("src", "/data")]);
+        let excludes = build_globset(&["*.log".to_string()]).unwrap();
+        // Path outside any source root — not excluded (find_source would filter it separately).
+        assert!(!is_excluded(&PathBuf::from("/other/debug.log"), &map, &excludes));
     }
 }

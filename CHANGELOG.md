@@ -11,6 +11,20 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Test coverage improvement (plans 084–085)** — extensive unit and integration tests across the codebase, raising line coverage from ~65% toward ~78%:
+  - `server/tests/raw.rs` — 12 integration tests for `GET /api/v1/raw` (auth, path traversal, content-type, download disposition, range requests, ZIP member serving); `TestServer::spawn_with_extra_config` helper added; 5 `parse_byte_range` unit tests inline
+  - `server/tests/search_filters.rs` — kind filter, date filter, pagination, duplicate path, case sensitivity, auth, bad-param 400 responses, multi-source, source-filter tests (20 tests total)
+  - `server/tests/search_modes.rs` — file-regex, document, doc-exact, doc-regex modes added (5 new tests); 7 `regex_to_fts_terms` unit tests inline in `search.rs`
+  - `server/tests/admin.rs` — `version_gt` unit tests inline; `update_check` auth test added
+  - `client/src/watch.rs` — extracted `run_event_loop<F>` from `run_watch` (generic closure keeps future `Send`); 11 new unit tests for `accumulate`, `find_source`, `is_excluded`
+  - `extractors/archive/src/lib.rs` — 26 unit tests covering `accepts`, `is_archive_ext`, `detect_kind_from_name`, `has_hidden_component`, mtime helpers, streaming extraction, hidden-member filtering, corrupt ZIP handling
+  - `extractors/pdf/src/lib.rs` — 12 tests covering `accepts`, `extract_from_bytes` (empty, garbage, truncated, `/Encrypt` guard), `wrap_at_words`, `max_content_kb` truncation
+  - `extractors/pe/src/lib.rs` — 4 new file-based tests for `extract()` (garbage, missing file, minimal PE32); `tempfile` dev-dependency added
+  - `extractors/text/src/lib.rs` — 16 new tests for `accepts`, `accepts_bytes`, `is_text_ext`, `is_binary_ext_path`, `extract_from_bytes`, `lines_from_str`
+  - `extractors/epub/src/lib.rs` — 5 new tests: `find_opf_path` error path, empty OPF metadata, full `extract()` round-trip with in-memory EPUB, `extract_from_bytes` round-trip, empty-bytes error
+
+### Added
+
 - **Search syntax help button** — a `?` circle button appears to the right of the tree-toggle in the search bar (both search and file-detail views); clicking opens a scrollable popup listing scope prefixes (`file:`, `doc:`), match prefixes (`exact:`, `regex:`), `type:` filters, natural-language date syntax, and quote matching; extracted into a reusable `SearchHelp.svelte` component
 - **Configurable tab width** — `server.toml` gains a `tab_width` setting (default: 4) returned via `GET /api/v1/settings`; the file viewer applies it as `tab-size` CSS on the code table; users can override it per-browser in Preferences (1/2/4/8, with Reset to server default); previously browsers used their default of 8
 

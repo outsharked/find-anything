@@ -20,11 +20,16 @@ pub struct TestServer {
 
 impl TestServer {
     pub async fn spawn() -> Self {
+        Self::spawn_with_extra_config("").await
+    }
+
+    /// Spawn a TestServer with additional TOML config appended (e.g. source path config).
+    pub async fn spawn_with_extra_config(extra: &str) -> Self {
         let data_dir = tempfile::TempDir::new().expect("tempdir");
         let data_path = data_dir.path().to_str().unwrap().to_string();
 
         let config_toml = format!(
-            "[server]\ndata_dir = \"{data_path}\"\ntoken = \"{TEST_TOKEN}\"\n"
+            "[server]\ndata_dir = \"{data_path}\"\ntoken = \"{TEST_TOKEN}\"\n{extra}"
         );
         let (config, _) = parse_server_config(&config_toml).expect("parse config");
 

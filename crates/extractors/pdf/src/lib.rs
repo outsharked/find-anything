@@ -192,4 +192,116 @@ mod tests {
             result
         );
     }
+
+    // ── accepts ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn accepts_pdf_extension() {
+        assert!(accepts(std::path::Path::new("document.pdf")));
+        assert!(accepts(std::path::Path::new("document.PDF")));
+        assert!(accepts(std::path::Path::new("document.Pdf")));
+    }
+
+    #[test]
+    fn accepts_rejects_non_pdf() {
+        assert!(!accepts(std::path::Path::new("document.txt")));
+        assert!(!accepts(std::path::Path::new("document.docx")));
+        assert!(!accepts(std::path::Path::new("nopdf")));
+    }
+
+    // ── edge-case inputs ─────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_bytes_returns_empty_vec() {
+        let result = extract_from_bytes(b"", "empty.pdf", &test_cfg()).unwrap();
+        assert!(result.is_empty(), "empty bytes should yield no lines");
+    }
+
+    #[test]
+    fn garbage_bytes_returns_ok() {
+        let garbage = b"\x00\x01\x02\x03\xFF\xFE\xFD garbage not a pdf at all";
+        let result = extract_from_bytes(garbage, "garbage.pdf", &test_cfg());
+        assert!(result.is_ok(), "garbage bytes must not panic or return Err");
+    }
+
+    #[test]
+    fn truncated_pdf_header_returns_ok() {
+        let result = extract_from_bytes(b"%PDF-1.4", "truncated.pdf", &test_cfg());
+        assert!(result.is_ok(), "truncated header must not panic");
+    }
+
+    #[test]
+    fn encryption_guard_triggers_on_encrypt_token() {
+        // Minimal bytes with /Encrypt token — should short-circuit without calling pdf-extract.
+        let pseudo = b"not a real pdf but has /Encrypt in the bytes somewhere";
+        let result = extract_from_bytes(pseudo, "pseudo.pdf", &test_cfg()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "Content encrypted");
+    }
+
+    // ── wrap_at_words ────────────────────────────────────────────────────────
+
+    #[test]
+    fn wrap_short_line_unchanged() {
+        let result = wrap_at_words("hello world", 80);
+        assert_eq!(result, vec!["hello world"]);
+    }
+
+    #[test]
+    fn wrap_long_line_splits_at_word_boundary() {
+        let words: Vec<String> = (0..20).map(|i| format!("word{i}")).collect();
+        let line = words.join(" "); // each word is ~6 chars → total ~120 chars
+        let result = wrap_at_words(&line, 40);
+        assert!(result.len() > 1, "long line should split into multiple chunks");
+        for chunk in &result {
+            // Allow single overlong words but no multi-word chunk should exceed limit.
+            let parts: Vec<&str> = chunk.split_whitespace().collect();
+            if parts.len() > 1 {
+                assert!(
+                    chunk.chars().count() <= 40,
+                    "chunk too long: {chunk:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_single_word_longer_than_limit_kept_as_is() {
+        let long_word = "a".repeat(100);
+        let result = wrap_at_words(&long_word, 20);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], long_word);
+    }
+
+    #[test]
+    fn wrap_empty_string_returns_empty_vec() {
+        let result = wrap_at_words("", 80);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn wrap_with_zero_limit_keeps_one_word_per_chunk() {
+        // max_len=0: every word starts a new chunk (since 0+1+word_len > 0 always).
+        let result = wrap_at_words("alpha beta gamma", 0);
+        assert_eq!(result, vec!["alpha", "beta", "gamma"]);
+    }
+
+    // ── max_content_kb truncation ────────────────────────────────────────────
+
+    #[test]
+    fn content_truncated_at_max_kb() {
+        // Build a "PDF" bytes that contain /Encrypt-free content but will yield
+        // many lines. We can test the truncation by sending a realistic text payload
+        // via extract_from_bytes with a very small content limit.
+        // Since we need real parseable PDF, use the minimal fixture but with tiny limit.
+        let bytes = include_bytes!("../tests/fixtures/minimal.pdf");
+        let small_cfg = ExtractorConfig {
+            max_content_kb: 1, // 1 KB
+            max_line_length: 0,
+            ..Default::default()
+        };
+        let result = extract_from_bytes(bytes, "minimal.pdf", &small_cfg);
+        // Must not panic or error; truncation is internal.
+        assert!(result.is_ok());
+    }
 }

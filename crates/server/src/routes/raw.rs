@@ -452,3 +452,37 @@ async fn serve_archive_member(
     .await
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_byte_range;
+
+    #[test]
+    fn parse_byte_range_valid_closed() {
+        assert_eq!(parse_byte_range("bytes=0-99"), Some((0, Some(99))));
+        assert_eq!(parse_byte_range("bytes=100-199"), Some((100, Some(199))));
+    }
+
+    #[test]
+    fn parse_byte_range_valid_open_ended() {
+        assert_eq!(parse_byte_range("bytes=500-"), Some((500, None)));
+        assert_eq!(parse_byte_range("bytes=0-"), Some((0, None)));
+    }
+
+    #[test]
+    fn parse_byte_range_multi_range_rejected() {
+        assert_eq!(parse_byte_range("bytes=0-99,200-299"), None);
+    }
+
+    #[test]
+    fn parse_byte_range_missing_prefix_rejected() {
+        assert_eq!(parse_byte_range("0-99"), None);
+        assert_eq!(parse_byte_range("0-"), None);
+    }
+
+    #[test]
+    fn parse_byte_range_invalid_numbers_rejected() {
+        assert_eq!(parse_byte_range("bytes=abc-def"), None);
+        assert_eq!(parse_byte_range("bytes=-100"), None);
+    }
+}

@@ -407,4 +407,135 @@ metadata:
         assert!(meta_lines[0].content.contains("author"));
         assert!(meta_lines[0].content.contains("John"));
     }
+
+    // ── is_text_ext / is_binary_ext_path ─────────────────────────────────────
+
+    #[test]
+    fn text_extensions_are_accepted() {
+        for ext in &["rs", "py", "js", "ts", "txt", "md", "json", "yaml", "toml", "sh", "sql"] {
+            assert!(is_text_ext(ext), ".{ext} should be a text extension");
+        }
+    }
+
+    #[test]
+    fn text_ext_is_case_insensitive() {
+        assert!(is_text_ext("RS"), ".RS should be treated as .rs");
+        assert!(is_text_ext("TXT"), ".TXT should be treated as .txt");
+    }
+
+    #[test]
+    fn binary_ext_path_returns_true_for_binary() {
+        for ext in &["jpg", "png", "exe", "dll", "zip", "pdf", "mp3"] {
+            let name = format!("file.{ext}");
+            assert!(is_binary_ext_path(Path::new(&name)), ".{ext} should be binary");
+        }
+    }
+
+    #[test]
+    fn binary_ext_path_returns_false_for_text() {
+        assert!(!is_binary_ext_path(Path::new("main.rs")));
+        assert!(!is_binary_ext_path(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn binary_ext_path_returns_false_for_no_extension() {
+        assert!(!is_binary_ext_path(Path::new("Makefile")));
+    }
+
+    // ── accepts ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn accepts_known_text_extensions_without_reading_disk() {
+        // These are all known-text extensions: accepts() returns Some(true) from ext_verdict.
+        assert!(accepts(Path::new("main.rs")));
+        assert!(accepts(Path::new("config.toml")));
+        assert!(accepts(Path::new("README.md")));
+        assert!(accepts(Path::new("data.json")));
+    }
+
+    #[test]
+    fn accepts_rejects_known_binary_extensions() {
+        assert!(!accepts(Path::new("photo.jpg")));
+        assert!(!accepts(Path::new("program.exe")));
+        assert!(!accepts(Path::new("library.zip")));
+    }
+
+    // ── accepts_bytes ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn accepts_bytes_known_text_ext_returns_true_without_sniffing() {
+        // .rs is a known text extension — bytes are irrelevant.
+        assert!(accepts_bytes(Path::new("code.rs"), b"\x00\x01\x02\xFF"));
+    }
+
+    #[test]
+    fn accepts_bytes_known_binary_ext_returns_false_without_sniffing() {
+        assert!(!accepts_bytes(Path::new("image.jpg"), b"plaintext content"));
+    }
+
+    #[test]
+    fn accepts_bytes_unknown_ext_sniffs_content() {
+        // Unknown extension: falls back to content_inspector
+        let text_bytes = b"This is plain ASCII text content with no special chars";
+        let binary_bytes = b"\x00\x01\x02\x03\xFF\xFE\xFD\xFC\x00\x00\x00";
+        assert!(accepts_bytes(Path::new("unknown_file"), text_bytes));
+        assert!(!accepts_bytes(Path::new("unknown_file"), binary_bytes));
+    }
+
+    // ── extract_from_bytes ────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_from_bytes_plain_text_returns_lines() {
+        use find_extract_types::ExtractorConfig;
+        let cfg = ExtractorConfig::default();
+        let content = b"line one\nline two\nline three";
+        let lines = extract_from_bytes(content, "file.txt", &cfg).unwrap();
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().any(|l| l.content == "line one"));
+        assert!(lines.iter().any(|l| l.content == "line three"));
+        // All lines should start at LINE_CONTENT_START or above.
+        assert!(lines.iter().all(|l| l.line_number >= LINE_CONTENT_START));
+    }
+
+    #[test]
+    fn extract_from_bytes_markdown_produces_frontmatter_metadata() {
+        use find_extract_types::ExtractorConfig;
+        let cfg = ExtractorConfig::default();
+        let content = b"---\ntitle: Hello\n---\n# Body\n";
+        let lines = extract_from_bytes(content, "doc.md", &cfg).unwrap();
+        let has_meta = lines.iter().any(|l| l.line_number == LINE_METADATA && l.content.contains("Hello"));
+        assert!(has_meta, "markdown with frontmatter should produce metadata line");
+    }
+
+    #[test]
+    fn extract_from_bytes_empty_input_returns_empty() {
+        use find_extract_types::ExtractorConfig;
+        let cfg = ExtractorConfig::default();
+        let lines = extract_from_bytes(b"", "empty.txt", &cfg).unwrap();
+        assert!(lines.is_empty());
+    }
+
+    // ── lines_from_str ────────────────────────────────────────────────────────
+
+    #[test]
+    fn lines_from_str_assigns_sequential_line_numbers() {
+        let lines = lines_from_str("alpha\nbeta\ngamma", None);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].content, "alpha");
+        assert_eq!(lines[0].line_number, LINE_CONTENT_START);
+        assert_eq!(lines[1].line_number, LINE_CONTENT_START + 1);
+        assert_eq!(lines[2].line_number, LINE_CONTENT_START + 2);
+    }
+
+    #[test]
+    fn lines_from_str_propagates_archive_path() {
+        let ap = Some("archive.zip".to_string());
+        let lines = lines_from_str("one\ntwo", ap.clone());
+        assert!(lines.iter().all(|l| l.archive_path == ap));
+    }
+
+    #[test]
+    fn lines_from_str_empty_string_returns_empty() {
+        assert!(lines_from_str("", None).is_empty());
+    }
 }

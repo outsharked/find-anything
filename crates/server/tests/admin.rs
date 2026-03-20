@@ -2,8 +2,9 @@ mod helpers;
 use helpers::{make_text_bulk, make_text_bulk_hashed, write_fake_gz, TestServer};
 
 use find_common::api::{
-    CompactResponse, InboxDeleteResponse, InboxRetryResponse, InboxStatusResponse, SearchResponse,
-    SourceDeleteResponse, StatsResponse,
+    CompactResponse, InboxDeleteResponse, InboxRetryResponse, InboxShowResponse,
+    InboxStatusResponse, SearchResponse, SourceDeleteResponse, StatsResponse,
+    UpdateApplyResponse,
 };
 
 // ── delete_source ─────────────────────────────────────────────────────────────
@@ -434,4 +435,295 @@ async fn test_delete_source_removes_chunk_refs() {
         .send().await.unwrap().json().await.unwrap();
     assert!(resp.chunks_removed > 0 || resp.units_deleted > 0 || resp.units_rewritten > 0,
         "compact should reclaim orphaned content after delete_source");
+}
+
+// ── inbox_show ────────────────────────────────────────────────────────────────
+
+/// Helper: pause the inbox, post a bulk request, return the filename of the
+/// pending item from GET /api/v1/admin/inbox.
+async fn pause_and_queue_one(srv: &TestServer, source: &str) -> String {
+    srv.client
+        .post(srv.url("/api/v1/admin/inbox/pause"))
+        .send()
+        .await
+        .unwrap();
+    srv.post_bulk(&make_text_bulk(source, "doc.txt", "show test content"))
+        .await;
+
+    let status: InboxStatusResponse = srv
+        .client
+        .get(srv.url("/api/v1/admin/inbox"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!status.pending.is_empty(), "expected a pending item");
+    status.pending[0].filename.clone()
+}
+
+#[tokio::test]
+async fn test_inbox_show_pending_item() {
+    let srv = TestServer::spawn().await;
+    let filename = pause_and_queue_one(&srv, "show-src").await;
+
+    let resp: InboxShowResponse = srv
+        .client
+        .get(srv.url(&format!("/api/v1/admin/inbox/show?name={filename}")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.source, "show-src");
+    assert_eq!(resp.files.len(), 1);
+    assert_eq!(resp.files[0].path, "doc.txt");
+    assert!(matches!(
+        resp.queue,
+        find_common::api::WorkerQueueSlot::Pending
+    ));
+}
+
+#[tokio::test]
+async fn test_inbox_show_without_gz_extension() {
+    // The route should accept the name with or without .gz suffix.
+    let srv = TestServer::spawn().await;
+    let filename = pause_and_queue_one(&srv, "show-src2").await;
+    let name_no_ext = filename.trim_end_matches(".gz");
+
+    let resp: InboxShowResponse = srv
+        .client
+        .get(srv.url(&format!("/api/v1/admin/inbox/show?name={name_no_ext}")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.source, "show-src2");
+}
+
+#[tokio::test]
+async fn test_inbox_show_failed_item() {
+    let srv = TestServer::spawn().await;
+
+    let failed_dir = srv.data_dir_path().join("inbox/failed");
+    std::fs::create_dir_all(&failed_dir).unwrap();
+
+    // Write a valid gzip-encoded BulkRequest into failed/.
+    let req = make_text_bulk("failed-src", "failed.txt", "failed content");
+    let json = serde_json::to_vec(&req).unwrap();
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut enc, &json).unwrap();
+    let gz = enc.finish().unwrap();
+    std::fs::write(failed_dir.join("failed_item.gz"), &gz).unwrap();
+
+    let resp: InboxShowResponse = srv
+        .client
+        .get(srv.url("/api/v1/admin/inbox/show?name=failed_item.gz"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.source, "failed-src");
+    assert!(matches!(
+        resp.queue,
+        find_common::api::WorkerQueueSlot::Failed
+    ));
+}
+
+#[tokio::test]
+async fn test_inbox_show_nonexistent_returns_404() {
+    let srv = TestServer::spawn().await;
+
+    let status = srv
+        .client
+        .get(srv.url("/api/v1/admin/inbox/show?name=no-such-file.gz"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+
+    assert_eq!(status.as_u16(), 404);
+}
+
+#[tokio::test]
+async fn test_inbox_show_requires_auth() {
+    let srv = TestServer::spawn().await;
+
+    let status = reqwest::Client::new()
+        .get(srv.url("/api/v1/admin/inbox/show?name=anything.gz"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+
+    assert_eq!(status.as_u16(), 401);
+}
+
+// ── inbox auth guards ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_inbox_status_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let status = reqwest::Client::new()
+        .get(srv.url("/api/v1/admin/inbox"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status.as_u16(), 401);
+}
+
+#[tokio::test]
+async fn test_inbox_clear_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let status = reqwest::Client::new()
+        .delete(srv.url("/api/v1/admin/inbox?target=pending"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status.as_u16(), 401);
+}
+
+#[tokio::test]
+async fn test_inbox_retry_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let status = reqwest::Client::new()
+        .post(srv.url("/api/v1/admin/inbox/retry"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status.as_u16(), 401);
+}
+
+#[tokio::test]
+async fn test_inbox_pause_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let status = reqwest::Client::new()
+        .post(srv.url("/api/v1/admin/inbox/pause"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status.as_u16(), 401);
+}
+
+#[tokio::test]
+async fn test_inbox_resume_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let status = reqwest::Client::new()
+        .post(srv.url("/api/v1/admin/inbox/resume"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status.as_u16(), 401);
+}
+
+// ── inbox_clear target=failed ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_inbox_clear_failed_only() {
+    let srv = TestServer::spawn().await;
+
+    // Seed failed dir.
+    let failed_dir = srv.data_dir_path().join("inbox/failed");
+    std::fs::create_dir_all(&failed_dir).unwrap();
+    write_fake_gz(&failed_dir.join("fail1.gz"));
+    write_fake_gz(&failed_dir.join("fail2.gz"));
+
+    // Also queue a pending item (should be unaffected).
+    srv.client
+        .post(srv.url("/api/v1/admin/inbox/pause"))
+        .send()
+        .await
+        .unwrap();
+    srv.post_bulk(&make_text_bulk("src", "file.txt", "content")).await;
+
+    let del: InboxDeleteResponse = srv
+        .client
+        .delete(srv.url("/api/v1/admin/inbox?target=failed"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(del.deleted, 2, "should delete exactly 2 failed items");
+
+    let after: InboxStatusResponse = srv
+        .client
+        .get(srv.url("/api/v1/admin/inbox"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(after.failed.is_empty(), "failed queue should be empty");
+    assert!(!after.pending.is_empty(), "pending should be unaffected");
+}
+
+// ── update_check ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_update_check_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let status = reqwest::Client::new()
+        .get(srv.url("/api/v1/admin/update/check"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status.as_u16(), 401);
+}
+
+// ── update_apply (no-systemd fast path) ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_update_apply_without_systemd_returns_400() {
+    // The test server is not running under systemd, so update/apply should
+    // immediately return 400 without making any network requests.
+    let srv = TestServer::spawn().await;
+
+    let resp: UpdateApplyResponse = srv
+        .client
+        .post(srv.url("/api/v1/admin/update/apply"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(!resp.ok);
+    assert!(
+        resp.message.contains("systemd"),
+        "message should mention systemd requirement: {}",
+        resp.message
+    );
+}
+
+#[tokio::test]
+async fn test_update_apply_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let status = reqwest::Client::new()
+        .post(srv.url("/api/v1/admin/update/apply"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status.as_u16(), 401);
 }

@@ -1006,6 +1006,339 @@ fn run_external_member_dispatch(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use tempfile::NamedTempFile;
+
+    // ── accepts / is_archive_ext ─────────────────────────────────────────────
+
+    #[test]
+    fn accepts_known_extensions() {
+        for ext in &["zip", "tar", "gz", "bz2", "xz", "tgz", "tbz2", "txz", "7z"] {
+            let name = format!("archive.{ext}");
+            let p = std::path::Path::new(&name);
+            assert!(accepts(p), "expected accepts() for .{ext}");
+        }
+    }
+
+    #[test]
+    fn accepts_rejects_non_archive() {
+        for ext in &["txt", "pdf", "rs", "docx", "mp3", "exe"] {
+            let name = format!("file.{ext}");
+            let p = std::path::Path::new(&name);
+            assert!(!accepts(p), "expected !accepts() for .{ext}");
+        }
+    }
+
+    #[test]
+    fn accepts_no_extension() {
+        assert!(!accepts(std::path::Path::new("noextfile")));
+    }
+
+    #[test]
+    fn is_archive_ext_case_insensitive() {
+        assert!(is_archive_ext("ZIP"));
+        assert!(is_archive_ext("Zip"));
+        assert!(is_archive_ext("TAR"));
+        assert!(is_archive_ext("GZ"));
+        assert!(!is_archive_ext("TXT"));
+    }
+
+    // ── detect_kind_from_name ───────────────────────────────────────────────
+
+    #[test]
+    fn detect_kind_compound_extensions() {
+        assert_eq!(detect_kind_from_name("foo.tar.gz"),  Some(ArchiveKind::TarGz));
+        assert_eq!(detect_kind_from_name("foo.tgz"),     Some(ArchiveKind::TarGz));
+        assert_eq!(detect_kind_from_name("foo.tar.bz2"), Some(ArchiveKind::TarBz2));
+        assert_eq!(detect_kind_from_name("foo.tbz2"),    Some(ArchiveKind::TarBz2));
+        assert_eq!(detect_kind_from_name("foo.tar.xz"),  Some(ArchiveKind::TarXz));
+        assert_eq!(detect_kind_from_name("foo.txz"),     Some(ArchiveKind::TarXz));
+        assert_eq!(detect_kind_from_name("foo.tar"),     Some(ArchiveKind::Tar));
+        assert_eq!(detect_kind_from_name("foo.zip"),     Some(ArchiveKind::Zip));
+        assert_eq!(detect_kind_from_name("foo.gz"),      Some(ArchiveKind::Gz));
+        assert_eq!(detect_kind_from_name("foo.bz2"),     Some(ArchiveKind::Bz2));
+        assert_eq!(detect_kind_from_name("foo.xz"),      Some(ArchiveKind::Xz));
+        assert_eq!(detect_kind_from_name("foo.7z"),      Some(ArchiveKind::SevenZip));
+        assert_eq!(detect_kind_from_name("foo.txt"),     None);
+    }
+
+    #[test]
+    fn detect_kind_case_insensitive() {
+        assert_eq!(detect_kind_from_name("FOO.ZIP"), Some(ArchiveKind::Zip));
+        assert_eq!(detect_kind_from_name("FOO.TAR.GZ"), Some(ArchiveKind::TarGz));
+    }
+
+    // ── has_hidden_component ────────────────────────────────────────────────
+
+    #[test]
+    fn hidden_component_detects_dot_prefix() {
+        assert!(has_hidden_component(".hidden/file.txt"));
+        assert!(has_hidden_component("dir/.git/config"));
+        assert!(has_hidden_component(".terraform/lock.hcl"));
+    }
+
+    #[test]
+    fn hidden_component_allows_visible_paths() {
+        assert!(!has_hidden_component("src/main.rs"));
+        assert!(!has_hidden_component("docs/README.md"));
+        assert!(!has_hidden_component("a/b/c.txt"));
+    }
+
+    #[test]
+    fn hidden_component_single_dot_and_double_dot_are_not_hidden() {
+        assert!(!has_hidden_component("./file.txt"));
+        assert!(!has_hidden_component("../sibling/file.txt"));
+    }
+
+    // ── sanitize_archive_mtime ──────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_past_timestamp_accepted_as_is() {
+        // 2020-01-01 UTC is clearly in the past.
+        let ts: i64 = 1_577_836_800;
+        assert_eq!(sanitize_archive_mtime(ts), Some(ts));
+    }
+
+    #[test]
+    fn sanitize_future_within_2099_subtracts_100_years() {
+        // 2077-01-01 UTC — plausible Y2K artifact (meant 1977).
+        let ts: i64 = 3_376_684_800;
+        let result = sanitize_archive_mtime(ts).expect("should return Some");
+        assert!(result < ts, "100-year subtraction expected");
+        // Should land around 1977 (roughly ts - 3_155_760_000).
+        assert!(result > 0, "result must be positive");
+    }
+
+    #[test]
+    fn sanitize_after_2099_returns_none() {
+        // 2150-01-01 UTC is after UNIX_END_OF_2099.
+        let ts: i64 = 5_680_281_600;
+        assert_eq!(sanitize_archive_mtime(ts), None);
+    }
+
+    // ── zip_unix_mtime ──────────────────────────────────────────────────────
+
+    fn make_unix_extra(mtime: i32) -> Vec<u8> {
+        // tag=0x5455, size=5, flags=0x01 (mtime present), mtime as LE i32
+        let mut v = vec![0x55, 0x54, 0x05, 0x00, 0x01];
+        v.extend_from_slice(&mtime.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn zip_unix_mtime_parses_valid_block() {
+        let extra = make_unix_extra(1_700_000_000_i32);
+        assert_eq!(zip_unix_mtime(&extra), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn zip_unix_mtime_returns_none_for_empty_extra() {
+        assert_eq!(zip_unix_mtime(&[]), None);
+    }
+
+    #[test]
+    fn zip_unix_mtime_returns_none_wrong_tag() {
+        // tag=0x000A (NTFS), size=5, flags=0x01
+        let extra = vec![0x0A, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(zip_unix_mtime(&extra), None);
+    }
+
+    #[test]
+    fn zip_unix_mtime_returns_none_when_mtime_flag_not_set() {
+        // tag=0x5455, size=5, flags=0x00 (no mtime bit)
+        let extra = vec![0x55, 0x54, 0x05, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04];
+        assert_eq!(zip_unix_mtime(&extra), None);
+    }
+
+    #[test]
+    fn zip_unix_mtime_returns_none_for_truncated_block() {
+        // Only the tag + partial size — not enough data
+        let extra = vec![0x55, 0x54, 0x05];
+        assert_eq!(zip_unix_mtime(&extra), None);
+    }
+
+    // ── zip_dos_to_unix ─────────────────────────────────────────────────────
+
+    #[test]
+    fn zip_dos_to_unix_returns_none_for_epoch_default() {
+        // year <= 1980 is the DOS epoch default → None
+        let dt = zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(zip_dos_to_unix(dt), None);
+    }
+
+    #[test]
+    fn zip_dos_to_unix_converts_known_date() {
+        // 2023-01-15 12:30:00 UTC — round-trip via known seconds calculation.
+        let dt = zip::DateTime::from_date_and_time(2023, 1, 15, 12, 30, 0).unwrap();
+        let result = zip_dos_to_unix(dt).expect("should convert");
+        // 2023-01-15 12:30:00 UTC = 1673785800
+        assert_eq!(result, 1_673_785_800);
+    }
+
+    // ── single_compressed (bare .gz / .bz2 / .xz via extract_streaming) ────
+
+    fn make_gz_file(content: &[u8]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::with_suffix(".gz").unwrap();
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(content).unwrap();
+        let gz = enc.finish().unwrap();
+        tmp.write_all(&gz).unwrap();
+        tmp
+    }
+
+    fn default_cfg() -> ExtractorConfig {
+        ExtractorConfig {
+            max_content_kb: 1024,
+            max_depth: 10,
+            max_line_length: 512,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn single_gz_extracts_text_content() {
+        let content = b"hello from gz\nsecond line\n";
+        let tmp = make_gz_file(content);
+        let cfg = default_cfg();
+        let mut batches = vec![];
+        extract_streaming(tmp.path(), &cfg, &mut |b| batches.push(b)).unwrap();
+        assert_eq!(batches.len(), 1);
+        let batch = &batches[0];
+        assert!(batch.size.unwrap() > 0);
+        // Should have a filename line (line_number=0) plus content lines.
+        assert!(batch.lines.iter().any(|l| l.line_number == 0));
+        assert!(batch.lines.iter().any(|l| l.content.contains("hello from gz")));
+    }
+
+    #[test]
+    fn single_gz_empty_content() {
+        let tmp = make_gz_file(b"");
+        let cfg = default_cfg();
+        let mut batches = vec![];
+        extract_streaming(tmp.path(), &cfg, &mut |b| batches.push(b)).unwrap();
+        // One batch with size = 0; no content lines beyond the filename.
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].size, Some(0));
+    }
+
+    // ── empty ZIP ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_zip_produces_no_member_batches() {
+        use std::io::Cursor;
+        let mut buf = Vec::new();
+        {
+            let writer = zip::ZipWriter::new(Cursor::new(&mut buf));
+            writer.finish().unwrap();
+        }
+        let mut tmp = NamedTempFile::with_suffix(".zip").unwrap();
+        tmp.write_all(&buf).unwrap();
+
+        let cfg = default_cfg();
+        let mut batches = vec![];
+        extract_streaming(tmp.path(), &cfg, &mut |b| batches.push(b)).unwrap();
+        assert!(batches.is_empty(), "empty ZIP should yield no batches");
+    }
+
+    // ── hidden member filtering ─────────────────────────────────────────────
+
+    #[test]
+    fn zip_hidden_members_excluded_by_default() {
+        use std::io::Cursor;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file(".hidden/secret.txt", opts).unwrap();
+            zip.write_all(b"should not appear\n").unwrap();
+            zip.start_file("visible.txt", opts).unwrap();
+            zip.write_all(b"should appear\n").unwrap();
+            zip.finish().unwrap();
+        }
+        let mut tmp = NamedTempFile::with_suffix(".zip").unwrap();
+        tmp.write_all(&buf).unwrap();
+
+        let cfg = ExtractorConfig {
+            include_hidden: false,
+            ..default_cfg()
+        };
+        let mut batches = vec![];
+        extract_streaming(tmp.path(), &cfg, &mut |b| batches.push(b)).unwrap();
+
+        let all_names: Vec<_> = batches.iter()
+            .flat_map(|b| &b.lines)
+            .filter_map(|l| l.archive_path.as_deref())
+            .collect();
+        assert!(!all_names.iter().any(|n| n.contains(".hidden")), "hidden member leaked: {all_names:?}");
+        assert!(all_names.iter().any(|n| n.contains("visible.txt")), "visible member missing: {all_names:?}");
+    }
+
+    #[test]
+    fn zip_hidden_members_included_when_flag_set() {
+        use std::io::Cursor;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file(".hidden/secret.txt", opts).unwrap();
+            zip.write_all(b"present\n").unwrap();
+            zip.finish().unwrap();
+        }
+        let mut tmp = NamedTempFile::with_suffix(".zip").unwrap();
+        tmp.write_all(&buf).unwrap();
+
+        let cfg = ExtractorConfig {
+            include_hidden: true,
+            ..default_cfg()
+        };
+        let mut batches = vec![];
+        extract_streaming(tmp.path(), &cfg, &mut |b| batches.push(b)).unwrap();
+
+        let all_names: Vec<_> = batches.iter()
+            .flat_map(|b| &b.lines)
+            .filter_map(|l| l.archive_path.as_deref())
+            .collect();
+        assert!(all_names.iter().any(|n| n.contains(".hidden")), "hidden member should be included: {all_names:?}");
+    }
+
+    // ── corrupt ZIP → graceful error ────────────────────────────────────────
+
+    #[test]
+    fn corrupt_zip_returns_error() {
+        let mut tmp = NamedTempFile::with_suffix(".zip").unwrap();
+        tmp.write_all(b"this is not a zip file at all").unwrap();
+        let cfg = default_cfg();
+        let result = extract(tmp.path(), &cfg);
+        assert!(result.is_err(), "corrupt zip should return Err");
+    }
+
+    // ── ZIP text member content extraction ──────────────────────────────────
+
+    #[test]
+    fn zip_text_member_content_indexed() {
+        use std::io::Cursor;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("readme.txt", opts).unwrap();
+            zip.write_all(b"hello_unique_word_xyz\nline two here\n").unwrap();
+            zip.finish().unwrap();
+        }
+        let mut tmp = NamedTempFile::with_suffix(".zip").unwrap();
+        tmp.write_all(&buf).unwrap();
+
+        let lines = extract(tmp.path(), &default_cfg()).unwrap();
+        assert!(
+            lines.iter().any(|l| l.content.contains("hello_unique_word_xyz")),
+            "text content not indexed: {:?}", lines.iter().map(|l| &l.content).collect::<Vec<_>>()
+        );
+    }
+}
+
 fn extract_member_bytes(mut bytes: Vec<u8>, entry_name: &str, display_prefix: &str, cfg: &ExtractorConfig) -> Vec<IndexLine> {
     // Check external_dispatch first: if this extension has a registered external
     // extractor, delegate to it and return its output.  This ensures consistent

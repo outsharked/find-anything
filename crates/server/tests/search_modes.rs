@@ -160,6 +160,116 @@ async fn test_file_exact_matches_exact_filename_fragment() {
     assert!(resp.total >= 1, "file-exact should match the exact filename fragment");
 }
 
+// ── file-regex mode ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_file_regex_matches_filename_pattern() {
+    let srv = TestServer::spawn().await;
+    srv.post_bulk(&make_text_bulk("docs", "invoices/report_2024_q1.txt", "unrelated content")).await;
+    srv.post_bulk(&make_text_bulk("docs", "notes/todo.txt", "unrelated content")).await;
+    srv.wait_for_idle().await;
+
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=report_%5Cd%7B4%7D&mode=file-regex&source=docs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(resp.total >= 1, "file-regex should match filename pattern");
+    assert!(resp.results.iter().any(|r| r.path.contains("report_2024")));
+    assert!(!resp.results.iter().any(|r| r.path == "notes/todo.txt"), "non-matching file must be excluded");
+}
+
+// ── document mode ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_document_mode_groups_by_file() {
+    let srv = TestServer::spawn().await;
+    // File with the query word on multiple lines — document mode should return one result.
+    srv.post_bulk(&make_text_bulk("docs", "multi.txt",
+        "alpha keyword line one\nalpha keyword line two\nalpha keyword line three")).await;
+    srv.wait_for_idle().await;
+
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=alpha+keyword&mode=document&source=docs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(resp.total >= 1, "document mode should return at least one result");
+    // Must not return more results than files (grouped per file).
+    let paths: std::collections::HashSet<&str> = resp.results.iter().map(|r| r.path.as_str()).collect();
+    assert!(paths.contains("multi.txt"), "multi.txt should appear in document results");
+}
+
+#[tokio::test]
+async fn test_doc_exact_mode_matches_phrase() {
+    let srv = TestServer::spawn().await;
+    srv.post_bulk(&make_text_bulk("docs", "phrase.txt", "the exact phrase to find here")).await;
+    srv.wait_for_idle().await;
+
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=exact+phrase&mode=doc-exact&source=docs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(resp.total >= 1, "doc-exact should match the phrase");
+    assert!(resp.results.iter().any(|r| r.path == "phrase.txt"));
+}
+
+#[tokio::test]
+async fn test_doc_regex_mode_matches_pattern() {
+    let srv = TestServer::spawn().await;
+    srv.post_bulk(&make_text_bulk("docs", "log.txt",
+        "error occurred at line 42\nno problem here\nanother error at line 99")).await;
+    srv.wait_for_idle().await;
+
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=error.*line&mode=doc-regex&source=docs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(resp.total >= 1, "doc-regex should match cross-line pattern");
+    assert!(resp.results.iter().any(|r| r.path == "log.txt"));
+}
+
+#[tokio::test]
+async fn test_doc_regex_no_match_returns_empty() {
+    let srv = TestServer::spawn().await;
+    srv.post_bulk(&make_text_bulk("docs", "clean.txt", "nothing suspicious here")).await;
+    srv.wait_for_idle().await;
+
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=ZZZZZUNLIKELY%5Cd%7B8%7D&mode=doc-regex&source=docs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.total, 0, "doc-regex with no match should return empty");
+}
+
 // ── fuzzy (default) mode ──────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -177,6 +177,48 @@ fn make_result(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::regex_to_fts_terms;
+
+    #[test]
+    fn regex_to_fts_terms_plain_word() {
+        assert_eq!(regex_to_fts_terms("password"), "password");
+    }
+
+    #[test]
+    fn regex_to_fts_terms_splits_on_special_chars() {
+        assert_eq!(regex_to_fts_terms("class\\s+Foo"), "class Foo");
+    }
+
+    #[test]
+    fn regex_to_fts_terms_anchors_stripped() {
+        assert_eq!(regex_to_fts_terms("^fn"), "fn");
+    }
+
+    #[test]
+    fn regex_to_fts_terms_multiple_literals() {
+        // "fatal.+encountered" → "fatal encountered"
+        assert_eq!(regex_to_fts_terms("fatal.+encountered"), "fatal encountered");
+    }
+
+    #[test]
+    fn regex_to_fts_terms_empty_input() {
+        assert_eq!(regex_to_fts_terms(""), "");
+    }
+
+    #[test]
+    fn regex_to_fts_terms_all_special_chars() {
+        assert_eq!(regex_to_fts_terms("^$.*+?|()[]{}"), "");
+    }
+
+    #[test]
+    fn regex_to_fts_terms_escaped_sequence_skipped() {
+        // \s is an escape sequence — both chars skipped, "hello world" extracted
+        assert_eq!(regex_to_fts_terms("hello\\sworld"), "hello world");
+    }
+}
+
 pub async fn search(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

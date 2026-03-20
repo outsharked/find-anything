@@ -365,6 +365,43 @@ fn version_gt(a: &str, b: &str) -> bool {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::version_gt;
+
+    #[test]
+    fn version_gt_major_increment() {
+        assert!(version_gt("2.0.0", "1.9.9"));
+    }
+
+    #[test]
+    fn version_gt_minor_increment() {
+        assert!(version_gt("1.1.0", "1.0.9"));
+    }
+
+    #[test]
+    fn version_gt_patch_increment() {
+        assert!(version_gt("0.6.3", "0.6.2"));
+    }
+
+    #[test]
+    fn version_gt_equal_returns_false() {
+        assert!(!version_gt("1.2.3", "1.2.3"));
+    }
+
+    #[test]
+    fn version_gt_older_returns_false() {
+        assert!(!version_gt("0.5.0", "0.6.0"));
+    }
+
+    #[test]
+    fn version_gt_malformed_returns_false() {
+        assert!(!version_gt("not-a-version", "1.0.0"));
+        assert!(!version_gt("1.0.0", "not-a-version"));
+        assert!(!version_gt("", "1.0.0"));
+    }
+}
+
 pub async fn update_check(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

@@ -373,4 +373,99 @@ mod tests {
         let (_, hrefs) = parse_opf(xml, "");
         assert_eq!(hrefs, vec!["b.xhtml", "a.xhtml", "c.xhtml"]);
     }
+
+    #[test]
+    fn test_find_opf_path_missing_rootfile_returns_error() {
+        let xml = r#"<?xml version="1.0"?><container version="1.0"></container>"#;
+        assert!(find_opf_path(xml).is_err(), "missing rootfile should return error");
+    }
+
+    #[test]
+    fn test_parse_opf_no_metadata_returns_empty_meta_vec() {
+        let xml = r#"<package><metadata></metadata><manifest></manifest><spine></spine></package>"#;
+        let (meta, hrefs) = parse_opf(xml, "");
+        assert!(meta.is_empty(), "no DC fields → no metadata line");
+        assert!(hrefs.is_empty());
+    }
+
+    // ── extract() — full EPUB round-trip ─────────────────────────────────────
+
+    /// Build a minimal but valid EPUB zip into `buf`.
+    fn build_minimal_epub() -> Vec<u8> {
+        use std::io::{Cursor, Write as _};
+        let mut buf = Vec::new();
+        let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+        let opts = zip::write::SimpleFileOptions::default();
+
+        zip.start_file("META-INF/container.xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#).unwrap();
+
+        zip.start_file("content.opf", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <metadata>
+    <dc:title>Test Book</dc:title>
+    <dc:creator>Test Author</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+  </spine>
+</package>"#).unwrap();
+
+        zip.start_file("chapter1.xhtml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<body>
+  <h1>Chapter One</h1>
+  <p>This is the first paragraph of the test book.</p>
+</body>
+</html>"#).unwrap();
+
+        zip.finish().unwrap();
+        buf
+    }
+
+    #[test]
+    fn test_extract_from_minimal_epub_file() {
+        use find_extract_types::ExtractorConfig;
+        let epub_bytes = build_minimal_epub();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.epub");
+        std::fs::write(&path, &epub_bytes).unwrap();
+
+        let lines = extract(&path, &ExtractorConfig::default()).unwrap();
+
+        // Metadata line
+        let meta = lines.iter().find(|l| l.line_number == LINE_METADATA).expect("metadata line");
+        assert!(meta.content.contains("Test Book"), "metadata should contain title");
+        assert!(meta.content.contains("Test Author"), "metadata should contain creator");
+
+        // Content lines
+        assert!(lines.iter().any(|l| l.line_number >= LINE_CONTENT_START && l.content.contains("Chapter One")));
+        assert!(lines.iter().any(|l| l.line_number >= LINE_CONTENT_START && l.content.contains("first paragraph")));
+    }
+
+    #[test]
+    fn test_extract_from_bytes_round_trip() {
+        use find_extract_types::ExtractorConfig;
+        let epub_bytes = build_minimal_epub();
+        let lines = extract_from_bytes(&epub_bytes, "test.epub", &ExtractorConfig::default()).unwrap();
+        assert!(lines.iter().any(|l| l.content.contains("Test Book")), "bytes extraction should find title");
+        assert!(lines.iter().any(|l| l.content.contains("first paragraph")));
+    }
+
+    #[test]
+    fn test_extract_from_bytes_empty_returns_error() {
+        use find_extract_types::ExtractorConfig;
+        let result = extract_from_bytes(b"", "empty.epub", &ExtractorConfig::default());
+        assert!(result.is_err(), "empty bytes should fail to parse as EPUB");
+    }
 }
