@@ -726,4 +726,239 @@ mod tests {
         assert!(!is_audio_ext("txt"));
         assert!(!is_audio_ext("mp4"));
     }
+
+    // ── Extension detection: image and video ─────────────────────────────────
+
+    #[test]
+    fn image_ext_detection() {
+        for ext in ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif",
+                    "heic", "heif", "cr2", "cr3", "nef", "arw", "orf", "rw2"] {
+            assert!(is_image_ext(ext), "{ext} should be an image ext");
+        }
+        assert!(!is_image_ext("mp3"));
+        assert!(!is_image_ext("mp4"));
+        assert!(!is_image_ext("pdf"));
+        assert!(!is_image_ext("txt"));
+    }
+
+    #[test]
+    fn video_ext_detection() {
+        for ext in ["mp4", "m4v", "mkv", "webm", "ogv", "avi", "mov", "wmv",
+                    "flv", "mpg", "mpeg", "3gp"] {
+            assert!(is_video_ext(ext), "{ext} should be a video ext");
+        }
+        assert!(!is_video_ext("mp3"));
+        assert!(!is_video_ext("jpg"));
+        assert!(!is_video_ext("txt"));
+    }
+
+    // ── accepts() ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn accepts_image_audio_video_paths() {
+        assert!(accepts(Path::new("photo.jpg")));
+        assert!(accepts(Path::new("photo.PNG"))); // uppercase
+        assert!(accepts(Path::new("song.mp3")));
+        assert!(accepts(Path::new("song.FLAC")));
+        assert!(accepts(Path::new("video.mp4")));
+        assert!(accepts(Path::new("clip.AVI")));
+    }
+
+    #[test]
+    fn rejects_non_media_paths() {
+        assert!(!accepts(Path::new("doc.pdf")));
+        assert!(!accepts(Path::new("text.txt")));
+        assert!(!accepts(Path::new("noextension")));
+        assert!(!accepts(Path::new("")));
+    }
+
+    // ── extract_from_bytes() ─────────────────────────────────────────────────
+
+    #[test]
+    fn extract_from_bytes_dispatches_wav() {
+        let cfg = find_extract_types::ExtractorConfig::default();
+        let bytes = minimal_wav(44100, 2, 16);
+        let lines = extract_from_bytes(&bytes, "recording.wav", &cfg).unwrap();
+        assert!(!lines.is_empty(), "extract_from_bytes should extract WAV metadata");
+        assert!(has_containing(&lines, "[AUDIO:codec] PCM"), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn extract_from_bytes_garbage_audio_returns_empty() {
+        let cfg = find_extract_types::ExtractorConfig::default();
+        let lines = extract_from_bytes(b"not audio", "garbage.mp3", &cfg).unwrap();
+        assert!(lines.is_empty());
+    }
+
+    // ── Image header parsing ─────────────────────────────────────────────────
+
+    fn make_png_header(width: u32, height: u32, bit_depth: u8, color_type: u8) -> Vec<u8> {
+        let mut v = vec![0u8; 26];
+        v[0..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        v[16..20].copy_from_slice(&width.to_be_bytes());
+        v[20..24].copy_from_slice(&height.to_be_bytes());
+        v[24] = bit_depth;
+        v[25] = color_type;
+        v
+    }
+
+    fn make_gif_header(width: u16, height: u16) -> Vec<u8> {
+        let mut v = vec![0u8; 10];
+        v[0..6].copy_from_slice(b"GIF89a");
+        v[6..8].copy_from_slice(&width.to_le_bytes());
+        v[8..10].copy_from_slice(&height.to_le_bytes());
+        v
+    }
+
+    fn make_bmp_header(width: u32, height: u32, bpp: u16) -> Vec<u8> {
+        let mut v = vec![0u8; 30];
+        v[0..2].copy_from_slice(b"BM");
+        v[18..22].copy_from_slice(&(width as i32).to_le_bytes());
+        v[22..26].copy_from_slice(&(height as i32).to_le_bytes());
+        v[28..30].copy_from_slice(&bpp.to_le_bytes());
+        v
+    }
+
+    /// Minimal JPEG: SOI (FF D8) immediately followed by SOF0 (FF C0).
+    fn make_jpeg_sof0(width: u16, height: u16, precision: u8, components: u8) -> Vec<u8> {
+        let mut v = vec![0u8; 12];
+        v[0] = 0xFF; v[1] = 0xD8; // SOI
+        v[2] = 0xFF; v[3] = 0xC0; // SOF0
+        v[4] = 0x00; v[5] = 0x09; // segment length (9)
+        v[6] = precision;
+        v[7..9].copy_from_slice(&height.to_be_bytes());
+        v[9..11].copy_from_slice(&width.to_be_bytes());
+        v[11] = components;
+        v
+    }
+
+    #[test]
+    fn png_rgb_dimensions_extracted() {
+        let bytes = make_png_header(800, 600, 8, 2); // color_type=2 → RGB
+        let f = write_fixture(&bytes, ".png");
+        let lines = extract_image(f.path()).unwrap();
+        let content = lines.iter().map(|l| &l.content).find(|c| c.contains("dimensions"))
+            .expect("should have dimensions");
+        assert!(content.contains("800x600"), "content: {content}");
+        assert!(content.contains("[IMAGE:bit_depth] 8"), "content: {content}");
+        assert!(content.contains("[IMAGE:color] RGB"), "content: {content}");
+    }
+
+    #[test]
+    fn png_rgba_color_type() {
+        let bytes = make_png_header(10, 10, 8, 6); // color_type=6 → RGBA
+        let f = write_fixture(&bytes, ".png");
+        let lines = extract_image(f.path()).unwrap();
+        assert!(lines.iter().any(|l| l.content.contains("RGBA")), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn gif_dimensions_extracted() {
+        let bytes = make_gif_header(320, 240);
+        let f = write_fixture(&bytes, ".gif");
+        let lines = extract_image(f.path()).unwrap();
+        assert!(!lines.is_empty());
+        let content = &lines[0].content;
+        assert!(content.contains("320x240"), "content: {content}");
+    }
+
+    #[test]
+    fn bmp_dimensions_and_bpp_extracted() {
+        let bytes = make_bmp_header(1920, 1080, 24);
+        let f = write_fixture(&bytes, ".bmp");
+        let lines = extract_image(f.path()).unwrap();
+        assert!(!lines.is_empty());
+        let content = &lines[0].content;
+        assert!(content.contains("1920x1080"), "content: {content}");
+        assert!(content.contains("[IMAGE:bit_depth] 24"), "content: {content}");
+    }
+
+    #[test]
+    fn jpeg_ycbcr_dimensions_extracted() {
+        let bytes = make_jpeg_sof0(200, 100, 8, 3); // 3 components → YCbCr
+        let f = write_fixture(&bytes, ".jpg");
+        let lines = extract_image(f.path()).unwrap();
+        assert!(!lines.is_empty());
+        let content = &lines[0].content;
+        assert!(content.contains("200x100"), "content: {content}");
+        assert!(content.contains("[IMAGE:color] YCbCr"), "content: {content}");
+    }
+
+    #[test]
+    fn jpeg_grayscale_color_type() {
+        let bytes = make_jpeg_sof0(64, 64, 8, 1); // 1 component → Grayscale
+        let f = write_fixture(&bytes, ".jpg");
+        let lines = extract_image(f.path()).unwrap();
+        assert!(lines.iter().any(|l| l.content.contains("Grayscale")), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn corrupt_image_returns_fallback_line() {
+        let f = write_fixture(b"not an image at all", ".jpg");
+        let lines = extract_image(f.path()).unwrap();
+        // Should return the "no metadata available" fallback, not panic
+        assert!(!lines.is_empty(), "corrupt image should return a fallback line");
+    }
+
+    #[test]
+    fn extract_dispatches_png_to_image_extractor() {
+        let cfg = find_extract_types::ExtractorConfig::default();
+        let bytes = make_png_header(100, 100, 8, 2);
+        let f = write_fixture(&bytes, ".png");
+        let lines = extract(f.path(), &cfg).unwrap();
+        assert!(!lines.is_empty());
+        assert!(has_containing(&lines, "[IMAGE:"), "should have image metadata");
+    }
+
+    // ── Video header-only detection ───────────────────────────────────────────
+
+    fn check_video_format(magic: &[u8], ext: &str, expected_format: &str) {
+        let cfg = find_extract_types::ExtractorConfig::default();
+        let f = write_fixture(magic, ext);
+        let lines = extract(f.path(), &cfg).unwrap();
+        assert!(!lines.is_empty(), "should produce at least one line for {ext}");
+        assert!(
+            has_containing(&lines, expected_format),
+            "{ext}: expected '{expected_format}' in lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn avi_header_detected() {
+        let mut magic = vec![0u8; 12];
+        magic[0..4].copy_from_slice(b"RIFF");
+        magic[8..12].copy_from_slice(b"AVI ");
+        check_video_format(&magic, ".avi", "avi");
+    }
+
+    #[test]
+    fn flv_header_detected() {
+        check_video_format(b"FLV\x01\x00\x00\x00\x00", ".flv", "flv");
+    }
+
+    #[test]
+    fn mpeg_pack_header_detected() {
+        check_video_format(b"\x00\x00\x01\xBA\x00\x00\x00\x00", ".mpg", "mpeg");
+    }
+
+    #[test]
+    fn ogg_header_detected() {
+        check_video_format(b"OggS\x00\x00\x00\x00\x00\x00\x00\x00", ".ogv", "ogv");
+    }
+
+    #[test]
+    fn wmv_guid_detected() {
+        let magic: [u8; 16] = [0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+                                0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C];
+        check_video_format(&magic, ".wmv", "wmv");
+    }
+
+    #[test]
+    fn unknown_video_bytes_returns_empty() {
+        let cfg = find_extract_types::ExtractorConfig::default();
+        let f = write_fixture(b"unknowncontent", ".avi");
+        let lines = extract(f.path(), &cfg).unwrap();
+        // Unknown magic bytes in a video file → empty (no format detected)
+        assert!(lines.is_empty(), "unknown magic should yield no lines, got: {lines:?}");
+    }
 }

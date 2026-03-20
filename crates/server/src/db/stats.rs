@@ -302,3 +302,125 @@ pub fn get_indexing_error(conn: &Connection, path: &str) -> Result<Option<String
         Err(e) => Err(e.into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use rusqlite::Connection;
+    use find_content_store::{CompactResult, ContentKey};
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(include_str!("../schema_v3.sql")).unwrap();
+        crate::db::register_scalar_functions(&conn).unwrap();
+        conn
+    }
+
+    /// A ContentStore stub that always reports no key is present.
+    struct EmptyStore;
+
+    impl find_content_store::ContentStore for EmptyStore {
+        fn put(&self, _: &ContentKey, _: &str) -> anyhow::Result<bool> { Ok(false) }
+        fn delete(&self, _: &ContentKey) -> anyhow::Result<()> { Ok(()) }
+        fn get_lines(&self, _: &ContentKey, _: usize, _: usize) -> anyhow::Result<Option<Vec<(usize, String)>>> { Ok(None) }
+        fn contains(&self, _: &ContentKey) -> anyhow::Result<bool> { Ok(false) }
+        fn compact(&self, _: &HashSet<ContentKey>, _: bool) -> anyhow::Result<CompactResult> {
+            Ok(CompactResult { units_scanned: 0, units_rewritten: 0, units_deleted: 0, chunks_removed: 0, bytes_freed: 0 })
+        }
+        fn storage_stats(&self) -> Option<(u64, u64)> { Some((0, 0)) }
+    }
+
+    #[test]
+    fn test_get_files_pending_content_counts_unarchived() {
+        let conn = test_conn();
+
+        // Insert a file with a content_hash but no inline file_content row.
+        conn.execute(
+            "INSERT INTO files (path, mtime, kind, content_hash) VALUES ('file.txt', 1000, 'text', 'abc123')",
+            [],
+        ).unwrap();
+
+        let store = EmptyStore;
+        let pending = get_files_pending_content(&conn, &store).unwrap();
+        assert_eq!(pending, 1, "file with content_hash but no stored content should be pending");
+
+        // Now insert an inline file_content row — the file is no longer pending.
+        let file_id: i64 = conn.query_row("SELECT id FROM files WHERE path = 'file.txt'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO file_content (file_id, content) VALUES (?1, 'hello')",
+            rusqlite::params![file_id],
+        ).unwrap();
+
+        let pending_after = get_files_pending_content(&conn, &store).unwrap();
+        assert_eq!(pending_after, 0, "file with inline content should not be pending");
+    }
+
+    #[test]
+    fn test_get_stats_by_ext_excludes_archive_members() {
+        let conn = test_conn();
+
+        conn.execute(
+            "INSERT INTO files (path, mtime, kind) VALUES ('script.js', 1000, 'text')",
+            [],
+        ).unwrap();
+        // Archive member path contains '::' — should be excluded.
+        conn.execute(
+            "INSERT INTO files (path, mtime, kind) VALUES ('outer.zip::module.js', 1000, 'text')",
+            [],
+        ).unwrap();
+
+        let by_ext = get_stats_by_ext(&conn).unwrap();
+        let js_entry = by_ext.iter().find(|e| e.ext == "js");
+        assert!(js_entry.is_some(), "js extension should appear");
+        assert_eq!(js_entry.unwrap().count, 1, "archive member must be excluded; only 1 outer file");
+    }
+
+    #[test]
+    fn test_upsert_indexing_errors_increments_count() {
+        let conn = test_conn();
+
+        let failure = IndexingFailure { path: "bad.txt".into(), error: "oops".into() };
+
+        upsert_indexing_errors(&conn, &[failure.clone()], 1000).unwrap();
+        upsert_indexing_errors(&conn, &[failure.clone()], 2000).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT count FROM indexing_errors WHERE path = 'bad.txt'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2, "calling upsert twice should increment count to 2");
+
+        let last_seen: i64 = conn.query_row(
+            "SELECT last_seen FROM indexing_errors WHERE path = 'bad.txt'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(last_seen, 2000, "last_seen should be updated to the second call's timestamp");
+    }
+
+    #[test]
+    fn test_get_stats_counts_files_by_kind() {
+        let conn = test_conn();
+
+        conn.execute("INSERT INTO files (path, mtime, kind) VALUES ('a.txt', 1000, 'text')", []).unwrap();
+        conn.execute("INSERT INTO files (path, mtime, kind) VALUES ('b.txt', 1000, 'text')", []).unwrap();
+        conn.execute("INSERT INTO files (path, mtime, kind) VALUES ('img.png', 1000, 'image')", []).unwrap();
+
+        let (total, _size, by_kind) = get_stats(&conn).unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(by_kind[&FileKind::Text].count, 2);
+        assert_eq!(by_kind[&FileKind::Image].count, 1);
+    }
+
+    #[test]
+    fn test_upsert_indexing_errors_empty_is_noop() {
+        let conn = test_conn();
+        // Should not panic or error on empty input.
+        upsert_indexing_errors(&conn, &[], 1000).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM indexing_errors", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+}

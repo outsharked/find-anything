@@ -663,6 +663,133 @@ mod tests {
         assert!(q.contains("test") && q.contains("query"));
     }
 
+    // ── document_candidates ──────────────────────────────────────────────────
+
+    #[test]
+    fn document_candidates_empty_query_returns_empty() {
+        let conn = test_conn();
+        insert_inline_file(&conn, "file.txt", 1000, "text", &[
+            (0, "[PATH] file.txt"),
+            (2, "hello world content"),
+        ]);
+
+        let (total, groups) = document_candidates(&conn, "", 100, DateFilter::default()).unwrap();
+        assert_eq!(total, 0);
+        assert!(groups.is_empty());
+
+        // Also test with all-short tokens (< 3 chars).
+        let (total, groups) = document_candidates(&conn, "ab", 100, DateFilter::default()).unwrap();
+        assert_eq!(total, 0);
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn document_candidates_returns_file_for_matching_token() {
+        let conn = test_conn();
+        insert_inline_file(&conn, "match.txt", 1000, "text", &[
+            (0, "[PATH] match.txt"),
+            (2, "hello world information here"),
+        ]);
+        insert_inline_file(&conn, "other.txt", 1000, "text", &[
+            (0, "[PATH] other.txt"),
+            (2, "unrelated stuff here"),
+        ]);
+
+        let (total, groups) = document_candidates(&conn, "hello", 100, DateFilter::default()).unwrap();
+        assert_eq!(total, 1, "only one file contains 'hello'");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].representative.file_path, "match.txt");
+    }
+
+    #[test]
+    fn document_candidates_multi_token_requires_all_tokens() {
+        let conn = test_conn();
+        // File A has both "alpha" and "beta".
+        insert_inline_file(&conn, "both.txt", 1000, "text", &[
+            (0, "[PATH] both.txt"),
+            (2, "alpha term here"),
+            (3, "beta term here"),
+        ]);
+        // File B has only "alpha".
+        insert_inline_file(&conn, "alpha_only.txt", 1000, "text", &[
+            (0, "[PATH] alpha_only.txt"),
+            (2, "alpha term here"),
+        ]);
+
+        let (total, groups) = document_candidates(&conn, "alpha beta", 100, DateFilter::default()).unwrap();
+        assert_eq!(total, 1, "only 'both.txt' has both tokens");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].representative.file_path, "both.txt");
+    }
+
+    #[test]
+    fn document_candidates_per_file_cap() {
+        let conn = test_conn();
+        // Insert a file with the keyword on 20 lines.
+        let owned: Vec<(usize, String)> = std::iter::once((0usize, "[PATH] dense.txt".to_string()))
+            .chain((2usize..22).map(|i| (i, "keyword content line".to_string())))
+            .collect();
+        let refs: Vec<(usize, &str)> = owned.iter().map(|(n, s)| (*n, s.as_str())).collect();
+        insert_inline_file(&conn, "dense.txt", 1000, "text", &refs);
+
+        // One-token query → per_file_cap = 1.
+        let (_total, groups) = document_candidates(&conn, "keyword", 100, DateFilter::default()).unwrap();
+        assert_eq!(groups.len(), 1, "should return exactly one group for the file");
+        // The group has no members because members is always empty in current impl.
+        assert!(groups[0].members.is_empty());
+    }
+
+    #[test]
+    fn document_candidates_respects_limit() {
+        let conn = test_conn();
+        for i in 0..10i64 {
+            insert_inline_file(&conn, &format!("file_{i}.txt"), 1000 + i, "text", &[
+                (0, &format!("[PATH] file_{i}.txt")),
+                (2, "common keyword content"),
+            ]);
+        }
+
+        let (total, groups) = document_candidates(&conn, "keyword", 3, DateFilter::default()).unwrap();
+        assert_eq!(total, 10, "total should count all qualifying files");
+        assert_eq!(groups.len(), 3, "groups should be capped at limit");
+    }
+
+    #[test]
+    fn document_candidates_date_filter_restricts_results() {
+        let conn = test_conn();
+        insert_inline_file(&conn, "old.txt", 100, "text", &[
+            (0, "[PATH] old.txt"),
+            (2, "keyword present here"),
+        ]);
+        insert_inline_file(&conn, "new.txt", 9000, "text", &[
+            (0, "[PATH] new.txt"),
+            (2, "keyword present here"),
+        ]);
+
+        let filter = DateFilter { from: Some(5000), to: Some(i64::MAX), ..Default::default() };
+        let (total, groups) = document_candidates(&conn, "keyword", 100, filter).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(groups[0].representative.file_path, "new.txt");
+    }
+
+    #[test]
+    fn document_candidates_kind_filter() {
+        let conn = test_conn();
+        insert_inline_file(&conn, "doc.pdf", 1000, "pdf", &[
+            (0, "[PATH] doc.pdf"),
+            (2, "common keyword content"),
+        ]);
+        insert_inline_file(&conn, "note.txt", 1000, "text", &[
+            (0, "[PATH] note.txt"),
+            (2, "common keyword content"),
+        ]);
+
+        let filter = DateFilter { kinds: vec![FileKind::Text], ..Default::default() };
+        let (total, groups) = document_candidates(&conn, "keyword", 100, filter).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(groups[0].representative.file_kind, FileKind::Text);
+    }
+
     // ── ParamBinder ────────────────────────────────────────────────────────────
 
     #[test]

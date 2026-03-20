@@ -1,7 +1,7 @@
 mod helpers;
 use helpers::TestServer;
 
-use find_common::api::{UploadInitRequest, UploadInitResponse, UploadPatchResponse};
+use find_common::api::{SearchResponse, UploadInitRequest, UploadInitResponse, UploadPatchResponse};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -209,4 +209,96 @@ async fn upload_init_requires_auth() {
         .status();
 
     assert_eq!(status.as_u16(), 401);
+}
+
+/// PATCH /api/v1/upload/{id} without auth returns 401.
+#[tokio::test]
+async fn upload_patch_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let id = init_upload(&srv, "docs", "secret.txt", 5).await;
+
+    let status = reqwest::Client::new()
+        .patch(srv.url(&format!("/api/v1/upload/{id}")))
+        .header("Content-Range", "bytes 0-4/5")
+        .body(b"hello".to_vec())
+        .send()
+        .await
+        .expect("request")
+        .status();
+
+    assert_eq!(status.as_u16(), 401);
+}
+
+/// HEAD /api/v1/upload/{id} without auth returns 401.
+#[tokio::test]
+async fn upload_status_requires_auth() {
+    let srv = TestServer::spawn().await;
+    let id = init_upload(&srv, "docs", "secret.txt", 5).await;
+
+    let status = reqwest::Client::new()
+        .head(srv.url(&format!("/api/v1/upload/{id}")))
+        .send()
+        .await
+        .expect("request")
+        .status();
+
+    assert_eq!(status.as_u16(), 401);
+}
+
+/// Poll /api/v1/search until the file appears or the deadline passes.
+/// Needed because index_upload runs in a tokio::spawn; after the PATCH response
+/// the task may not have written to the inbox yet when wait_for_idle is called.
+async fn wait_for_search_result(srv: &TestServer, query: &str, source: &str) {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        srv.wait_for_idle().await;
+        let resp: SearchResponse = srv
+            .client
+            .get(srv.url(&format!("/api/v1/search?q={query}&source={source}")))
+            .send()
+            .await
+            .expect("search request")
+            .json()
+            .await
+            .expect("search json");
+        if resp.total >= 1 {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("file '{query}' not searchable in source '{source}' after 10s");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A complete upload (received == total) triggers index_upload, which writes a
+/// BulkRequest to the inbox. After the worker drains, the file is searchable.
+#[tokio::test]
+async fn upload_complete_file_becomes_searchable() {
+    let srv = TestServer::spawn().await;
+
+    let content = b"uniqueword_xqz9 second line here";
+    let id = init_upload(&srv, "uploads", "notes.txt", content.len() as u64).await;
+    let received = patch_upload(&srv, &id, content, 0, content.len() as u64).await;
+    assert_eq!(received, content.len() as u64, "all bytes received");
+
+    wait_for_search_result(&srv, "notes.txt", "uploads").await;
+}
+
+/// A multi-chunk upload completes correctly and the file becomes searchable.
+#[tokio::test]
+async fn upload_multipart_file_becomes_searchable() {
+    let srv = TestServer::spawn().await;
+
+    let part1 = b"first_chunk_data ";
+    let part2 = b"second_chunk_data";
+    let total = (part1.len() + part2.len()) as u64;
+
+    let id = init_upload(&srv, "uploads", "chunked_doc.txt", total).await;
+    patch_upload(&srv, &id, part1, 0, total).await;
+    let received = patch_upload(&srv, &id, part2, part1.len() as u64, total).await;
+    assert_eq!(received, total);
+
+    wait_for_search_result(&srv, "chunked_doc.txt", "uploads").await;
 }

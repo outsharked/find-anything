@@ -448,6 +448,136 @@ mod tests {
         let stats = scan_wasted_space(data_dir, cs.as_ref()).unwrap();
         assert_eq!(stats.orphaned_bytes, 0, "expected orphaned_bytes == 0 for empty content dir");
     }
+
+    // ── load_cached_stats / save_stats_to_slot ────────────────────────────────
+
+    #[test]
+    fn load_cached_stats_returns_none_when_no_scan_recorded() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = load_cached_stats(tmp.path());
+        assert!(result.is_none(), "fresh data_dir should have no cached stats");
+    }
+
+    #[test]
+    fn save_stats_to_slot_persists_and_populates_slot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        let slot = Arc::new(std::sync::RwLock::new(None::<CompactionStats>));
+
+        let stats = CompactionStats {
+            orphaned_bytes: 1024,
+            total_bytes: 8192,
+            scanned_at: 1_700_000_000,
+        };
+        save_stats_to_slot(&slot, data_dir, stats);
+
+        // In-memory slot should be populated.
+        let guard = slot.read().unwrap();
+        let cached = guard.as_ref().expect("slot should be Some after save");
+        assert_eq!(cached.orphaned_bytes, 1024);
+        assert_eq!(cached.total_bytes, 8192);
+        assert_eq!(cached.scanned_at, 1_700_000_000);
+        drop(guard);
+
+        // Persisted to disk — a fresh load should return the same values.
+        let loaded = load_cached_stats(data_dir).expect("should load after save");
+        assert_eq!(loaded.orphaned_bytes, 1024);
+        assert_eq!(loaded.total_bytes, 8192);
+        assert_eq!(loaded.scanned_at, 1_700_000_000);
+    }
+
+    #[test]
+    fn save_stats_to_slot_overwrites_previous_value() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        let slot = Arc::new(std::sync::RwLock::new(None::<CompactionStats>));
+
+        save_stats_to_slot(&slot, data_dir, CompactionStats {
+            orphaned_bytes: 100, total_bytes: 1000, scanned_at: 1,
+        });
+        save_stats_to_slot(&slot, data_dir, CompactionStats {
+            orphaned_bytes: 200, total_bytes: 2000, scanned_at: 2,
+        });
+
+        let loaded = load_cached_stats(data_dir).expect("should load");
+        assert_eq!(loaded.orphaned_bytes, 200);
+        assert_eq!(loaded.total_bytes, 2000);
+        assert_eq!(loaded.scanned_at, 2);
+    }
+
+    // ── compact_archives dry_run ──────────────────────────────────────────────
+
+    #[test]
+    fn compact_archives_dry_run_reports_orphans_without_removing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        let cs = open_store(data_dir);
+
+        let hash = "cccccccccccccccccccccccccccccccc";
+        cs.put(&find_content_store::ContentKey::new(hash), "dry run test content").unwrap();
+        // No source DB → hash is orphaned.
+
+        let resp = compact_archives(data_dir, &cs, true /* dry_run */).unwrap();
+        assert!(resp.dry_run, "response should indicate dry_run=true");
+        assert!(resp.chunks_removed > 0 || resp.units_deleted > 0,
+            "dry-run should report orphaned content");
+
+        // Content should still be present (dry-run must not remove anything).
+        assert!(cs.contains(&find_content_store::ContentKey::new(hash)).unwrap(),
+            "dry-run must not remove content");
+    }
+
+    // ── collect_live_keys (via scan_wasted_space) ─────────────────────────────
+
+    #[test]
+    fn collect_live_keys_across_multiple_sources() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        let cs = open_store(data_dir);
+
+        let hash_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+        let hash_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2";
+        let hash_orphan = "cccccccccccccccccccccccccccccc3";
+
+        cs.put(&find_content_store::ContentKey::new(hash_a), "source a content").unwrap();
+        cs.put(&find_content_store::ContentKey::new(hash_b), "source b content").unwrap();
+        cs.put(&find_content_store::ContentKey::new(hash_orphan), "orphaned").unwrap();
+
+        seed_source_db(data_dir, "src-a", hash_a);
+        seed_source_db(data_dir, "src-b", hash_b);
+        // hash_orphan not referenced by any source DB.
+
+        let resp = compact_archives(data_dir, &cs, false).unwrap();
+
+        // Only orphan should be removed.
+        assert!(!cs.contains(&find_content_store::ContentKey::new(hash_orphan)).unwrap(),
+            "orphaned content should be removed");
+        assert!(cs.contains(&find_content_store::ContentKey::new(hash_a)).unwrap(),
+            "src-a content should survive");
+        assert!(cs.contains(&find_content_store::ContentKey::new(hash_b)).unwrap(),
+            "src-b content should survive");
+        assert!(resp.chunks_removed > 0 || resp.units_deleted > 0,
+            "at least one orphan removed");
+    }
+
+    #[test]
+    fn collect_live_keys_ignores_non_db_files_in_sources_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        let cs = open_store(data_dir);
+        let sources_dir = data_dir.join("sources");
+        std::fs::create_dir_all(&sources_dir).unwrap();
+
+        // Write a non-.db file — should be silently ignored.
+        std::fs::write(sources_dir.join("readme.txt"), b"not a db").unwrap();
+
+        let hash = "dddddddddddddddddddddddddddddddd";
+        cs.put(&find_content_store::ContentKey::new(hash), "some content").unwrap();
+
+        // No source DB → all content orphaned; the .txt file should not interfere.
+        let stats = scan_wasted_space(data_dir, cs.as_ref()).unwrap();
+        assert!(stats.orphaned_bytes > 0, "content without source DB is orphaned");
+    }
 }
 
 /// Write `stats` into `slot`, replacing any previously cached value,

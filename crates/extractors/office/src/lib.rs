@@ -345,6 +345,96 @@ fn parse_pptx_paragraphs(xml: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Write};
+    use zip::write::SimpleFileOptions;
+
+    // ── ZIP builder helpers ───────────────────────────────────────────────────
+
+    fn make_docx(document_xml: &str, core_xml: Option<&str>) -> Vec<u8> {
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts = SimpleFileOptions::default();
+        if let Some(core) = core_xml {
+            zip.start_file("docProps/core.xml", opts).unwrap();
+            zip.write_all(core.as_bytes()).unwrap();
+        }
+        zip.start_file("word/document.xml", opts).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn make_pptx(slides: &[&str]) -> Vec<u8> {
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts = SimpleFileOptions::default();
+        for (i, xml) in slides.iter().enumerate() {
+            zip.start_file(format!("ppt/slides/slide{}.xml", i + 1), opts).unwrap();
+            zip.write_all(xml.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn make_minimal_xlsx() -> Vec<u8> {
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts = SimpleFileOptions::default();
+
+        zip.start_file("[Content_Types].xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("xl/workbook.xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#).unwrap();
+
+        zip.start_file("xl/_rels/workbook.xml.rels", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("xl/worksheets/sheet1.xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Hello</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>World</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Foo</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>"#).unwrap();
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn write_tmp(bytes: &[u8], suffix: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
+        f.write_all(bytes).unwrap();
+        f.flush().unwrap();
+        f
+    }
 
     #[test]
     fn test_accepts() {
@@ -428,5 +518,170 @@ mod tests {
         for (i, text) in paras.iter().enumerate() {
             assert_eq!(*text, ["Alpha", "Beta", "Gamma"][i]);
         }
+    }
+
+    // ── extract() dispatch ────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_unknown_extension_returns_empty() {
+        let cfg = ExtractorConfig::default();
+        let f = write_tmp(b"irrelevant", ".odt");
+        let lines = extract(f.path(), &cfg).unwrap();
+        assert!(lines.is_empty());
+    }
+
+    // ── DOCX extraction ───────────────────────────────────────────────────────
+
+    #[test]
+    fn docx_extracts_paragraphs() {
+        let cfg = ExtractorConfig::default();
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Hello from DOCX</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let bytes = make_docx(doc_xml, None);
+        let f = write_tmp(&bytes, ".docx");
+        let lines = extract(f.path(), &cfg).unwrap();
+        let contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
+        assert!(contents.contains(&"Hello from DOCX"), "lines: {lines:?}");
+        assert!(contents.contains(&"Second paragraph"), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn docx_extracts_metadata_when_core_xml_present() {
+        let cfg = ExtractorConfig::default();
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p></w:body>
+</w:document>"#;
+        let core_xml = r#"<?xml version="1.0"?>
+<cp:coreProperties xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>My Test Doc</dc:title>
+  <dc:creator>Test Author</dc:creator>
+</cp:coreProperties>"#;
+        let bytes = make_docx(doc_xml, Some(core_xml));
+        let f = write_tmp(&bytes, ".docx");
+        let lines = extract(f.path(), &cfg).unwrap();
+        let meta = lines.iter().find(|l| l.line_number == LINE_METADATA)
+            .expect("expected metadata line");
+        assert!(meta.content.contains("[DOCX:title] My Test Doc"), "meta: {}", meta.content);
+        assert!(meta.content.contains("[DOCX:author] Test Author"), "meta: {}", meta.content);
+    }
+
+    #[test]
+    fn docx_empty_document_returns_empty() {
+        let cfg = ExtractorConfig::default();
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body></w:body>
+</w:document>"#;
+        let bytes = make_docx(doc_xml, None);
+        let f = write_tmp(&bytes, ".docx");
+        let lines = extract(f.path(), &cfg).unwrap();
+        assert!(lines.is_empty(), "empty document should yield no lines, got: {lines:?}");
+    }
+
+    #[test]
+    fn docx_corrupt_zip_returns_error() {
+        let cfg = ExtractorConfig::default();
+        let f = write_tmp(b"not a zip", ".docx");
+        let result = extract(f.path(), &cfg);
+        assert!(result.is_err(), "corrupt DOCX should return Err");
+    }
+
+    // ── PPTX extraction ───────────────────────────────────────────────────────
+
+    #[test]
+    fn pptx_extracts_slide_text() {
+        let cfg = ExtractorConfig::default();
+        let slide1 = r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp><p:txBody>
+      <a:p><a:r><a:t>Slide One Title</a:t></a:r></a:p>
+    </p:txBody></p:sp>
+  </p:spTree></p:cSld>
+</p:sld>"#;
+        let bytes = make_pptx(&[slide1]);
+        let f = write_tmp(&bytes, ".pptx");
+        let lines = extract(f.path(), &cfg).unwrap();
+        assert!(lines.iter().any(|l| l.content.contains("Slide One Title")), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn pptx_multiple_slides_all_extracted() {
+        let cfg = ExtractorConfig::default();
+        let slide1 = r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody>
+    <a:p><a:r><a:t>First slide</a:t></a:r></a:p>
+  </p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#;
+        let slide2 = r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody>
+    <a:p><a:r><a:t>Second slide</a:t></a:r></a:p>
+  </p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#;
+        let bytes = make_pptx(&[slide1, slide2]);
+        let f = write_tmp(&bytes, ".pptx");
+        let lines = extract(f.path(), &cfg).unwrap();
+        let meta = lines.iter().find(|l| l.line_number == LINE_METADATA)
+            .expect("expected metadata line with slide count");
+        assert!(meta.content.contains("[PPTX:slide] 1"), "meta: {}", meta.content);
+        assert!(meta.content.contains("[PPTX:slide] 2"), "meta: {}", meta.content);
+        assert!(lines.iter().any(|l| l.content.contains("First slide")), "lines: {lines:?}");
+        assert!(lines.iter().any(|l| l.content.contains("Second slide")), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn pptx_empty_zip_returns_empty() {
+        let cfg = ExtractorConfig::default();
+        // A valid ZIP with no slides
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let zip = zip::ZipWriter::new(cursor);
+        let bytes = zip.finish().unwrap().into_inner();
+        let f = write_tmp(&bytes, ".pptx");
+        let lines = extract(f.path(), &cfg).unwrap();
+        assert!(lines.is_empty(), "empty PPTX should yield no lines, got: {lines:?}");
+    }
+
+    // ── XLSX extraction ───────────────────────────────────────────────────────
+
+    #[test]
+    fn xlsx_extracts_sheet_names_and_cell_content() {
+        let cfg = ExtractorConfig::default();
+        let bytes = make_minimal_xlsx();
+        let f = write_tmp(&bytes, ".xlsx");
+        let lines = extract(f.path(), &cfg).unwrap();
+        let meta = lines.iter().find(|l| l.line_number == LINE_METADATA)
+            .expect("expected metadata line");
+        assert!(meta.content.contains("[XLSX:sheet] Sheet1"), "meta: {}", meta.content);
+        let all_content: String = lines.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join(" ");
+        assert!(all_content.contains("Hello"), "content: {all_content}");
+    }
+
+    #[test]
+    fn xlsx_corrupt_returns_error() {
+        let cfg = ExtractorConfig::default();
+        let f = write_tmp(b"not an xlsx", ".xlsx");
+        let result = extract(f.path(), &cfg);
+        assert!(result.is_err(), "corrupt XLSX should return Err");
+    }
+
+    // ── extract_from_bytes() ─────────────────────────────────────────────────
+
+    #[test]
+    fn extract_from_bytes_docx() {
+        let cfg = ExtractorConfig::default();
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>from bytes</w:t></w:r></w:p></w:body>
+</w:document>"#;
+        let bytes = make_docx(doc_xml, None);
+        let lines = extract_from_bytes(&bytes, "doc.docx", &cfg).unwrap();
+        assert!(lines.iter().any(|l| l.content.contains("from bytes")), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn extract_from_bytes_corrupt_returns_error() {
+        let cfg = ExtractorConfig::default();
+        let result = extract_from_bytes(b"garbage", "doc.docx", &cfg);
+        assert!(result.is_err());
     }
 }

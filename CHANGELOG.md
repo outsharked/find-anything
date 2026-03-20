@@ -22,6 +22,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   - `extractors/pe/src/lib.rs` — 4 new file-based tests for `extract()` (garbage, missing file, minimal PE32); `tempfile` dev-dependency added
   - `extractors/text/src/lib.rs` — 16 new tests for `accepts`, `accepts_bytes`, `is_text_ext`, `is_binary_ext_path`, `extract_from_bytes`, `lines_from_str`
   - `extractors/epub/src/lib.rs` — 5 new tests: `find_opf_path` error path, empty OPF metadata, full `extract()` round-trip with in-memory EPUB, `extract_from_bytes` round-trip, empty-bytes error
+  - `extractors/media/src/lib.rs` — image/video ext detection, `accepts()`, `extract_from_bytes` dispatch, PNG/JPEG/BMP header parsing tests
+  - `extractors/office/src/lib.rs` — DOCX/PPTX/XLSX extraction tests with in-memory ZIPs; metadata (`docProps/core.xml`), paragraph parsing, slide text, cell values, max-content truncation
+  - `content-store/tests/contract.rs` — `MultiContentStore` added to the contract test matrix; 5 specific behaviour tests (put-to-all, get-from-first-hit, stats summing, compact-all-backends, empty-store edge case)
+  - `server/tests/context.rs` — new file: 8 tests for `GET /api/v1/context` and `POST /api/v1/context/batch` (surrounding lines, window clamping, auth, missing source/path, batch multi-file)
+  - `server/tests/recent.rs` — new file: 7 tests for `GET /api/v1/recent` (ordering by mtime, limit/offset, source filter, auth, empty result)
+  - `server/tests/upload.rs` — 5 new tests: `PATCH` and `HEAD` auth guards, complete single-chunk upload becomes searchable, multi-chunk upload becomes searchable
+  - `server/tests/stats_cache.rs` — 8 new tests: cached stats refresh, source file/line/size counts, `by_ext`/`by_kind` breakdowns, inbox pending count, SSE stream headers and auth
+  - `server/src/compaction.rs` — inline unit tests for `load_cached_stats`, `save_stats_to_slot`, and `compact_archives` dry-run
+  - `server/src/db/search.rs` and `db/stats.rs` — inline unit tests for pure helper functions
 
 ### Added
 

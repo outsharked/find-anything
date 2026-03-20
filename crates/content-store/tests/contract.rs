@@ -6,7 +6,8 @@
 //!   `contract::sqlite_store::get_lines_roundtrip`
 
 use std::collections::HashSet;
-use find_content_store::{ContentKey, ContentStore, SqliteContentStore};
+use std::sync::Arc;
+use find_content_store::{ContentKey, ContentStore, MultiContentStore, SqliteContentStore};
 use tempfile::TempDir;
 
 // ── Per-store setup helpers ───────────────────────────────────────────────────
@@ -188,5 +189,105 @@ macro_rules! contract_tests {
     };
 }
 
+/// Returns a `MultiContentStore` wrapping two `SqliteContentStore` instances,
+/// both residing in subdirectories of a single `TempDir` so the macro's
+/// `(impl ContentStore, TempDir)` return type is satisfied.
+fn make_multi_store() -> (MultiContentStore, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let sub_a = dir.path().join("a");
+    let sub_b = dir.path().join("b");
+    std::fs::create_dir_all(&sub_a).unwrap();
+    std::fs::create_dir_all(&sub_b).unwrap();
+    let s1 = SqliteContentStore::open(&sub_a, None, None, None).unwrap();
+    let s2 = SqliteContentStore::open(&sub_b, None, None, None).unwrap();
+    let store = MultiContentStore { stores: vec![Arc::new(s1), Arc::new(s2)] };
+    (store, dir)
+}
+
 contract_tests!(sqlite_store,           make_sqlite_store());
 contract_tests!(sqlite_store_compressed, make_sqlite_store_compressed());
+contract_tests!(multi_store,            make_multi_store());
+
+// ── MultiContentStore-specific behaviour ─────────────────────────────────────
+
+#[test]
+fn multi_put_writes_to_all_backends() {
+    let dir_a = TempDir::new().unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let sa: Arc<dyn ContentStore> = Arc::new(SqliteContentStore::open(dir_a.path(), None, None, None).unwrap());
+    let sb: Arc<dyn ContentStore> = Arc::new(SqliteContentStore::open(dir_b.path(), None, None, None).unwrap());
+
+    let m = MultiContentStore { stores: vec![Arc::clone(&sa), Arc::clone(&sb)] };
+    let key = k(K1);
+    m.put(&key, "hello world content").unwrap();
+
+    assert!(sa.contains(&key).unwrap(), "primary backend should contain the key");
+    assert!(sb.contains(&key).unwrap(), "secondary backend should also contain the key");
+}
+
+#[test]
+fn multi_get_lines_reads_from_first_hit() {
+    let dir_a = TempDir::new().unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let sa: Arc<dyn ContentStore> = Arc::new(SqliteContentStore::open(dir_a.path(), None, None, None).unwrap());
+    let sb: Arc<dyn ContentStore> = Arc::new(SqliteContentStore::open(dir_b.path(), None, None, None).unwrap());
+
+    // Only put the key in the secondary store.
+    let key = k(K1);
+    sb.put(&key, "secondary content").unwrap();
+
+    let m = MultiContentStore { stores: vec![Arc::clone(&sa), Arc::clone(&sb)] };
+
+    // get_lines should fall through to sb and return the content.
+    let lines = m.get_lines(&key, 0, 0).unwrap();
+    assert!(lines.is_some(), "should find key in secondary store");
+    assert_eq!(lines.unwrap()[0].1, "secondary content");
+}
+
+#[test]
+fn multi_storage_stats_sums_backends() {
+    let dir_a = TempDir::new().unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let sa: Arc<dyn ContentStore> = Arc::new(SqliteContentStore::open(dir_a.path(), None, None, None).unwrap());
+    let sb: Arc<dyn ContentStore> = Arc::new(SqliteContentStore::open(dir_b.path(), None, None, None).unwrap());
+
+    sa.put(&k(K1), "content for store a").unwrap();
+    sb.put(&k(K2), "content for store b").unwrap();
+
+    let m = MultiContentStore { stores: vec![Arc::clone(&sa), Arc::clone(&sb)] };
+    let stats = m.storage_stats();
+    assert!(stats.is_some(), "multi store should report stats when backends have data");
+    let (count, bytes) = stats.unwrap();
+    assert!(count >= 2, "should count entries from both backends (got {count})");
+    assert!(bytes > 0, "should sum bytes from both backends");
+}
+
+#[test]
+fn multi_compact_runs_all_backends() {
+    let dir_a = TempDir::new().unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let sa: Arc<dyn ContentStore> = Arc::new(SqliteContentStore::open(dir_a.path(), None, None, None).unwrap());
+    let sb: Arc<dyn ContentStore> = Arc::new(SqliteContentStore::open(dir_b.path(), None, None, None).unwrap());
+
+    // Put orphaned keys in both backends.
+    let orphan_a = k(K1);
+    let orphan_b = k(K2);
+    sa.put(&orphan_a, "orphan in a").unwrap();
+    sb.put(&orphan_b, "orphan in b").unwrap();
+
+    let m = MultiContentStore { stores: vec![Arc::clone(&sa), Arc::clone(&sb)] };
+
+    // Compact with empty live set — both orphans should be removed.
+    let result = m.compact(&HashSet::new(), false).unwrap();
+    assert!(result.chunks_removed >= 2, "should remove orphans from both backends (got {})", result.chunks_removed);
+    assert!(!sa.contains(&orphan_a).unwrap(), "orphan in primary should be gone");
+    assert!(!sb.contains(&orphan_b).unwrap(), "orphan in secondary should be gone");
+}
+
+#[test]
+fn multi_empty_stores_returns_none_for_stats() {
+    let m = MultiContentStore { stores: vec![] };
+    assert!(m.storage_stats().is_none(), "empty multi store should return None for stats");
+    assert!(!m.contains(&k(K1)).unwrap(), "empty multi store should not contain any key");
+    assert!(m.get_lines(&k(K1), 0, 0).unwrap().is_none());
+}
