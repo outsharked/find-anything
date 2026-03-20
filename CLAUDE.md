@@ -2,6 +2,17 @@
 
 This file contains project-specific instructions for Claude Code when working on this codebase.
 
+## Keeping CLAUDE.md up to date
+
+After completing any change that affects the project's architecture, key files, or non-obvious conventions described in this file, update the relevant section of CLAUDE.md so future Claude Code sessions start with accurate information. This includes:
+
+- Changes to the schema (bump the version note in the Schema section)
+- Changes to the write/read path, content storage model, or worker design
+- New or renamed config fields that affect the architecture description
+- Renaming key files, structs, or invariants described here
+
+---
+
 ## Planning and Documentation
 
 ### Feature Planning
@@ -70,16 +81,20 @@ proxy that injects the bearer token.
 
 ### Write path (indexing)
 
+The worker runs two sequential phases per inbox batch:
+
 ```
 find-scan → POST /api/v1/bulk (gzip JSON) → inbox/{id}.gz on disk
                                               ↓
-                                    background worker (polls every 1s)
+                                   Phase 1 (inline, blocking)
                                               ↓
-                              for each file: remove old chunks from ZIPs
+                              upsert files table + insert FTS5 rows
+                              write normalised .gz → inbox/to-archive/
                                               ↓
-                              chunk content → append to content_NNNNN.zip
+                                   Phase 2 (archive worker)
                                               ↓
-                              upsert files table + insert lines table + FTS5
+                              read to-archive/.gz → put blob in blobs.db
+                              keyed by file_hash (blake3 of raw file bytes)
 ```
 
 Key invariants:
@@ -91,39 +106,57 @@ Key invariants:
   never concurrent write access to a source database.
 - Within a `BulkRequest`, the worker processes **deletes first, then upserts**,
   so renames (path in both lists) are handled correctly.
+- **Phase 1** (request.rs) handles all SQLite work synchronously. At the end it
+  writes a normalised `.gz` to `inbox/to-archive/` and notifies the archive worker.
+  When re-indexing a modified file, Phase 1 reads the old blob from the content store
+  (via `file_hash`) and issues the FTS5 `'delete'` command for each old line before
+  inserting new content — keeping the contentless FTS5 index clean. Empty lines are
+  skipped in the delete pass (issuing `'delete'` with `""` corrupts FTS5 state).
+- **Phase 2** (archive_batch.rs) reads from `to-archive/` and calls
+  `content_store.put(file_hash, blob)`. It is idempotent: if a hash already exists
+  in `blobs.db` the put is a no-op, so duplicate files only ever store one copy.
+  Line content is `trim_end()`-stripped before being stored in the blob.
 
-### Content storage (ZIP archives)
+### Content storage (blobs.db)
 
-File content is stored in rotating ZIP archives under `data_dir/sources/content/NNNN/`,
-organized into subfolders by thousands. SQLite holds only metadata and FTS index.
+All file content is stored in **`data_dir/blobs.db`** — a single SQLite database
+managed by `SqliteContentStore` (`crates/content-store/`). There are no ZIP archives.
 
-- Folder structure: `content/0000/`, `content/0001/`, ... (4-digit zero-padded: archive_num / 1000)
-- Each folder contains up to 1000 archives
-- Archives named: `content_00001.zip`, `content_00002.zip`, etc. (5-digit zero-padded)
-- Example: `sources/content/0000/content_00123.zip`, `sources/content/0001/content_01234.zip`
-- Maximum capacity: 9,999 subfolders × 1000 archives = 9,999,000 archives (~99.99 TB)
-- Target size is 10 MB per archive (measured by on-disk compressed size).
-- Each file's content is split into ~1 KB chunks.
-- Chunk names: `{relative_path}.chunk{N}.txt`
-- The `lines` table stores `(chunk_archive, chunk_name, line_offset_in_chunk)`
-  — no content inline in SQLite.
-- On re-indexing a file, old chunks are **removed before new ones are written**
-  to prevent duplicate entry names in the ZIP.
-- On deletion, the SQLite transaction stays open across the ZIP rewrite; only
-  committed if the ZIP rewrite succeeds (rollback on failure = atomicity).
+- Content is **content-addressable**: keyed by `file_hash` (streaming blake3 of raw
+  file bytes). Two files with identical bytes share one stored blob.
+- Each blob is split into chunks of configurable size (default 1 KB). Each chunk
+  records `(key, chunk_num, start_line, end_line, data_bytes)`. Chunk data is lines
+  joined by `\n` with **no trailing newline**; `get_lines` uses `str::lines()` to
+  reconstruct them, which naturally handles the empty-blob sentinel and preserves
+  interior blank lines.
+- Reads use a PK-indexed range query: `get_lines(key, lo, hi)` returns only the
+  chunk(s) that overlap the requested line range — no full-blob load.
+- WAL mode + a read-connection pool (`SqliteContentStore`) allow unlimited concurrent
+  readers while a single write mutex serialises puts.
+- Compaction (`/api/v1/admin/compact`) deletes blobs whose key no longer appears in
+  any source DB's `files.file_hash` column, then VACUUMs.
+
+There is **no** separate `lines` table. The FTS5 rowid encodes both the `file_id`
+and `line_number` arithmetically:
+
+```
+rowid = file_id × 1_000_000 + line_number
+```
+
+This lets the search query decode file and line position from the FTS result without
+a JOIN to an auxiliary table.
 
 ### Read path (search)
 
 ```
-GET /api/v1/search → FTS5 query → candidate rows (chunk_archive, chunk_name,
-                                   line_offset_in_chunk)
-                   → read chunk from ZIP (cached per request)
+GET /api/v1/search → FTS5 query → decode (file_id, line_number) from rowid
+                   → JOIN files → fetch content via content_store.get_lines(file_hash, lo, hi)
                    → return matched lines + snippets
 ```
 
-Context retrieval (`/api/v1/context`, `/api/v1/file`) reads chunks from ZIP
-the same way, with a per-request HashMap cache to avoid re-reading the same
-chunk file twice.
+Context retrieval (`/api/v1/context`, `/api/v1/file`) uses the same
+`content_store.get_lines` path. A per-request cache avoids re-fetching the same
+chunk for files with many matched lines.
 
 ### Directory tree
 
