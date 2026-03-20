@@ -21,6 +21,9 @@
 	let loaded = false;
 	let loadError = false;
 	let rowEl: HTMLElement | null = null;
+	// Tracks the activePath value that last triggered auto-expand, so that a
+	// manual collapse is not immediately overridden by the reactive below.
+	let prevAutoExpandPath: string | null = null;
 
 	$: if (entry.path === activePath && rowEl) {
 		tick().then(() => rowEl?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
@@ -29,11 +32,13 @@
 	// An archive file (kind='archive') can be expanded like a directory.
 	$: isExpandable = entry.entry_type === 'dir' || entry.kind === 'archive';
 
-	// Auto-expand directories and archives if activePath is a descendant or exact match.
-	$: if (isExpandable && activePath) {
-		if (shouldExpandEntry(entry, activePath) && !expanded) {
-			expandDir();
-		}
+	// Auto-expand when activePath changes to a new descendant value. By
+	// gating on `activePath !== prevAutoExpandPath`, a manual collapse is not
+	// immediately overridden: the reactive re-runs when `expanded` changes, but
+	// the path comparison short-circuits and leaves `expanded` alone.
+	$: if (isExpandable && activePath !== prevAutoExpandPath && activePath && shouldExpandEntry(entry, activePath)) {
+		prevAutoExpandPath = activePath;
+		if (!expanded) expandDir();
 	}
 
 	// Compute the prefix this directory row is responsible for.

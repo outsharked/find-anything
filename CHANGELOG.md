@@ -23,6 +23,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **Tree directory collapse** — manually collapsing a directory (or archive node) that contains the active file no longer immediately re-expands; the auto-expand reactive now gates on `activePath` changing to a new value rather than re-running whenever `expanded` changes, so user-initiated collapses are respected
+
 - **Palette-indexed TIFF display** — TIFF files with `PhotometricInterpretation=RGBPalette` (8-bit indexed colour, common in older scanned documents) now convert correctly via `GET /api/v1/raw?convert=png`; previously returned 422 because the `image` crate's TIFF decoder does not implement this mode. Fixed via a new `image_util` module that reads the `ColorMap` tag directly, patches the PMI field in-memory to `BlackIsZero`, decodes the indices via the `image` crate, then expands them through the palette to produce a full RGB image.
 - **PathBar copy buttons** — clicking "Copy share link" no longer also triggers the "Copied" state on the "Copy path" button; `fallbackCopy` now takes a callback instead of hardcoding `showCopied()`
 - **PathBar tooltip positioning** — replaced native `title` attribute (which positioned the tooltip far from the cursor in flex layouts) with a CSS `::after` pseudo-element tooltip that appears above the button, right-aligned to its edge

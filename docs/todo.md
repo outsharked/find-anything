@@ -4,6 +4,10 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+
+[ ] FEAT: Can collapse tree even when selected
+[ ] FEAT "split/extracted" doesn't make sense with sleout - just remove button.
+[ ] FEAT: make chevron bar wider
 [ ] CHORE: address clippy too_many_arguments issues
 [ ] FEAT: Allow non-zip archive members to be streamable, if they are below a configrable threshold in size
 [ ] Regular download button should be available in archives too
