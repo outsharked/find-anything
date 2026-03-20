@@ -53,6 +53,7 @@
 	let metaLines: { content: string }[] = [];
 	/** Paths of duplicate/canonical copies of this file (dedup aliases). */
 	let duplicatePaths: string[] = [];
+	let duplicatesExpanded = false;
 
 	// Original file view
 	let showOriginal = false;
@@ -511,6 +512,30 @@
 				{/if}
 			</div>
 		</div>
+		{#if duplicatePaths.length === 1}
+			<div class="dup-bar dup-bar--inline">
+				<span class="dup-label">Duplicate:</span>
+				<button class="dup-link" on:click={() => openDuplicate(duplicatePaths[0])}>{duplicatePaths[0]}</button>
+			</div>
+		{:else if duplicatePaths.length > 1}
+			<div class="dup-bar">
+				<button class="dup-toggle" on:click={() => duplicatesExpanded = !duplicatesExpanded}>
+					<svg class="dup-chevron" class:dup-chevron--open={duplicatesExpanded} width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true">
+						<polygon points="2,1 10,6 2,11"/>
+					</svg>
+					{duplicatePaths.length} duplicates
+				</button>
+				{#if duplicatesExpanded}
+					<div class="dup-list">
+						{#each duplicatePaths as dup}
+							<div class="dup-item">
+								<button class="dup-link" on:click={() => openDuplicate(dup)}>{dup}</button>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 		{#if showOriginal && canViewInline}
 			{#if fileKind === 'image'}
 				<ImageViewer
@@ -519,22 +544,16 @@
 					fullWidth={imageFullWidth}
 					{placeholderStyle}
 					{metaLines}
-					{duplicatePaths}
-					on:openDuplicate={(e) => openDuplicate(e.detail.path)}
 				/>
 			{:else if fileKind === 'audio'}
 				<AudioViewer
 					src={rawInlineUrl}
 					{metaLines}
-					{duplicatePaths}
-					on:openDuplicate={(e) => openDuplicate(e.detail.path)}
 				/>
 			{:else if fileKind === 'video'}
 				<VideoViewer
 					src={rawInlineUrl}
 					{metaLines}
-					{duplicatePaths}
-					on:openDuplicate={(e) => openDuplicate(e.detail.path)}
 				/>
 			{:else}
 				<!-- PDF / other inline kind -->
@@ -555,14 +574,8 @@
 				{#if isEncrypted}
 					<div class="encrypted-notice">🔒 This PDF is password-protected and cannot be displayed.</div>
 				{/if}
-				{#if metaLines.length > 0 || duplicatePaths.length > 0}
+				{#if metaLines.length > 0}
 					<div class="meta-panel">
-						{#each duplicatePaths as dup}
-							<div class="meta-row duplicate-row">
-								<span class="duplicate-label">DUPLICATE:</span>
-								<button class="duplicate-link" on:click={() => openDuplicate(dup)}>{dup}</button>
-							</div>
-						{/each}
 						{#each metaLines as meta}
 							{#each parseMetaTags(meta.content) as tag}
 								<div class="meta-row">
@@ -578,7 +591,7 @@
 				{/if}
 				{#if markdownFormat && isMarkdown && !markdownTooLarge}
 					<MarkdownViewer rendered={String(renderedMarkdown)} />
-				{:else if codeLines.length === 0 && metaLines.length === 0 && duplicatePaths.length === 0 && fileKind === 'archive' && !archivePath}
+				{:else if codeLines.length === 0 && metaLines.length === 0 && fileKind === 'archive' && !archivePath}
 					<!-- Archive root: show member listing inline -->
 					<DirListing
 						source={source}
@@ -598,7 +611,7 @@
 							}
 						}}
 					/>
-				{:else if codeLines.length === 0 && metaLines.length === 0 && duplicatePaths.length === 0}
+				{:else if codeLines.length === 0 && metaLines.length === 0}
 					<div class="no-content">No text content or metadata available for this file.</div>
 				{:else}
 					<CodeViewer
@@ -657,6 +670,94 @@
 		flex: 1;
 		overflow: auto;
 		background: var(--bg);
+	}
+
+	.dup-bar {
+		padding: 2px 12px;
+		background: var(--bg-secondary);
+		border-bottom: 1px solid var(--border);
+		font-family: var(--font-mono);
+		font-size: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		flex-shrink: 0;
+	}
+
+	.dup-bar--inline {
+		flex-direction: row;
+		align-items: center;
+		gap: 6px;
+		padding-top: 4px;
+		padding-bottom: 4px;
+		padding-left: 24px;
+	}
+
+	.dup-label {
+		color: var(--accent);
+		font-weight: 600;
+		flex-shrink: 0;
+		margin-right: 6px;
+	}
+
+	.dup-toggle {
+		background: none;
+		border: none;
+		padding: 4px 12px;
+		font-family: inherit;
+		font-size: inherit;
+		color: var(--accent);
+		cursor: pointer;
+		text-align: left;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		gap: 5px;
+	}
+
+	.dup-toggle:hover {
+		text-decoration: underline;
+	}
+
+	.dup-chevron {
+		flex-shrink: 0;
+		transition: transform 0.15s;
+		color: var(--text);
+		vertical-align: middle;
+	}
+
+	.dup-chevron--open {
+		transform: rotate(90deg);
+	}
+
+	.dup-list {
+		padding-left: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+	}
+
+	.dup-item {
+		display: flex;
+	}
+
+	.dup-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font-family: inherit;
+		font-size: inherit;
+		color: var(--accent);
+		cursor: pointer;
+		text-align: left;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 100%;
+	}
+
+	.dup-link:hover {
+		text-decoration: underline;
 	}
 
 	.toolbar {
@@ -739,36 +840,6 @@
 
 	.tag-value {
 		color: var(--text-muted);
-	}
-
-	.duplicate-row {
-		display: flex;
-		align-items: baseline;
-		gap: 6px;
-	}
-
-	.duplicate-label {
-		flex-shrink: 0;
-		color: var(--accent, #58a6ff);
-		font-weight: 600;
-	}
-
-	.duplicate-link {
-		background: none;
-		border: none;
-		padding: 0;
-		font-family: inherit;
-		font-size: inherit;
-		color: var(--accent, #58a6ff);
-		cursor: pointer;
-		text-align: left;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.duplicate-link:hover {
-		text-decoration: underline;
 	}
 
 	.encrypted-notice {
