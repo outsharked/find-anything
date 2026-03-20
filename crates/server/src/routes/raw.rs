@@ -192,7 +192,7 @@ pub async fn get_raw(
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
         };
         let png_bytes = match tokio::task::spawn_blocking(move || -> Result<Vec<u8>, ()> {
-            let img = image::load_from_memory(&bytes).map_err(|_| ())?;
+            let img = crate::image_util::load_image(&bytes).map_err(|_| ())?;
             let mut out = Vec::new();
             img.write_to(
                 &mut std::io::Cursor::new(&mut out),
@@ -421,7 +421,7 @@ async fn serve_archive_member(
                 .unwrap_or_else(|| "file.png".to_string());
             let png_name = png_name.replace('"', "");
             let png_bytes = match (|| -> Result<Vec<u8>, ()> {
-                let img = image::load_from_memory(&bytes).map_err(|_| ())?;
+                let img = crate::image_util::load_image(&bytes).map_err(|_| ())?;
                 let mut out = Vec::new();
                 img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
                     .map_err(|_| ())?;

@@ -50,6 +50,7 @@ reqwest       = { version = "0.13", features = ["json", "rustls", "blocking"], d
 # Only tiff (decode) + png (encode) needed for the convert=png endpoint.
 # Default features include avif/rav1e (an AV1 encoder, ~90 transitive deps) — disable them.
 image         = { version = "0.25", default-features = false, features = ["tiff", "png"] }
+tiff          = "0.10"
 tempfile      = "3"
 
 [dev-dependencies]

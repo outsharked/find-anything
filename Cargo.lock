@@ -1518,6 +1518,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tiff",
  "tokio",
  "tokio-stream",
  "tokio-util",

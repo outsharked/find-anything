@@ -1,4 +1,5 @@
 pub(crate) mod compaction;
+pub(crate) mod image_util;
 pub(crate) mod db;
 pub(crate) mod fuzzy;
 pub(crate) mod normalize;
