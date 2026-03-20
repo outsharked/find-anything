@@ -106,14 +106,14 @@ fn archive_gz(
     let mut skipped = 0usize;
 
     for file in request.files {
-        let Some(file_content_hash) = &file.content_hash else {
+        let Some(file_content_hash) = &file.file_hash else {
             continue;
         };
 
-        // Read the current content_hash from the DB for this path.
+        // Read the current file_hash from the DB for this path.
         let db_hash: Option<String> = conn
             .query_row(
-                "SELECT content_hash FROM files WHERE path = ?1",
+                "SELECT file_hash FROM files WHERE path = ?1",
                 rusqlite::params![file.path],
                 |r| r.get(0),
             )
@@ -145,28 +145,6 @@ fn archive_gz(
             continue;
         }
 
-        // Check for inline storage — these files don't need archive content.
-        let file_id: Option<i64> = conn
-            .query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                rusqlite::params![file.path],
-                |r| r.get(0),
-            )
-            .optional()
-            .unwrap_or(None);
-        if let Some(fid) = file_id {
-            let is_inline: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM file_content WHERE file_id = ?1",
-                    rusqlite::params![fid],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            if is_inline > 0 {
-                continue;
-            }
-        }
-
         // Build blob: sort lines by line_number, join with '\n'.
         let mut sorted_lines = file.lines.clone();
         sorted_lines.sort_by_key(|l| l.line_number);
@@ -175,7 +153,7 @@ fn archive_gz(
         }
         let blob: String = sorted_lines
             .into_iter()
-            .map(|l| l.content)
+            .map(|l| l.content.trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -233,7 +211,6 @@ mod tests {
     fn make_worker_config() -> WorkerConfig {
         WorkerConfig {
             request_timeout: std::time::Duration::from_secs(30),
-            inline_threshold_bytes: 0,
             archive_batch_size: 10,
             activity_log_max_entries: 100,
             normalization: NormalizationSettings::default(),
@@ -262,7 +239,7 @@ mod tests {
                     },
                 ],
                 extract_ms: None,
-                content_hash: Some("testhash".to_string()),
+                file_hash: Some("testhash".to_string()),
                 is_new: true,
             }],
             delete_paths: vec![],
@@ -279,7 +256,7 @@ mod tests {
         let conn = crate::db::open(&db_path).unwrap();
 
         conn.execute(
-            "INSERT INTO files (path, mtime, size, kind, indexed_at, extract_ms, content_hash, line_count)
+            "INSERT INTO files (path, mtime, size, kind, indexed_at, extract_ms, file_hash, line_count)
              VALUES (?1, 1000, 100, 'text', 0, NULL, 'testhash', 2)",
             rusqlite::params![path],
         )
@@ -397,7 +374,7 @@ mod tests {
         std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         let conn = crate::db::open(&db_path).unwrap();
         conn.execute(
-            "INSERT INTO files (path, mtime, size, kind, indexed_at, extract_ms, content_hash, line_count)
+            "INSERT INTO files (path, mtime, size, kind, indexed_at, extract_ms, file_hash, line_count)
              VALUES ('docs/readme.txt', 2000, 100, 'text', 0, NULL, 'newhash', 1)",
             [],
         )
@@ -418,7 +395,7 @@ mod tests {
                     content: "old content".to_string(),
                 }],
                 extract_ms: None,
-                content_hash: Some("oldhash".to_string()),
+                file_hash: Some("oldhash".to_string()),
                 is_new: false,
             }],
             delete_paths: vec![],

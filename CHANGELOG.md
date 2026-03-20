@@ -9,6 +9,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- **Plan 086 — remove `inline_threshold_bytes` and `file_content` table** — small-file inline storage is gone; all content now lives exclusively in the `SqliteContentStore`; `inline_threshold_bytes` removed from `ScanConfig`/`server.toml`; `file_content` table dropped (schema v14 migration); `content_hash` column renamed to `file_hash` everywhere; `is_binary_ext_path` hash-skip guard narrowed to `is_open_blocking_ext_path` (vmdk/vhd/iso/img only); SCANNER_VERSION bumped to 3; MIN_CLIENT_VERSION bumped to 0.6.2
+- **FTS5 re-index cleanup** — on re-indexing a modified file, the worker now issues the FTS5 `'delete'` command for every old line before inserting new content; the old content is sourced from the `SqliteContentStore` using the previous `file_hash`; empty lines are skipped in the delete pass (issuing `'delete'` with `""` corrupts FTS5 state for that rowid); `process_file_phase1` receives an `Option<&dyn ContentStore>` for this purpose
+- **Content-store `chunk_blob` redesign** — chunks are now stored as lines joined by `\n` with no trailing newline (previously each line was stored with a trailing `\n`); `get_lines` uses `str::lines()` for reconstruction, which correctly handles the trailing-newline artifact and preserves interior empty lines; `chunk_blob("")` naturally returns an empty vec; empty lines are no longer filtered from `get_lines` results (UX handles display)
+- **Trailing whitespace trimming** — line content is now `trim_end()`-stripped before being written to the FTS5 index and before being stored in the content store blob; this keeps the indexes clean without affecting search correctness
+
 ### Fixed
 
 - **Palette-indexed TIFF display** — TIFF files with `PhotometricInterpretation=RGBPalette` (8-bit indexed colour, common in older scanned documents) now convert correctly via `GET /api/v1/raw?convert=png`; previously returned 422 because the `image` crate's TIFF decoder does not implement this mode. Fixed via a new `image_util` module that reads the `ColorMap` tag directly, patches the PMI field in-memory to `BlackIsZero`, decodes the indices via the `image` crate, then expands them through the palette to produce a full RGB image.

@@ -20,7 +20,6 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 #[derive(Clone)]
 pub struct WorkerConfig {
     pub request_timeout: std::time::Duration,
-    pub inline_threshold_bytes: u64,
     pub archive_batch_size: usize,
     pub activity_log_max_entries: usize,
     pub normalization: NormalizationSettings,
@@ -149,6 +148,7 @@ pub async fn start_inbox_worker(
         let status = status.clone();
         let archive_notify = Arc::clone(&archive_notify);
         let cfg_index = cfg.clone();
+        let content_store_index = Arc::clone(&content_store);
 
         tokio::spawn(async move {
             tracing::debug!("Indexing worker started");
@@ -158,6 +158,7 @@ pub async fn start_inbox_worker(
                 archive_notify,
                 recent_tx,
                 source_stats_cache,
+                content_store: content_store_index,
                 stats_watch,
             };
             while let Some(path) = work_rx.recv().await {
@@ -328,7 +329,7 @@ mod tests {
                 content: path.to_string(),
             }],
             extract_ms: None,
-            content_hash: None,
+            file_hash: None,
             scanner_version: 0,
             is_new: false,
         }

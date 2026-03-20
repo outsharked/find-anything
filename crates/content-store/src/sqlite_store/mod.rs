@@ -183,10 +183,14 @@ fn chunk_blob(blob: &str, chunk_size: usize) -> Vec<Chunk> {
     let mut chunk_start: Option<usize> = None;
     let mut chunk_last: usize = 0;
 
-    for (pos, line) in blob.split('\n').enumerate() {
-        let line_text = format!("{line}\n");
+    // Use `lines()` so an empty blob produces zero iterations and no trailing
+    // phantom line.  Lines are stored joined by '\n' with no trailing newline,
+    // so `split('\n')` in `get_lines` reconstructs them exactly.
+    for (pos, line) in blob.lines().enumerate() {
+        // Adding a separator '\n' before every non-first line.
+        let add_size = if current.is_empty() { line.len() } else { 1 + line.len() };
 
-        if current.len() + line_text.len() > chunk_size && !current.is_empty() {
+        if current.len() + add_size > chunk_size && !current.is_empty() {
             chunks.push(Chunk {
                 chunk_num,
                 start_line: chunk_start.unwrap_or(0),
@@ -201,7 +205,10 @@ fn chunk_blob(blob: &str, chunk_size: usize) -> Vec<Chunk> {
             chunk_start = Some(pos);
         }
         chunk_last = pos;
-        current.push_str(&line_text);
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
     }
 
     if !current.is_empty() {
@@ -286,9 +293,12 @@ impl ContentStore for SqliteContentStore {
         for row in rows {
             let base = row.start_line as usize;
             let text = decode_chunk(&row.data)?;
-            for (offset, line) in text.split('\n').enumerate() {
+            if text.is_empty() {
+                continue; // sentinel row for empty blobs
+            }
+            for (offset, line) in text.lines().enumerate() {
                 let pos = base + offset;
-                if pos >= lo && pos <= hi && !line.is_empty() {
+                if pos >= lo && pos <= hi {
                     result.push((pos, line.to_owned()));
                 }
             }

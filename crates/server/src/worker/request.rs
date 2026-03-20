@@ -17,6 +17,7 @@ use tokio::sync::broadcast;
 
 use find_common::api::{BulkRequest, IndexingFailure, RecentAction, RecentFile};
 use find_common::path::is_composite;
+use find_content_store::ContentStore;
 
 use crate::db;
 use crate::normalize;
@@ -42,6 +43,7 @@ pub(super) struct IndexerHandles {
     pub recent_tx:          broadcast::Sender<RecentFile>,
     pub source_stats_cache: Arc<std::sync::RwLock<crate::stats_cache::SourceStatsCache>>,
     pub stats_watch:        Arc<tokio::sync::watch::Sender<u64>>,
+    pub content_store:      Arc<dyn ContentStore>,
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────────
@@ -63,7 +65,8 @@ pub(super) async fn process_request_async(
         let cfg = handles.cfg.clone();
         let recent_tx = handles.recent_tx.clone();
         let stats_watch = Arc::clone(&handles.stats_watch);
-        move || process_request_phase1(&data_dir, &request_path, &to_archive_dir, &status, cfg, &recent_tx, &stats_watch)
+        let content_store = Arc::clone(&handles.content_store);
+        move || process_request_phase1(&data_dir, &request_path, &to_archive_dir, &status, cfg, &recent_tx, &stats_watch, &content_store)
     });
 
     let timed_result = tokio::time::timeout(request_timeout, blocking_task).await;
@@ -132,6 +135,7 @@ pub(super) async fn process_request_async(
 
 /// Phase 1: process a single inbox request — SQLite only, no content store I/O.
 /// Writes a normalized `.gz` to `to_archive_dir` for the archive phase.
+#[allow(clippy::too_many_arguments)]
 fn process_request_phase1(
     data_dir: &Path,
     request_path: &Path,
@@ -140,6 +144,7 @@ fn process_request_phase1(
     cfg: WorkerConfig,
     recent_tx: &tokio::sync::broadcast::Sender<RecentFile>,
     stats_watch: &Arc<tokio::sync::watch::Sender<u64>>,
+    content_store: &Arc<dyn ContentStore>,
 ) -> Result<crate::stats_cache::SourceStatsDelta> {
     let request_start = std::time::Instant::now();
 
@@ -259,7 +264,7 @@ fn process_request_phase1(
         }
         let file_start = std::time::Instant::now();
 
-        match pipeline::process_file_phase1(&mut conn, &file, cfg.inline_threshold_bytes) {
+        match pipeline::process_file_phase1(&mut conn, &file, Some(content_store.as_ref())) {
             Ok(outcome) => {
                 successfully_indexed.push(file.path.clone());
                 if file.mtime != 0 && !is_composite(&file.path) {
@@ -305,7 +310,7 @@ fn process_request_phase1(
                 } else {
                     (pipeline::filename_only_file(&file), false)
                 };
-                if let Err(e2) = pipeline::process_file_phase1_fallback(&mut conn, &fallback, skip_inner, cfg.inline_threshold_bytes) {
+                if let Err(e2) = pipeline::process_file_phase1_fallback(&mut conn, &fallback, skip_inner, Some(content_store.as_ref())) {
                     if is_db_locked(&e2) {
                         tracing::warn!("Filename-only fallback also failed for {} (db locked, will retry): {e2:#}", file.path);
                     } else {
@@ -433,13 +438,32 @@ fn process_request_phase1(
 mod tests {
     use super::*;
     use find_common::api::{BulkRequest, FileKind, IndexFile, IndexLine, PathRename, LINE_CONTENT_START};
+    use find_content_store::SqliteContentStore;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
+
+    fn make_content_store(data_dir: &std::path::Path) -> Arc<dyn ContentStore> {
+        Arc::new(SqliteContentStore::open(data_dir, None, None, None).unwrap())
+    }
+
+    /// Wrapper used in tests: opens a throw-away content store from data_dir so
+    /// test call-sites don't need to construct one explicitly.
+    fn call_phase1(
+        data_dir: &std::path::Path,
+        request_path: &std::path::Path,
+        to_archive_dir: &std::path::Path,
+        status: &StatusHandle,
+        cfg: WorkerConfig,
+        recent_tx: &tokio::sync::broadcast::Sender<RecentFile>,
+        stats_watch: &Arc<tokio::sync::watch::Sender<u64>>,
+    ) -> Result<crate::stats_cache::SourceStatsDelta> {
+        let cs = make_content_store(data_dir);
+        process_request_phase1(data_dir, request_path, to_archive_dir, status, cfg, recent_tx, stats_watch, &cs)
+    }
 
     fn make_worker_config() -> WorkerConfig {
         WorkerConfig {
             request_timeout: std::time::Duration::from_secs(30),
-            inline_threshold_bytes: 0,
             archive_batch_size: 100, // used by archive_batch phase
             activity_log_max_entries: 1000,
             normalization: find_common::config::NormalizationSettings::default(),
@@ -468,7 +492,7 @@ mod tests {
                 content: path.to_string(),
             }],
             extract_ms: None,
-            content_hash: None,
+            file_hash: None,
             is_new: true,
         }
     }
@@ -509,7 +533,7 @@ mod tests {
         let request_path = inbox_dir.join("req001.gz");
         write_bulk_request_gz(&request_path, &req);
 
-        process_request_phase1(
+        call_phase1(
             &data_dir,
             &request_path,
             &to_archive_dir,
@@ -553,7 +577,7 @@ mod tests {
         };
         let req_path1 = inbox_dir.join("req001.gz");
         write_bulk_request_gz(&req_path1, &upsert_req);
-        process_request_phase1(
+        call_phase1(
             &data_dir,
             &req_path1,
             &to_archive_dir,
@@ -589,7 +613,7 @@ mod tests {
         // Use a fresh to_archive_dir for the delete call so we can check it independently.
         let to_archive_dir2 = TempDir::new().unwrap();
 
-        process_request_phase1(
+        call_phase1(
             &data_dir,
             &req_path2,
             to_archive_dir2.path(),
@@ -637,7 +661,7 @@ mod tests {
         };
         let req_path1 = inbox_dir.join("req001.gz");
         write_bulk_request_gz(&req_path1, &upsert_req);
-        process_request_phase1(
+        call_phase1(
             &data_dir,
             &req_path1,
             &to_archive_dir,
@@ -666,7 +690,7 @@ mod tests {
         // Use a fresh to_archive_dir for the rename call so we can assert exactly 1 .gz.
         let to_archive_dir2 = TempDir::new().unwrap();
 
-        process_request_phase1(
+        call_phase1(
             &data_dir,
             &req_path2,
             to_archive_dir2.path(),
@@ -716,7 +740,7 @@ mod tests {
         let request_path = inbox_dir.join("req001.gz");
         write_bulk_request_gz(&request_path, &req);
 
-        process_request_phase1(
+        call_phase1(
             &data_dir,
             &request_path,
             &to_archive_dir,
@@ -758,7 +782,7 @@ mod tests {
         };
         let req_path1 = inbox_dir.join("req001.gz");
         write_bulk_request_gz(&req_path1, &seed_req);
-        process_request_phase1(
+        call_phase1(
             &data_dir,
             &req_path1,
             &to_archive_dir,
@@ -780,7 +804,7 @@ mod tests {
         };
         let req_path2 = inbox_dir.join("req002.gz");
         write_bulk_request_gz(&req_path2, &combined_req);
-        process_request_phase1(
+        call_phase1(
             &data_dir,
             &req_path2,
             &to_archive_dir,
@@ -840,7 +864,7 @@ mod tests {
                     IndexLine { archive_path: None, line_number: LINE_CONTENT_START, content: long_line.clone() },
                 ],
                 extract_ms: None,
-                content_hash: None,
+                file_hash: None,
                 is_new: true,
             }],
             delete_paths: vec![],
@@ -861,7 +885,7 @@ mod tests {
             ..make_worker_config()
         };
 
-        process_request_phase1(
+        call_phase1(
             &data_dir, &request_path, &to_archive_dir,
             &make_status(), cfg,
             &recent_tx, &make_stats_watch(),
@@ -912,7 +936,7 @@ mod tests {
                     IndexLine { archive_path: None, line_number: 1, content: exif_line.to_string() },
                 ],
                 extract_ms: None,
-                content_hash: None,
+                file_hash: None,
                 is_new: true,
             }],
             delete_paths: vec![],
@@ -932,7 +956,7 @@ mod tests {
             ..make_worker_config()
         };
 
-        process_request_phase1(
+        call_phase1(
             &data_dir, &request_path, &to_archive_dir,
             &make_status(), cfg,
             &recent_tx, &make_stats_watch(),

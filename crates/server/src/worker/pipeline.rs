@@ -8,6 +8,7 @@ use rusqlite::OptionalExtension;
 
 use find_common::api::{FileKind, IndexFile, IndexLine, LINE_PATH, LINE_METADATA};
 use find_common::path::{composite_like_prefix, is_composite};
+use find_content_store::{ContentKey, ContentStore};
 
 use crate::db::{encode_fts_rowid, MAX_LINES_PER_FILE};
 
@@ -29,9 +30,9 @@ pub(super) enum Phase1Outcome {
 pub(super) fn process_file_phase1(
     conn: &mut Connection,
     file: &IndexFile,
-    inline_threshold_bytes: u64,
+    content_store: Option<&dyn ContentStore>,
 ) -> Result<Phase1Outcome> {
-    process_file_phase1_fallback(conn, file, false, inline_threshold_bytes)
+    process_file_phase1_fallback(conn, file, false, content_store)
 }
 
 /// Like `process_file_phase1` but optionally skips the deletion of inner
@@ -40,7 +41,7 @@ pub(super) fn process_file_phase1_fallback(
     conn: &mut Connection,
     file: &IndexFile,
     skip_inner_delete: bool,
-    inline_threshold_bytes: u64,
+    content_store: Option<&dyn ContentStore>,
 ) -> Result<Phase1Outcome> {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -56,15 +57,17 @@ pub(super) fn process_file_phase1_fallback(
         tx.commit()?;
     }
 
-    // Single query for the existing record id, stored mtime, size, and kind.
-    let existing_record: Option<(i64, i64, i64, String)> = conn.query_row(
-        "SELECT id, mtime, COALESCE(size,0), kind FROM files WHERE path = ?1",
+    // Single query for the existing record: id, mtime, size, kind, file_hash, line_count.
+    let existing_record: Option<(i64, i64, i64, String, Option<String>, i64)> = conn.query_row(
+        "SELECT id, mtime, COALESCE(size,0), kind, file_hash, COALESCE(line_count,0) FROM files WHERE path = ?1",
         rusqlite::params![file.path],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
     ).optional()?;
-    let existing_id    = existing_record.as_ref().map(|(id, _, _, _)| *id);
-    let stored_mtime   = existing_record.as_ref().map(|(_, mtime, _, _)| *mtime);
-    let old_size_kind  = existing_record.map(|(_, _, size, kind)| (size, FileKind::from(kind.as_str())));
+    let existing_id     = existing_record.as_ref().map(|(id, _, _, _, _, _)| *id);
+    let stored_mtime    = existing_record.as_ref().map(|(_, mtime, _, _, _, _)| *mtime);
+    let old_file_hash   = existing_record.as_ref().and_then(|(_, _, _, _, h, _)| h.clone());
+    let old_line_count  = existing_record.as_ref().map(|(_, _, _, _, _, lc)| *lc).unwrap_or(0);
+    let old_size_kind   = existing_record.map(|(_, _, size, kind, _, _)| (size, FileKind::from(kind.as_str())));
 
     // Stale-mtime guard: skip if the stored mtime is already newer.
     if let Some(stored) = stored_mtime {
@@ -77,20 +80,15 @@ pub(super) fn process_file_phase1_fallback(
         }
     }
 
-    // Decide: inline vs deferred archive storage.
-    let total_content_bytes: usize = file.lines.iter().map(|l| l.content.len()).sum();
-    let use_inline = inline_threshold_bytes > 0
-        && total_content_bytes as u64 <= inline_threshold_bytes;
-
     // Single transaction for the whole file.
     let t_fts = std::time::Instant::now();
     let tx = conn.transaction()?;
 
     let line_count = file.lines.len() as i64;
 
-    // Upsert the file record and get the stable file_id.
+    // Upsert the file record, keeping the same file_id on re-index.
     let file_id: i64 = tx.query_row(
-        "INSERT INTO files (path, mtime, size, kind, scanner_version, indexed_at, extract_ms, content_hash, line_count)
+        "INSERT INTO files (path, mtime, size, kind, scanner_version, indexed_at, extract_ms, file_hash, line_count)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(path) DO UPDATE SET
            mtime             = excluded.mtime,
@@ -99,7 +97,7 @@ pub(super) fn process_file_phase1_fallback(
            scanner_version   = excluded.scanner_version,
            indexed_at        = excluded.indexed_at,
            extract_ms        = excluded.extract_ms,
-           content_hash      = excluded.content_hash,
+           file_hash         = excluded.file_hash,
            line_count        = excluded.line_count
          RETURNING id",
         rusqlite::params![
@@ -107,98 +105,62 @@ pub(super) fn process_file_phase1_fallback(
             file.scanner_version,
             now_secs,
             file.extract_ms.map(|ms| ms as i64),
-            file.content_hash.as_deref(),
+            file.file_hash.as_deref(),
             line_count,
         ],
         |row| row.get(0),
     )?;
 
-    // (content_hash is stored in files.content_hash; no separate content_blocks table in v4)
-
-    // On re-index: delete old inline FTS entries before inserting new ones.
-    // This keeps the contentless FTS5 index clean for inline files, where old
-    // content is readily available in file_content before it gets overwritten.
-    // For deferred files, old FTS entries become stale and are filtered at read
-    // time by read_chunk_for_file returning None for uncovered line numbers.
-    if existing_id.is_some() && use_inline {
-        let old_content: Option<String> = tx.query_row(
-            "SELECT content FROM file_content WHERE file_id = ?1",
-            rusqlite::params![file_id],
-            |r| r.get(0),
-        ).optional()?;
-        if let Some(old) = old_content {
-            // Position i in the '\n'-split corresponds to line_number i for
-            // dense (0-based sequential) inline files.
-            for (i, old_line) in old.split('\n').enumerate() {
-                let old_rowid = encode_fts_rowid(file_id, i as i64);
-                tx.execute(
-                    "INSERT INTO lines_fts(lines_fts, rowid, content) VALUES('delete', ?1, ?2)",
-                    rusqlite::params![old_rowid, old_line],
-                )?;
+    // On re-index: remove old FTS entries using the FTS5 'delete' command.
+    // contentless FTS5 supports 'delete' as long as we supply the original content —
+    // the content store holds old content keyed by file_hash from the previous index.
+    // If old content is unavailable (hash missing or not yet archived), we skip
+    // cleanup; the stale entries become orphaned but are harmless (search JOIN on
+    // file_id still returns correct results once the new entries are inserted, and
+    // the old entries for the same rowids are not distinguishable by file).
+    if existing_id.is_some() {
+        if let (Some(store), Some(hash)) = (content_store, old_file_hash.as_deref()) {
+            let key = ContentKey::new(hash);
+            if let Ok(Some(old_lines)) = store.get_lines(&key, 0, old_line_count as usize) {
+                for (pos, content) in old_lines {
+                    // Empty content has no trigrams in the FTS index; issuing
+                    // 'delete' with "" corrupts FTS5 state for that rowid.
+                    if content.is_empty() {
+                        continue;
+                    }
+                    if (pos as i64) < MAX_LINES_PER_FILE {
+                        let old_rowid = encode_fts_rowid(file_id, pos as i64);
+                        tx.execute(
+                            "INSERT INTO lines_fts(lines_fts, rowid, content) VALUES('delete', ?1, ?2)",
+                            rusqlite::params![old_rowid, content],
+                        )?;
+                    }
+                }
             }
         }
     }
 
-    if use_inline {
-        // Store content inline in file_content table.
-        let mut sorted_lines = file.lines.iter().collect::<Vec<_>>();
-        sorted_lines.sort_by_key(|l| l.line_number);
-        let inline_text: String = sorted_lines.iter()
-            .map(|l| l.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        tx.execute(
-            "INSERT INTO file_content (file_id, content) VALUES (?1, ?2)
-             ON CONFLICT(file_id) DO UPDATE SET content = excluded.content",
-            rusqlite::params![file_id, inline_text],
-        )?;
-
-        // Insert FTS rows using encode_fts_rowid.
-        for line in &sorted_lines {
-            let line_number = line.line_number as i64;
-            if line_number >= MAX_LINES_PER_FILE {
-                tracing::warn!(
-                    "file {} line {} exceeds MAX_LINES_PER_FILE — skipping FTS",
-                    file.path, line_number
-                );
-                continue;
-            }
-            let rowid = encode_fts_rowid(file_id, line_number);
-            tx.execute(
-                "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
-                rusqlite::params![rowid, line.content],
-            )?;
+    // Insert FTS rows for search availability.
+    let mut sorted_lines = file.lines.iter().collect::<Vec<_>>();
+    sorted_lines.sort_by_key(|l| l.line_number);
+    for line in &sorted_lines {
+        let line_number = line.line_number as i64;
+        if line_number >= MAX_LINES_PER_FILE {
+            tracing::warn!(
+                "file {} line {} exceeds MAX_LINES_PER_FILE — skipping FTS",
+                file.path, line_number
+            );
+            continue;
         }
-    } else {
-        // Remove old inline content if this file was previously stored inline.
+        let rowid = encode_fts_rowid(file_id, line_number);
         tx.execute(
-            "DELETE FROM file_content WHERE file_id = ?1",
-            rusqlite::params![file_id],
+            "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
+            rusqlite::params![rowid, line.content.trim_end()],
         )?;
-
-        // Deferred archive: insert FTS rows immediately for search availability.
-        let mut sorted_lines = file.lines.iter().collect::<Vec<_>>();
-        sorted_lines.sort_by_key(|l| l.line_number);
-        for line in &sorted_lines {
-            let line_number = line.line_number as i64;
-            if line_number >= MAX_LINES_PER_FILE {
-                tracing::warn!(
-                    "file {} line {} exceeds MAX_LINES_PER_FILE — skipping FTS",
-                    file.path, line_number
-                );
-                continue;
-            }
-            let rowid = encode_fts_rowid(file_id, line_number);
-            tx.execute(
-                "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
-                rusqlite::params![rowid, line.content],
-            )?;
-        }
     }
 
     // Update duplicate tracking.
-    if let Some(hash) = &file.content_hash {
+    if let Some(hash) = &file.file_hash {
         upsert_duplicate_tracking(&tx, hash, file_id)?;
     }
 
@@ -213,16 +175,16 @@ pub(super) fn process_file_phase1_fallback(
     }
 }
 
-/// Insert duplicate tracking entries when 2+ files share a content_hash.
+/// Insert duplicate tracking entries when 2+ files share a file_hash.
 fn upsert_duplicate_tracking(
     tx: &rusqlite::Transaction,
     hash: &str,
     file_id: i64,
 ) -> Result<()> {
-    // Find other files with the same content_hash.
+    // Find other files with the same file_hash.
     let other_ids: Vec<i64> = {
         let mut stmt = tx.prepare(
-            "SELECT id FROM files WHERE content_hash = ?1 AND id != ?2",
+            "SELECT id FROM files WHERE file_hash = ?1 AND id != ?2",
         )?;
         let ids: Vec<i64> = stmt.query_map(rusqlite::params![hash, file_id], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
@@ -232,12 +194,12 @@ fn upsert_duplicate_tracking(
         // Insert for all existing duplicates and for the current file.
         for other_id in &other_ids {
             tx.execute(
-                "INSERT OR IGNORE INTO duplicates(content_hash, file_id) VALUES(?1, ?2)",
+                "INSERT OR IGNORE INTO duplicates(file_hash, file_id) VALUES(?1, ?2)",
                 rusqlite::params![hash, other_id],
             )?;
         }
         tx.execute(
-            "INSERT OR IGNORE INTO duplicates(content_hash, file_id) VALUES(?1, ?2)",
+            "INSERT OR IGNORE INTO duplicates(file_hash, file_id) VALUES(?1, ?2)",
             rusqlite::params![hash, file_id],
         )?;
     }
@@ -273,7 +235,7 @@ pub(super) fn filename_only_file(file: &IndexFile) -> IndexFile {
             },
         ],
         extract_ms: None,
-        content_hash: None,
+        file_hash: None,
         scanner_version: file.scanner_version,
         is_new: file.is_new,
     }
@@ -300,7 +262,7 @@ pub(super) fn outer_archive_stub(file: &IndexFile) -> IndexFile {
             },
         ],
         extract_ms: None,
-        content_hash: None,
+        file_hash: None,
         scanner_version: file.scanner_version,
         is_new: file.is_new,
     }
@@ -310,7 +272,9 @@ pub(super) fn outer_archive_stub(file: &IndexFile) -> IndexFile {
 mod tests {
     use super::*;
     use find_common::api::IndexLine;
+    use find_content_store::{ContentKey, ContentStore, SqliteContentStore};
     use rusqlite::Connection;
+    use std::sync::Arc;
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -334,7 +298,7 @@ mod tests {
                 IndexLine { archive_path: None, line_number: LINE_CONTENT_START, content: content.to_string() },
             ],
             extract_ms: None,
-            content_hash: None,
+            file_hash: None,
             is_new: true,
         }
     }
@@ -359,7 +323,7 @@ mod tests {
     fn new_file_returns_new_outcome() {
         let mut conn = test_conn();
         let file = make_file("docs/readme.txt", 1000, "hello world");
-        let outcome = process_file_phase1(&mut conn, &file, 0).unwrap();
+        let outcome = process_file_phase1(&mut conn, &file, None).unwrap();
         assert!(matches!(outcome, Phase1Outcome::New));
         assert_eq!(stored_mtime(&conn, "docs/readme.txt"), Some(1000));
         // 3 FTS entries (line 0 path + line 1 metadata + line 2 content)
@@ -369,8 +333,8 @@ mod tests {
     #[test]
     fn re_index_newer_mtime_returns_modified() {
         let mut conn = test_conn();
-        process_file_phase1(&mut conn, &make_file("readme.txt", 1000, "v1"), 0).unwrap();
-        let outcome = process_file_phase1(&mut conn, &make_file("readme.txt", 2000, "v2"), 0).unwrap();
+        process_file_phase1(&mut conn, &make_file("readme.txt", 1000, "v1"), None).unwrap();
+        let outcome = process_file_phase1(&mut conn, &make_file("readme.txt", 2000, "v2"), None).unwrap();
         assert!(matches!(outcome, Phase1Outcome::Modified { .. }));
         assert_eq!(stored_mtime(&conn, "readme.txt"), Some(2000));
     }
@@ -378,37 +342,37 @@ mod tests {
     #[test]
     fn stale_mtime_is_skipped() {
         let mut conn = test_conn();
-        process_file_phase1(&mut conn, &make_file("readme.txt", 2000, "current"), 0).unwrap();
-        let outcome = process_file_phase1(&mut conn, &make_file("readme.txt", 1000, "stale"), 0).unwrap();
+        process_file_phase1(&mut conn, &make_file("readme.txt", 2000, "current"), None).unwrap();
+        let outcome = process_file_phase1(&mut conn, &make_file("readme.txt", 1000, "stale"), None).unwrap();
         assert!(matches!(outcome, Phase1Outcome::Skipped));
         assert_eq!(stored_mtime(&conn, "readme.txt"), Some(2000));
     }
 
     #[test]
-    fn content_hash_registers_duplicate_pair() {
+    fn file_hash_registers_duplicate_pair() {
         let mut conn = test_conn();
 
         let mut file_a = make_file("original.txt", 1000, "shared content");
-        file_a.content_hash = Some("abc123".to_string());
-        let outcome_a = process_file_phase1(&mut conn, &file_a, 0).unwrap();
+        file_a.file_hash = Some("abc123".to_string());
+        let outcome_a = process_file_phase1(&mut conn, &file_a, None).unwrap();
         assert!(matches!(outcome_a, Phase1Outcome::New));
 
         // Only one file → no duplicates yet.
         let dup_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM duplicates WHERE content_hash = 'abc123'",
+            "SELECT COUNT(*) FROM duplicates WHERE file_hash = 'abc123'",
             [],
             |r| r.get(0),
         ).unwrap();
         assert_eq!(dup_count, 0, "single file should not be in duplicates");
 
         let mut file_b = make_file("duplicate.txt", 1100, "shared content");
-        file_b.content_hash = Some("abc123".to_string());
-        let outcome_b = process_file_phase1(&mut conn, &file_b, 0).unwrap();
+        file_b.file_hash = Some("abc123".to_string());
+        let outcome_b = process_file_phase1(&mut conn, &file_b, None).unwrap();
         assert!(matches!(outcome_b, Phase1Outcome::New));
 
         // Both files should now be in duplicates.
         let dup_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM duplicates WHERE content_hash = 'abc123'",
+            "SELECT COUNT(*) FROM duplicates WHERE file_hash = 'abc123'",
             [],
             |r| r.get(0),
         ).unwrap();
@@ -419,8 +383,8 @@ mod tests {
     fn no_duplicate_entry_for_unique_hash() {
         let mut conn = test_conn();
         let mut file = make_file("unique.txt", 1000, "unique content");
-        file.content_hash = Some("unique_hash".to_string());
-        process_file_phase1(&mut conn, &file, 0).unwrap();
+        file.file_hash = Some("unique_hash".to_string());
+        process_file_phase1(&mut conn, &file, None).unwrap();
 
         let dup_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM duplicates",
@@ -431,51 +395,85 @@ mod tests {
     }
 
     #[test]
-    fn inline_storage_used_when_below_threshold() {
-        let mut conn = test_conn();
-        process_file_phase1(&mut conn, &make_file("small.txt", 1000, "tiny"), 10_000).unwrap();
-
-        let file_id: i64 = conn.query_row(
-            "SELECT id FROM files WHERE path = 'small.txt'", [], |r| r.get(0),
-        ).unwrap();
-        let inline: Option<String> = conn.query_row(
-            "SELECT content FROM file_content WHERE file_id = ?1",
-            rusqlite::params![file_id],
-            |r| r.get(0),
-        ).ok();
-        assert!(inline.is_some(), "small file should be stored inline");
-    }
-
-    #[test]
-    fn deferred_storage_when_threshold_zero() {
-        let mut conn = test_conn();
-        process_file_phase1(&mut conn, &make_file("big.txt", 1000, "some content"), 0).unwrap();
-
-        let file_id: i64 = conn.query_row(
-            "SELECT id FROM files WHERE path = 'big.txt'", [], |r| r.get(0),
-        ).unwrap();
-        let inline: Option<String> = conn.query_row(
-            "SELECT content FROM file_content WHERE file_id = ?1",
-            rusqlite::params![file_id],
-            |r| r.get(0),
-        ).ok();
-        assert!(inline.is_none(), "deferred file should not be stored inline");
-        // FTS entries should still be there (3 lines)
-        assert_eq!(fts_row_count(&conn), 3);
-    }
-
-    #[test]
-    fn deferred_storage_stores_content_hash_in_files() {
+    fn storage_stores_file_hash_in_files() {
         let mut conn = test_conn();
         let mut file = make_file("doc.txt", 1000, "content");
-        file.content_hash = Some("myhash".to_string());
-        process_file_phase1(&mut conn, &file, 0).unwrap();
+        file.file_hash = Some("myhash".to_string());
+        process_file_phase1(&mut conn, &file, None).unwrap();
 
         let stored_hash: Option<String> = conn.query_row(
-            "SELECT content_hash FROM files WHERE path = 'doc.txt'",
+            "SELECT file_hash FROM files WHERE path = 'doc.txt'",
             [],
             |r| r.get(0),
         ).ok();
         assert_eq!(stored_hash.as_deref(), Some("myhash"));
+    }
+
+    /// Open an in-tempdir content store and return it alongside a function
+    /// that puts a blob (lines joined with '\n') under a given hash.
+    fn open_store() -> (tempfile::TempDir, Arc<dyn ContentStore>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ContentStore> =
+            Arc::new(SqliteContentStore::open(tmp.path(), None, None, None).unwrap());
+        (tmp, store)
+    }
+
+    /// Verify that the FTS5 index contains exactly `expected` rows matching `term`.
+    fn fts_match_count(conn: &Connection, term: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM lines_fts WHERE lines_fts MATCH ?1",
+            rusqlite::params![term],
+            |r| r.get(0),
+        ).unwrap_or(0)
+    }
+
+    /// When a file is re-indexed and the content store holds the old content:
+    /// - all old FTS rows (including empty-content ones) are deleted
+    /// - new FTS rows for the updated, normalized content are inserted
+    /// - the total FTS row count returns to the original number (no orphans)
+    /// - old terms are no longer findable; new terms are
+    #[test]
+    fn re_index_cleans_fts_using_content_store() {
+        use find_common::api::{LINE_PATH, LINE_METADATA, LINE_CONTENT_START};
+
+        let (_tmp, store) = open_store();
+        let mut conn = test_conn();
+
+        // ── First index ──────────────────────────────────────────────────────
+        // Build v1 file: 3 lines (path, metadata="", content).
+        // The hash is arbitrary but must match what we seed into the content store.
+        let old_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let mut file_v1 = make_file("notes.txt", 1000, "version one unique phrase");
+        file_v1.file_hash = Some(old_hash.to_string());
+
+        // Index v1 without the content store (first index, no old entries to clean).
+        process_file_phase1(&mut conn, &file_v1, None).unwrap();
+        assert_eq!(fts_row_count(&conn), 3, "3 FTS rows after first index");
+
+        // Seed the content store with the SAME content that was inserted into FTS5.
+        // The content stored in the archive is the normalized lines joined with '\n'.
+        // Lines: [LINE_PATH="notes.txt", LINE_METADATA="", LINE_CONTENT_START="version one unique phrase"]
+        let old_blob = format!("{}\n\n{}", "notes.txt", "version one unique phrase");
+        store.put(&ContentKey::new(old_hash), &old_blob).unwrap();
+
+        // Confirm v1 content is searchable.
+        assert!(fts_match_count(&conn, "uni") > 0, "trigram 'uni' from 'unique' should match");
+
+        // ── Re-index with v2 ─────────────────────────────────────────────────
+        let new_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let mut file_v2 = make_file("notes.txt", 2000, "version two distinct phrase");
+        file_v2.file_hash = Some(new_hash.to_string());
+
+        process_file_phase1(&mut conn, &file_v2, Some(store.as_ref())).unwrap();
+
+        // FTS row count must be back to 3 — no orphans accumulated.
+        assert_eq!(fts_row_count(&conn), 3, "FTS row count must stay at 3 after re-index");
+
+        // Old content must be gone: "unique" (7 chars, trigrams guaranteed ≥ 3 chars)
+        // only appeared in v1 and must no longer match anything.
+        assert_eq!(fts_match_count(&conn, "unique"), 0, "old term 'unique' must be removed from FTS");
+
+        // New content must be findable: "distinct" only appears in v2.
+        assert!(fts_match_count(&conn, "distinct") > 0, "new term 'distinct' must be in FTS");
     }
 }

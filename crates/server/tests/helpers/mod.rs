@@ -146,11 +146,11 @@ impl TestServer {
     }
 }
 
-/// Build a BulkRequest identical to `make_text_bulk` but with a content_hash set,
-/// so the archive worker writes chunks to ZIP (it skips files with `content_hash: None`).
+/// Build a BulkRequest identical to `make_text_bulk` but with a file_hash set,
+/// so the archive worker writes chunks to the content store (it skips files with `file_hash: None`).
 pub fn make_text_bulk_hashed(source: &str, path: &str, content: &str) -> BulkRequest {
     let mut req = make_text_bulk(source, path, content);
-    req.files[0].content_hash = Some(
+    req.files[0].file_hash = Some(
         "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
     );
     req
@@ -166,6 +166,8 @@ pub fn write_fake_gz(path: &std::path::Path) {
 
 /// Build a BulkRequest that indexes a single plain-text file.
 /// line_number=0 is the filename; content lines start at 1.
+/// Includes a deterministic file_hash so the archive phase stores content in
+/// the content store (required for context retrieval).
 pub fn make_text_bulk(source: &str, path: &str, content: &str) -> BulkRequest {
     use find_common::api::{LINE_PATH, LINE_METADATA, LINE_CONTENT_START};
     let mut lines = vec![
@@ -197,7 +199,7 @@ pub fn make_text_bulk(source: &str, path: &str, content: &str) -> BulkRequest {
             kind: FileKind::Text,
             lines,
             extract_ms: None,
-            content_hash: None,
+            file_hash: Some(fnv_hash_hex(path, content)),
             scanner_version: SCANNER_VERSION,
             is_new: true,
         }],
@@ -206,4 +208,18 @@ pub fn make_text_bulk(source: &str, path: &str, content: &str) -> BulkRequest {
         indexing_failures: vec![],
         rename_paths: vec![],
     }
+}
+
+/// Compute a deterministic 64-char hex "hash" of (path, content) using FNV-1a.
+/// Not cryptographically secure, but stable and unique enough for tests.
+fn fnv_hash_hex(path: &str, content: &str) -> String {
+    const FNV_PRIME: u64 = 1099511628211;
+    const FNV_BASIS: u64 = 14695981039346656037;
+    let mut h = FNV_BASIS;
+    for b in path.bytes().chain(std::iter::once(b'|')).chain(content.bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    // Repeat the 16-hex-digit value 4× to mimic a 64-char blake3/sha256 hash.
+    format!("{h:016x}{h:016x}{h:016x}{h:016x}")
 }
