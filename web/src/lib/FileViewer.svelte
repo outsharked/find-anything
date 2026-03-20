@@ -135,6 +135,9 @@
 	// Detect if file is markdown
 	$: isMarkdown = path.endsWith('.md') || path.endsWith('.markdown');
 
+	// Detect if file is RTF (check member extension for archive members)
+	$: isRtf = (archivePath ?? path).toLowerCase().endsWith('.rtf');
+
 	// Word wrap preference (default: false for code, true for text files)
 	$: wordWrap = $profile.wordWrap ?? false;
 
@@ -143,6 +146,48 @@
 
 	// Markdown format preference
 	$: markdownFormat = $profile.markdownFormat ?? false;
+
+	// RTF format preference
+	$: rtfFormat = $profile.rtfFormat ?? false;
+
+	// RTF rendered HTML — rendered client-side via rtf.js (dynamically imported).
+	let renderedRtf = '';
+	let rtfFetchedForPath = '';
+	let rtfError = false;
+
+	$: if (rtfFormat && isRtf && rtfFetchedForPath !== rawInlinePath) {
+		fetchRtfHtml(rawInlinePath);
+	}
+
+	async function fetchRtfHtml(forPath: string) {
+		rtfFetchedForPath = forPath;
+		renderedRtf = '';
+		rtfError = false;
+		try {
+			const url = `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(forPath)}`;
+			const resp = await fetch(url);
+			if (!resp.ok) { rtfError = true; return; }
+			const arrayBuffer = await resp.arrayBuffer();
+
+			// Dynamic import — only fetched the first time an RTF file is formatted.
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const { RTFJS } = await import('rtf.js') as any;
+			const doc = new RTFJS.Document(arrayBuffer);
+			const elements = await doc.render();
+
+			const container = document.createElement('div');
+			for (const el of elements) container.appendChild(el);
+			const html = container.innerHTML;
+			if (html.trim()) renderedRtf = html;
+			else rtfError = true;
+		} catch {
+			rtfError = true;
+		}
+	}
+
+	function toggleRtfFormat() {
+		$profile.rtfFormat = !rtfFormat;
+	}
 
 	// True when the markdown content exceeds the server-configured size cap.
 	$: markdownTooLarge = isMarkdown && rawContent.length > $maxMarkdownRenderKb * 1024;
@@ -476,6 +521,11 @@
 					{markdownFormat ? 'Plain' : 'Formatted'}
 				</button>
 			{/if}
+			{#if isRtf}
+				<button class="toolbar-btn" on:click={toggleRtfFormat} title="Toggle RTF formatting">
+					{rtfFormat ? 'Plain' : 'Formatted'}
+				</button>
+			{/if}
 			{#if canViewInline && (fileKind === 'pdf' || fileKind === 'video')}
 				<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}>
 					{showOriginal ? 'View Extracted' : 'View Original'}
@@ -588,7 +638,15 @@
 				{#if markdownTooLarge && markdownFormat}
 					<div class="no-content">File too large to render as markdown ({Math.round(rawContent.length / 1024)} KB &gt; {$maxMarkdownRenderKb} KB limit). Showing plain text.</div>
 				{/if}
-				{#if markdownFormat && isMarkdown && !markdownTooLarge}
+				{#if rtfFormat && isRtf}
+					{#if renderedRtf}
+						<MarkdownViewer rendered={renderedRtf} />
+					{:else if rtfError}
+						<div class="no-content">RTF rendering failed.</div>
+					{:else}
+						<div class="no-content">Converting…</div>
+					{/if}
+				{:else if markdownFormat && isMarkdown && !markdownTooLarge}
 					<MarkdownViewer rendered={String(renderedMarkdown)} />
 				{:else if codeLines.length === 0 && metaLines.length === 0 && fileKind === 'archive' && !archivePath}
 					<!-- Archive root: show member listing inline -->

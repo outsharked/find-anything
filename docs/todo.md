@@ -11,7 +11,8 @@ Stream of consciousness for bugfixes and features approaching V1
 [ ] FEAT: Render SVG by default
 [ ] CHORE: address clippy too_many_arguments issues
 [ ] FEAT: Allow non-zip archive members to be streamable, if they are below a configrable threshold in size
-[ ] Frontent factoring: stuff like     "showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal); " -- logic should be centralized
+[ ] Frontent factoring: stuff like     "showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || (fileKind === 'pdf' && !isEncrypted && preferOriginal); " -- logic should be centralized. 
+ - use general purpose functions to return type, not isMarkdown, isRTF etc
 [ ] Evaluate scoring algorithm: recent dates score higher; but if we use a better strategy for storing content, then 
 use the content
 [ ] BUG find-admin inbox-pause should also pause archiving. And it doesn't log except the API

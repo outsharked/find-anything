@@ -4,6 +4,7 @@ export interface UserProfile {
 	sidebarWidth?: number;
 	wordWrap?: boolean;
 	markdownFormat?: boolean;
+	rtfFormat?: boolean;
 	contextWindow?: number;
 	tabWidth?: number;
 	theme?: 'dark' | 'light' | 'system';
