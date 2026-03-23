@@ -555,6 +555,7 @@
 		{#if fileView !== null}
 			<FileView
 				{fileView}
+				showBack={results.length > 0}
 				{showTree}
 				{query}
 				{scope}

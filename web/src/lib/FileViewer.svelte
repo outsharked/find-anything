@@ -1432,10 +1432,16 @@
 		.download-archive-btn { display: none; }
 		.explorer-btn { display: none; }
 		.toolbar { flex-wrap: wrap; }
+		/* On mobile the file viewer scrolls as a whole; inner panels flow naturally */
+		.file-viewer {
+			overflow-y: auto;
+			height: auto;
+			min-height: 100%;
+		}
 		.image-viewer-panel {
 			flex-direction: column;
-			overflow-y: auto;
 			flex: none;
+			overflow: visible;
 		}
 	}
 </style>

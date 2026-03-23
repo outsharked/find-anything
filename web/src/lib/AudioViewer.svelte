@@ -81,5 +81,15 @@
 		color: var(--text-muted);
 	}
 
-
+	@media (max-width: 768px) {
+		.audio-split-panel {
+			flex-direction: column;
+			overflow: visible;
+			flex: none;
+		}
+		.audio-split-left {
+			border-right: none;
+			border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+		}
+	}
 </style>

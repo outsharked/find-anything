@@ -10,6 +10,7 @@
 	import TopBar from '$lib/TopBar.svelte';
 
 	export let fileView: FileViewState;
+	export let showBack = true;
 	export let showTree: boolean;
 	export let query: string;
 	export let scope: SearchScope = 'line';
@@ -59,6 +60,7 @@
 		source={fileView.source}
 		path={pathBarPath}
 		archivePath={fileView.panelMode === 'file' ? fileView.file.inner ?? null : null}
+		{showBack}
 		on:back={() => dispatch('back')}
 		on:navigate={(e) => {
 			if (e.detail.type === 'dir') {

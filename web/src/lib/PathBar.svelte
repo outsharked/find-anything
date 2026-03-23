@@ -5,6 +5,8 @@
 	export let source: string;
 	export let path: string;
 	export let archivePath: string | null = null;
+	/** Whether to show the ← results button. False when the user deeplinked directly. */
+	export let showBack = true;
 	const dispatch = createEventDispatcher<{
 		back: void;
 		navigate: { type: 'dir'; prefix: string } | { type: 'file'; path: string; kind: string };
@@ -89,7 +91,9 @@
 
 <div class="path-bar">
 	<div class="path-controls">
+		{#if showBack}
 		<button class="back-btn" on:click={() => dispatch('back')}>← results</button>
+		{/if}
 		<button class="badge" on:click={() => dispatch('navigate', { type: 'dir', prefix: '' })}>{source}</button>
 	</div>
 	<span class="path-plain">

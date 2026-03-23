@@ -109,7 +109,6 @@
 		flex-shrink: 0;
 	}
 
-	.help-wrap-outer { display: none; }
 	.advanced-wrap { display: contents; }
 
 	.search-wrap {

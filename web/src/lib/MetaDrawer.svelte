@@ -84,12 +84,13 @@
 			width: auto !important;
 			overflow: visible;
 			border-top: 1px solid var(--border);
+			padding-top: 8px;
 		}
 		.drawer-inner {
 			width: auto;
 			height: auto;
-			overflow-y: auto;
-			max-height: 40vh;
+			/* No inner scroll — content flows naturally, user scrolls the page */
+			overflow: visible;
 			border-left: none;
 		}
 	}
