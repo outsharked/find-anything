@@ -321,7 +321,7 @@
 		color: #fff;
 	}
 
-	.trigger svg {
+	.trigger :global(svg) {
 		display: block;
 		flex-shrink: 0;
 	}

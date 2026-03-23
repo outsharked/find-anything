@@ -11,6 +11,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **`find-watch` hang during startup on older kernels** — separated directory walk from inotify watch registration; walkdir was generating inotify OPEN events for every directory it opened, flooding the notify background thread's read loop and deadlocking the `watch()` channel on kernel 3.10; all directories are now collected first (before any watches exist), then registered in a second pass
+- **`find-watch` only watched 1 directory when no `include` patterns configured** — `include_dir_prefixes(&[])` returns `Some({})` (an empty terminal set that prunes everything); guard added so an empty include list yields `None` (watch everything), matching the behaviour of `find-scan`
+- **`.index` include patterns now prune directory traversal in `find-watch`** — `walk_source_tree` (shared by `find-scan` and `find-watch`) now reads `.index` files during the DFS and skips sibling subtrees excluded by their `include` field, giving both binaries identical directory-pruning behaviour
+- **Svelte CSS warnings for extracted SVG icon components** — fixed unused selector warnings by replacing `.foo svg` with `.foo :global(svg)` in `SearchBox.svelte`, `AdvancedSearch.svelte`, and `+page.svelte`
 - **`find-scan` not found in upload integration tests** — `resolve_find_scan` now also checks the parent of the current exe's directory; test binaries live in `target/debug/deps/` but `find-scan` is built one level up in `target/debug/`, so the previous code fell back to PATH (which works locally if `find-scan` is installed, but never in CI)
 
 ### Added

@@ -161,7 +161,7 @@
 		flex-shrink: 0;
 	}
 
-	.spinner svg {
+	.spinner :global(svg) {
 		width: 16px;
 		height: 16px;
 		color: var(--accent);
@@ -187,7 +187,7 @@
 		color: var(--text);
 	}
 
-	.clear-btn svg {
+	.clear-btn :global(svg) {
 		width: 16px;
 		height: 16px;
 	}

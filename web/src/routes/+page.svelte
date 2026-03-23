@@ -714,7 +714,7 @@
 		flex-shrink: 0;
 	}
 
-	.load-row .spinner svg {
+	.load-row .spinner :global(svg) {
 		width: 100%;
 		height: 100%;
 		color: var(--accent);

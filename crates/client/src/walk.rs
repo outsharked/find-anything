@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use globset::GlobSet;
 use walkdir::WalkDir;
 
-use find_common::config::ScanConfig;
+use find_common::config::{load_dir_override, ScanConfig};
 pub(crate) use find_common::build_globset;
 
-use crate::path_util::normalise_path_sep;
+use crate::path_util::{include_dir_prefixes, normalise_path_sep};
 
 /// A single item yielded to the callback by [`walk_source_tree`].
 // Each binary uses only one variant (Dir for find-watch, File for find-scan).
@@ -49,6 +49,12 @@ pub(crate) enum WalkItem {
 /// * `terminals`  — from [`crate::path_util::include_dir_prefixes`]; prunes
 ///   directories that cannot contain any matching files.  `None` means
 ///   traverse everything (e.g. patterns like `**/*.rs`).
+///
+/// Per-directory `.index` files with `include` patterns are also respected
+/// during traversal: when a directory contains a `.index` with an `include`
+/// field, only sub-paths that match those patterns are descended into.  This
+/// ensures `find-scan` and `find-watch` share identical directory-pruning
+/// behaviour.
 /// * `callback`   — receives each `WalkItem` that passes all filters.
 ///
 /// Walk errors are logged at `warn`/`debug` level and skipped — the walk
@@ -61,6 +67,13 @@ pub(crate) fn walk_source_tree(
     terminals: Option<&HashSet<String>>,
     mut callback: impl FnMut(WalkItem),
 ) {
+    // Stack of (depth, terminals) from .index include overrides encountered
+    // during the DFS.  DFS order ensures that when we move from a subtree to
+    // a sibling, the sibling's shallower-or-equal depth triggers a pop of the
+    // previous subtree's entries.  All active entries must allow a directory
+    // before we descend into it.
+    let mut override_stack: Vec<(usize, HashSet<String>)> = Vec::new();
+
     for entry in WalkDir::new(walk_root)
         .follow_links(scan.follow_symlinks)
         .into_iter()
@@ -69,6 +82,13 @@ pub(crate) fn walk_source_tree(
                 return true;
             }
             if e.file_type().is_dir() {
+                let depth = e.depth();
+
+                // Pop overrides from completed subtrees: any entry at depth >=
+                // current was pushed by a sibling (or its descendant) and is
+                // no longer an ancestor of this directory.
+                override_stack.retain(|(d, _)| *d < depth);
+
                 // Skip hidden directories when include_hidden is false.
                 // Hidden files are intentionally left for the callback so
                 // that control files (.index) remain visible regardless of
@@ -84,11 +104,13 @@ pub(crate) fn walk_source_tree(
                     tracing::debug!("walk: skipping {} (.noindex present)", e.path().display());
                     return false;
                 }
-                // Terminal pruning: skip dirs that cannot contain any file
-                // matching the include patterns.
-                if let Some(terms) = terminals {
-                    if let Ok(rel) = e.path().strip_prefix(strip_root) {
-                        let rel_str = normalise_path_sep(&rel.to_string_lossy());
+
+                if let Ok(rel) = e.path().strip_prefix(strip_root) {
+                    let rel_str = normalise_path_sep(&rel.to_string_lossy());
+
+                    // Terminal pruning: skip dirs that cannot contain any file
+                    // matching the source-level include patterns.
+                    if let Some(terms) = terminals {
                         let allowed = terms.iter().any(|t| {
                             t == &rel_str
                                 || t.starts_with(&format!("{rel_str}/"))
@@ -96,6 +118,47 @@ pub(crate) fn walk_source_tree(
                         });
                         if !allowed {
                             return false;
+                        }
+                    }
+
+                    // .index override pruning: every active per-directory
+                    // override must also allow this directory.
+                    for (_, ov_terms) in &override_stack {
+                        let allowed = ov_terms.iter().any(|t| {
+                            t == &rel_str
+                                || t.starts_with(&format!("{rel_str}/"))
+                                || rel_str.starts_with(&format!("{t}/"))
+                        });
+                        if !allowed {
+                            return false;
+                        }
+                    }
+                }
+
+                // If this directory has a .index with include patterns, push
+                // an override so its children are pruned accordingly.
+                // Guard with exists() first to avoid an open() syscall on every
+                // directory — the common case is no .index file present.
+                let index_path = e.path().join(&scan.index_file);
+                if index_path.exists() {
+                    if let Some(ov) = load_dir_override(e.path(), &scan.index_file) {
+                        if let Some(inc) = ov.include {
+                            if let Some(rel_terms) = include_dir_prefixes(&inc) {
+                                if let Ok(dir_rel) = e.path().strip_prefix(strip_root) {
+                                    let dir_rel_str = normalise_path_sep(&dir_rel.to_string_lossy());
+                                    let abs_terms: HashSet<String> = rel_terms
+                                        .iter()
+                                        .map(|t| {
+                                            if dir_rel_str.is_empty() {
+                                                t.clone()
+                                            } else {
+                                                format!("{dir_rel_str}/{t}")
+                                            }
+                                        })
+                                        .collect();
+                                    override_stack.push((depth, abs_terms));
+                                }
+                            }
                         }
                     }
                 }
@@ -360,19 +423,62 @@ mod tests {
     }
 
     #[test]
-    fn index_file_present_directory_still_fully_traversed() {
-        // Unlike .noindex, a .index file does NOT prune the directory — it
-        // only configures scan settings for that subtree (handled by the caller).
+    fn index_file_without_include_fully_traversed() {
+        // A .index with no include field does not prune the directory.
         let tmp = TempDir::new().unwrap();
         mktree(tmp.path(), &[
-            "sub/.index",
             "sub/a.txt",
             "sub/b.txt",
             "other/c.txt",
         ]);
+        std::fs::write(tmp.path().join("sub/.index"), b"max_content_size_mb = 5").unwrap();
         let scan = bare_scan();
         assert_eq!(walk_files(tmp.path(), &scan, &empty_gs(), None),
                    vec!["other/c.txt", "sub/a.txt", "sub/b.txt"]);
+    }
+
+    #[test]
+    fn index_file_with_include_prunes_sibling_dirs() {
+        // backups/.index with include = ["FromMomMac/**"] should prune all
+        // sibling directories inside backups/ except FromMomMac.
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &[
+            "backups/FromMomMac/photo.jpg",
+            "backups/OldPC/data.zip",
+            "backups/OldPC/more/stuff.txt",
+            "code/main.rs",
+        ]);
+        std::fs::write(
+            tmp.path().join("backups/.index"),
+            b"include = [\"FromMomMac/**\"]",
+        ).unwrap();
+        let scan = bare_scan();
+        let files = walk_files(tmp.path(), &scan, &empty_gs(), None);
+        assert_eq!(files, vec!["backups/FromMomMac/photo.jpg", "code/main.rs"]);
+        let dirs = walk_dirs(tmp.path(), &scan, &empty_gs(), None);
+        assert!(dirs.contains(&"backups".to_string()),              "backups/ itself is traversed");
+        assert!(dirs.contains(&"backups/FromMomMac".to_string()),   "FromMomMac matches the include");
+        assert!(!dirs.contains(&"backups/OldPC".to_string()),       "OldPC is pruned");
+        assert!(!dirs.contains(&"backups/OldPC/more".to_string()),  "OldPC/more is pruned");
+        assert!(dirs.contains(&"code".to_string()),                 "code/ unaffected");
+    }
+
+    #[test]
+    fn index_file_include_does_not_affect_siblings_outside_dir() {
+        // The .index override in backups/ must not affect dirs outside backups/.
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &[
+            "backups/FromMomMac/photo.jpg",
+            "documents/report.pdf",
+            "documents/notes/note.txt",
+        ]);
+        std::fs::write(
+            tmp.path().join("backups/.index"),
+            b"include = [\"FromMomMac/**\"]",
+        ).unwrap();
+        let scan = bare_scan();
+        let files = walk_files(tmp.path(), &scan, &empty_gs(), None);
+        assert_eq!(files, vec!["backups/FromMomMac/photo.jpg", "documents/notes/note.txt", "documents/report.pdf"]);
     }
 
     #[test]
