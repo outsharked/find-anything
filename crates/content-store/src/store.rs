@@ -21,6 +21,16 @@ pub trait ContentStore: Send + Sync {
     /// Idempotent: returns `Ok(false)` if the key already exists (no re-write).
     fn put(&self, key: &ContentKey, blob: &str) -> anyhow::Result<bool>;
 
+    /// Replace the stored blob for `key`, even if one already exists.
+    ///
+    /// Deletes any existing blob then stores the new one.  Returns `Ok(true)`
+    /// if the blob was written, `Ok(false)` if the blob was empty and nothing
+    /// was stored.
+    fn put_overwrite(&self, key: &ContentKey, blob: &str) -> anyhow::Result<bool> {
+        self.delete(key)?;
+        self.put(key, blob)
+    }
+
     /// Remove all stored data for `key`. No-op if the key does not exist.
     fn delete(&self, key: &ContentKey) -> anyhow::Result<()>;
 

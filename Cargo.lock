@@ -1618,6 +1618,7 @@ dependencies = [
  "kamadak-exif",
  "nom-exif",
  "serde",
+ "serde_json",
  "symphonia",
  "tempfile",
  "tracing",

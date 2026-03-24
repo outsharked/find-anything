@@ -473,6 +473,8 @@ pub async fn extract_via_subprocess(
     let is_archive = find_extract_archive::is_archive_ext(&ext);
     let is_pdf = ext == "pdf";
 
+    let is_media = binary.contains("find-extract-media");
+
     let mut cmd = tokio::process::Command::new(&binary);
     cmd.arg(abs_path).arg(&max_content_kb);
     if is_archive {
@@ -481,6 +483,12 @@ pub async fn extract_via_subprocess(
     } else if is_pdf {
         // find-extract-pdf: <path> [max-content-kb] [max-line-length]
         cmd.arg(&max_line_length);
+    } else if is_media {
+        // find-extract-media: <path> [max-content-kb] [ffprobe-path]
+        // Resolve the same way as extractor_config_from_scan: None = auto-detect,
+        // Some("") = disabled, Some(path) = use as-is. Pass "" when unavailable.
+        let ffprobe = find_common::config::resolve_ffprobe_path(&scan.ffprobe_path);
+        cmd.arg(ffprobe.as_deref().unwrap_or(""));
     }
     // Kill the child process if it is still running when the future is dropped
     // (i.e. when the timeout fires and the output future is cancelled).

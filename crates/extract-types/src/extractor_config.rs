@@ -61,6 +61,11 @@ pub struct ExtractorConfig {
     /// `extract_member_bytes` so that the same extractor is used regardless of
     /// whether the file is found at the top level or nested inside an archive.
     pub external_dispatch: std::collections::HashMap<String, ExternalMemberDispatch>,
+    /// Path to the `ffprobe` binary used to extract video codec information.
+    /// `None` means ffprobe is not configured; video codec tags are omitted.
+    /// When set, ffprobe is invoked as a child process for every video file
+    /// and the output is merged into the `[VIDEO:...]` metadata line.
+    pub ffprobe_path: Option<String>,
 }
 
 impl Default for ExtractorConfig {
@@ -74,6 +79,7 @@ impl Default for ExtractorConfig {
             max_7z_solid_block_mb: 256,
             exclude_patterns: vec![],
             external_dispatch: std::collections::HashMap::new(),
+            ffprobe_path: None,
         }
     }
 }

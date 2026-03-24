@@ -6,6 +6,126 @@ use find_extract_types::{IndexLine, LINE_METADATA};
 use find_extract_types::ExtractorConfig;
 use tracing::warn;
 
+#[derive(serde::Deserialize, Default)]
+struct FfprobeOutput {
+    #[serde(default)]
+    streams: Vec<FfprobeStream>,
+    #[serde(default)]
+    format: FfprobeFormat,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct FfprobeStream {
+    codec_type: Option<String>,
+    codec_name: Option<String>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    r_frame_rate: Option<String>,
+    #[serde(default)]
+    channels: Option<u32>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct FfprobeFormat {
+    duration: Option<String>,
+    format_name: Option<String>,
+}
+
+/// Run `ffprobe` on `path` and return a complete set of `[VIDEO:...]` tags.
+fn ffprobe_video_tags(ffprobe: &str, path: &Path) -> Vec<String> {
+    let out = match std::process::Command::new(ffprobe)
+        .args([
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            "-show_format",
+        ])
+        .arg(path)
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        Ok(o) => {
+            warn!("ffprobe exited {:?} for {}", o.status.code(), path.display());
+            return vec![];
+        }
+        Err(e) => {
+            warn!("ffprobe failed for {}: {e}", path.display());
+            return vec![];
+        }
+    };
+
+    let probe: FfprobeOutput = match serde_json::from_slice(&out) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("ffprobe JSON parse error for {}: {e}", path.display());
+            return vec![];
+        }
+    };
+
+    let mut parts = vec![];
+
+    // Container format — use the first name from the comma-separated list
+    if let Some(fmt) = &probe.format.format_name {
+        let first = fmt.split(',').next().unwrap_or(fmt.as_str());
+        parts.push(video_part("format", first));
+    }
+
+    // First video stream
+    if let Some(vs) = probe.streams.iter().find(|s| s.codec_type.as_deref() == Some("video")) {
+        if let Some(codec) = &vs.codec_name {
+            parts.push(video_part("codec", codec));
+        }
+        if let (Some(w), Some(h)) = (vs.width, vs.height) {
+            parts.push(video_part("resolution", &format!("{}x{}", w, h)));
+        }
+        if let Some(fps_str) = &vs.r_frame_rate {
+            // r_frame_rate is a fraction like "30000/1001" or "25/1"
+            if let Some((num, den)) = fps_str.split_once('/') {
+                if let (Ok(n), Ok(d)) = (num.parse::<f64>(), den.parse::<f64>()) {
+                    if d > 0.0 {
+                        let fps = n / d;
+                        let fps_display = if (fps - fps.round()).abs() < 0.01 {
+                            format!("{}", fps.round() as u32)
+                        } else {
+                            format!("{:.2}", fps)
+                        };
+                        parts.push(video_part("fps", &fps_display));
+                    }
+                }
+            }
+        }
+    }
+
+    // First audio stream
+    if let Some(audio) = probe.streams.iter().find(|s| s.codec_type.as_deref() == Some("audio")) {
+        if let Some(codec) = &audio.codec_name {
+            parts.push(video_part("audio_codec", codec));
+        }
+        if let Some(ch) = audio.channels {
+            let label = match ch {
+                1 => "mono".to_owned(),
+                2 => "stereo".to_owned(),
+                n => format!("{n}ch"),
+            };
+            parts.push(video_part("audio_channels", &label));
+        }
+    }
+
+    // Duration from format block
+    if let Some(dur_str) = &probe.format.duration {
+        if let Ok(secs_f) = dur_str.parse::<f64>() {
+            let total_secs = secs_f as u64;
+            let mins = total_secs / 60;
+            let secs = total_secs % 60;
+            parts.push(video_part("duration", &format!("{}:{:02}", mins, secs)));
+        }
+    }
+
+    parts
+}
+
 /// Extract metadata from media files (images, audio, video).
 ///
 /// Supports:
@@ -19,7 +139,7 @@ use tracing::warn;
 ///
 /// # Returns
 /// Vector of IndexLine objects with metadata at line_number=0
-pub fn extract(path: &Path, _cfg: &ExtractorConfig) -> anyhow::Result<Vec<IndexLine>> {
+pub fn extract(path: &Path, cfg: &ExtractorConfig) -> anyhow::Result<Vec<IndexLine>> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -32,7 +152,7 @@ pub fn extract(path: &Path, _cfg: &ExtractorConfig) -> anyhow::Result<Vec<IndexL
     } else if is_audio_ext(&ext) {
         extract_audio(path, &path.to_string_lossy())
     } else if is_video_ext(&ext) {
-        extract_video(path, &path.to_string_lossy())
+        extract_video(path, &path.to_string_lossy(), cfg.ffprobe_path.as_deref())
     } else {
         Ok(vec![])
     }
@@ -59,7 +179,7 @@ pub fn extract_from_bytes(bytes: &[u8], entry_name: &str, cfg: &ExtractorConfig)
         return extract_audio(tmp.path(), entry_name);
     }
     if is_video_ext(ext) {
-        return extract_video(tmp.path(), entry_name);
+        return extract_video(tmp.path(), entry_name, cfg.ffprobe_path.as_deref());
     }
     extract(tmp.path(), cfg)
 }
@@ -461,9 +581,24 @@ thread_local! {
         std::cell::RefCell::new(nom_exif::MediaParser::new());
 }
 
-fn extract_video(path: &Path, label: &str) -> anyhow::Result<Vec<IndexLine>> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+fn extract_video(path: &Path, label: &str, ffprobe: Option<&str>) -> anyhow::Result<Vec<IndexLine>> {
+    // If ffprobe is configured, use it exclusively — it provides a complete and
+    // accurate picture (codec, fps, duration, audio) with no deduplication needed.
+    if let Some(ffprobe_bin) = ffprobe {
+        tracing::debug!("running ffprobe for {}", path.display());
+        let parts = ffprobe_video_tags(ffprobe_bin, path);
+        if !parts.is_empty() {
+            return Ok(vec![IndexLine {
+                archive_path: None,
+                line_number: LINE_METADATA,
+                content: parts.join(" "),
+            }]);
+        }
+        // ffprobe returned nothing — fall through to nom-exif.
+        warn!("ffprobe returned no data for {}, falling back to nom-exif", path.display());
+    }
 
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     match ext.as_str() {
         // nom-exif handles ISOBMFF and Matroska natively, with seek-based I/O.
         "mp4" | "m4v" | "mov" | "3gp" | "mkv" | "webm" | "mka" => {

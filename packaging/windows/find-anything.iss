@@ -223,6 +223,9 @@ begin
     '# Extra glob patterns to skip, added to the built-in defaults.' + NL +
     '# Use exclude = [...] instead to replace the defaults entirely.' + NL +
     '# exclude_extra = []' + NL +
+    '# Path to ffprobe (part of FFmpeg) for video codec extraction (opt-in).' + NL +
+    '# When set, codec name, fps, and audio codec are added to video metadata.' + NL +
+    '# ffprobe_path = "C:\\ffmpeg\\bin\\ffprobe.exe"' + NL +
     NL +
     '[scan.archives]' + NL +
     '# enabled   = true' + NL +

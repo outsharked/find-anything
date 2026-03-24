@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 /// that `find-scan --upgrade` can selectively re-index files that were indexed
 /// by an older version of the client. Increment this when extraction logic
 /// changes in a way that produces meaningfully different output.
-pub const SCANNER_VERSION: u32 = 6;
+pub const SCANNER_VERSION: u32 = 7;
 
 // ── Reserved line number slots ────────────────────────────────────────────────
 

@@ -232,6 +232,16 @@ pub struct ScanConfig {
     /// Set a value to `"builtin"` to use built-in routing, or provide an external tool config.
     #[serde(default)]
     pub extractors: std::collections::HashMap<String, ExtractorEntry>,
+
+    /// Path to the `ffprobe` binary (part of FFmpeg) used to extract video codec
+    /// information such as codec name, frame rate, and audio codec.
+    /// ffprobe is opt-in: it is only used when this is explicitly set.
+    /// If not set (the default), video files are indexed without codec details.
+    ///
+    /// Example: `ffprobe_path = "/usr/bin/ffprobe"`
+    /// Windows example: `ffprobe_path = "C:\\ffmpeg\\bin\\ffprobe.exe"`
+    #[serde(default)]
+    pub ffprobe_path: Option<String>,
 }
 
 impl Default for ScanConfig {
@@ -253,6 +263,7 @@ impl Default for ScanConfig {
             batch_bytes: default_batch_bytes(),
             batch_interval_secs: default_batch_interval_secs(),
             extractors: std::collections::HashMap::new(),
+            ffprobe_path: None,
         }
     }
 }
@@ -469,6 +480,14 @@ fn default_true() -> bool               { true }
 
 pub use find_extract_types::ExtractorConfig;
 
+/// Resolve the effective ffprobe binary path from the configured value.
+/// ffprobe is opt-in: it is only used when explicitly set in `client.toml`.
+/// - `None` or `Some("")` → disabled
+/// - `Some(path)` → use that path as-is
+pub fn resolve_ffprobe_path(configured: &Option<String>) -> Option<String> {
+    configured.as_deref().filter(|p| !p.is_empty()).map(str::to_owned)
+}
+
 /// Build an `ExtractorConfig` from the scan section of the client config.
 pub fn extractor_config_from_scan(scan: &ScanConfig) -> ExtractorConfig {
     use find_extract_types::{ExternalDispatchMode, ExternalMemberDispatch};
@@ -494,6 +513,12 @@ pub fn extractor_config_from_scan(scan: &ScanConfig) -> ExtractorConfig {
         })
         .collect();
 
+    // Resolve the ffprobe binary path:
+    // - explicit "" in config → disabled
+    // - explicit non-empty path → use as-is
+    // - None (not configured) → search PATH for "ffprobe"
+    let ffprobe_path = resolve_ffprobe_path(&scan.ffprobe_path);
+
     ExtractorConfig {
         max_content_kb: scan.max_content_size_mb as usize * 1024,
         max_depth: scan.archives.max_depth,
@@ -503,6 +528,7 @@ pub fn extractor_config_from_scan(scan: &ScanConfig) -> ExtractorConfig {
         max_7z_solid_block_mb: scan.archives.max_7z_solid_block_mb,
         exclude_patterns: scan.exclude.clone(),
         external_dispatch,
+        ffprobe_path,
     }
 }
 

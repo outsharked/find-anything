@@ -266,6 +266,9 @@ path = "$DIR_ESC"
 # Extra glob patterns to skip, added to the built-in defaults.
 # Use exclude = [...] instead to replace the defaults entirely.
 # exclude_extra = []
+# Path to ffprobe (part of FFmpeg) for video codec extraction (opt-in).
+# When set, codec name, fps, and audio codec are added to video metadata.
+# ffprobe_path = "/usr/bin/ffprobe"
 
 [scan.archives]
 # enabled   = true

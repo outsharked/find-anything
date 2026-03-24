@@ -4,7 +4,6 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
-[ ] CHORE: Optimize "tree" queries- it makes one query per level of the tree view
 [ ] FEAT: Duplicate management view?
 [ ] BUG: App ID is not persisted, each rebuild makes it not show up in pinned taskbar items
 [ ] BUG: Windows shows "stop watcher" before connecting to service, it should know right away status of watcher
@@ -45,6 +44,8 @@ use the content
 
 ### Completed Items
 
+[x] BUG: Adding a new directory doesn't get watched
+[x] CHORE: Optimize "tree" queries- it makes one query per level of the tree view
 [x] BUG don't show "results" button when we deeplinked to something
 [x] BUG: Don't scroll metadata below images in detail view; just have it directly in view
 [x] BUG: Searching on ".png" doesn't work is that improvable

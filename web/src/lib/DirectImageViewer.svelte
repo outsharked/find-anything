@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import IconFitViewport from '$lib/icons/IconFitViewport.svelte';
+	import IconAdjust from '$lib/icons/IconAdjust.svelte';
 
 	export let src: string;
 	export let svgMode = false;
@@ -19,6 +20,34 @@
 	let dragOriginX = 0;
 	let dragOriginY = 0;
 
+	// Image adjustments
+	let adjustOpen = false;
+	let invert = false;
+	let flipH = false;
+	let flipV = false;
+	let brightness = 100;
+	let contrast = 100;
+
+	$: adjustActive = invert || flipH || flipV || brightness !== 100 || contrast !== 100;
+
+	$: imgFilter = [
+		invert ? 'invert(1)' : '',
+		brightness !== 100 ? `brightness(${brightness / 100})` : '',
+		contrast !== 100 ? `contrast(${contrast / 100})` : '',
+	]
+		.filter(Boolean)
+		.join(' ');
+
+	$: if (img) img.style.filter = imgFilter;
+
+	function resetAdjust() {
+		invert = false;
+		flipH = false;
+		flipV = false;
+		brightness = 100;
+		contrast = 100;
+	}
+
 	const MAX_SCALE = 10;
 
 	function clamp(v: number, min: number, max: number) {
@@ -27,14 +56,14 @@
 
 	function applyTransform() {
 		if (img) {
-			img.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+			const sx = scale * (flipH ? -1 : 1);
+			const sy = scale * (flipV ? -1 : 1);
+			img.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${sx}, ${sy})`;
 		}
 	}
 
 	function onImageLoad() {
 		if (svgMode) {
-			// SVGs are vector-based; CSS handles fit via width/height 100%.
-			// JS fit calculation is skipped — fitScale stays 1.
 			scale = 1;
 			fitScale = 1;
 			offsetX = 0;
@@ -67,7 +96,7 @@
 
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
-		if ((e.target as Element).closest('.toolbar')) return;
+		if ((e.target as Element).closest('.toolbar, .adjust-panel')) return;
 		dragging = true;
 		dragStartX = e.clientX;
 		dragStartY = e.clientY;
@@ -88,10 +117,16 @@
 	}
 
 	function onDblClick(e: MouseEvent) {
-		if ((e.target as Element).closest('.toolbar')) return;
+		if ((e.target as Element).closest('.toolbar, .adjust-panel')) return;
 		scale = fitScale;
 		offsetX = 0;
 		offsetY = 0;
+		applyTransform();
+	}
+
+	// Re-apply transform whenever flip changes.
+	$: if (img) {
+		flipH, flipV;
 		applyTransform();
 	}
 
@@ -114,7 +149,6 @@
 		offsetY = 0;
 		applyTransform();
 	}
-
 
 	onMount(() => {
 		container.addEventListener('wheel', onWheel, { passive: false });
@@ -153,7 +187,60 @@
 			<button on:click|stopPropagation={reset} title="Fit to viewport">
 				<IconFitViewport />
 			</button>
+			<button
+				on:click|stopPropagation={() => (adjustOpen = !adjustOpen)}
+				title="Adjust image"
+				class:active={adjustActive}
+			>
+				<IconAdjust />
+			</button>
 		</div>
+		{#if adjustOpen}
+			<div class="adjust-panel">
+				<div class="adjust-toggles">
+					<button
+						class:on={invert}
+						on:click|stopPropagation={() => (invert = !invert)}
+						title="Invert colours"
+					>Invert</button>
+					<button
+						class:on={flipH}
+						on:click|stopPropagation={() => (flipH = !flipH)}
+						title="Flip horizontal"
+					>Flip H</button>
+					<button
+						class:on={flipV}
+						on:click|stopPropagation={() => (flipV = !flipV)}
+						title="Flip vertical"
+					>Flip V</button>
+				</div>
+				<label class="adjust-slider">
+					<span class="adjust-label">Brightness</span>
+					<input
+						type="range"
+						min="0"
+						max="200"
+						bind:value={brightness}
+						on:click|stopPropagation
+					/>
+					<span class="adjust-value">{brightness}%</span>
+				</label>
+				<label class="adjust-slider">
+					<span class="adjust-label">Contrast</span>
+					<input
+						type="range"
+						min="0"
+						max="200"
+						bind:value={contrast}
+						on:click|stopPropagation
+					/>
+					<span class="adjust-value">{contrast}%</span>
+				</label>
+				{#if adjustActive}
+					<button class="reset-btn" on:click|stopPropagation={resetAdjust}>Reset</button>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -199,6 +286,97 @@
 	.toolbar button:hover {
 		background: rgba(0, 0, 0, 0.65);
 		border-color: rgba(255, 255, 255, 0.35);
+	}
+
+	.toolbar button.active {
+		border-color: rgba(255, 200, 80, 0.7);
+		color: #ffc850;
+	}
+
+	/* Adjust panel */
+	.adjust-panel {
+		position: absolute;
+		top: 44px;
+		left: 8px;
+		z-index: 10;
+		background: rgba(0, 0, 0, 0.75);
+		border: 1px solid rgba(255, 255, 255, 0.15);
+		border-radius: var(--radius);
+		backdrop-filter: blur(8px);
+		padding: 10px 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		min-width: 200px;
+		color: #fff;
+		font-size: 12px;
+	}
+
+	.adjust-toggles {
+		display: flex;
+		gap: 6px;
+	}
+
+	.adjust-toggles button {
+		flex: 1;
+		background: rgba(255, 255, 255, 0.08);
+		border: 1px solid rgba(255, 255, 255, 0.15);
+		color: #fff;
+		padding: 4px 6px;
+		border-radius: var(--radius);
+		cursor: pointer;
+		font-size: 11px;
+		text-align: center;
+	}
+
+	.adjust-toggles button:hover {
+		background: rgba(255, 255, 255, 0.18);
+	}
+
+	.adjust-toggles button.on {
+		background: rgba(255, 200, 80, 0.2);
+		border-color: rgba(255, 200, 80, 0.7);
+		color: #ffc850;
+	}
+
+	.adjust-slider {
+		display: grid;
+		grid-template-columns: 72px 1fr 36px;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.adjust-label {
+		color: rgba(255, 255, 255, 0.7);
+		font-size: 11px;
+	}
+
+	.adjust-value {
+		color: rgba(255, 255, 255, 0.7);
+		font-size: 11px;
+		text-align: right;
+	}
+
+	input[type='range'] {
+		width: 100%;
+		accent-color: #ffc850;
+		cursor: pointer;
+	}
+
+	.reset-btn {
+		background: rgba(255, 255, 255, 0.08);
+		border: 1px solid rgba(255, 255, 255, 0.15);
+		color: rgba(255, 255, 255, 0.6);
+		padding: 3px 8px;
+		border-radius: var(--radius);
+		cursor: pointer;
+		font-size: 11px;
+		align-self: flex-end;
+	}
+
+	.reset-btn:hover {
+		background: rgba(255, 255, 255, 0.18);
+		color: #fff;
 	}
 
 	.container {

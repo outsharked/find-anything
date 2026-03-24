@@ -11,7 +11,7 @@
 /// 2. For each `IndexFile`, check whether the `content_hash` in the gz matches
 ///    what the source DB currently records.  If it doesn't match (stale gz),
 ///    skip the file — a newer gz will archive the correct content.
-/// 3. If the content is not yet in the store, call `content_store.put(key, blob)`.
+/// 3. Call `content_store.put_overwrite(key, blob)` to store (or refresh) the blob.
 /// 4. Delete the gz file.
 use std::ffi::OsStr;
 use std::io::BufReader;
@@ -84,7 +84,7 @@ pub(super) fn run_archive_batch(
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 /// Process one gz file: for each file whose content_hash matches the DB, store
-/// the blob in the content store if it isn't already present.
+/// (or overwrite) the blob in the content store.
 fn archive_gz(
     data_dir: &Path,
     gz_path: &Path,
@@ -140,11 +140,6 @@ fn archive_gz(
 
         let key = ContentKey::new(db_hash.as_str());
 
-        // Fast-path: content already stored.
-        if content_store.contains(&key)? {
-            continue;
-        }
-
         // Build blob: sort lines by line_number, join with '\n'.
         let mut sorted_lines = file.lines.clone();
         sorted_lines.sort_by_key(|l| l.line_number);
@@ -157,9 +152,11 @@ fn archive_gz(
             .collect::<Vec<_>>()
             .join("\n");
 
-        match content_store.put(&key, &blob) {
-            Ok(true) => stored += 1,
-            Ok(false) => {} // concurrent put already stored it
+        // Always overwrite: extraction output may differ from what was previously
+        // stored (e.g. SCANNER_VERSION bump adds new metadata tags), even if the
+        // raw file bytes — and therefore file_hash — are unchanged.
+        match content_store.put_overwrite(&key, &blob) {
+            Ok(_) => stored += 1,
             Err(e) => tracing::error!("{tag} failed to store content for {}: {e:#}", file.path),
         }
     }
