@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.7.0] - 2026-03-24
+
 ### Fixed
 
 - **`find-preview-dicom` pipe-buffer deadlock (422 Unprocessable Entity)** — binary writes ~145 KB PNG to stdout but the OS pipe buffer is only 64 KB; child blocked writing while the server polled for exit, never reading; stdout is now drained in a background thread concurrently with the wait loop so the child can flush and exit
