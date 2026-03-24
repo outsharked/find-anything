@@ -328,7 +328,7 @@ mod tests {
             ("song.mp3",  FileKind::Audio),
             ("clip.mp4",  FileKind::Video),
             ("inner.zip", FileKind::Archive),
-            ("data.rs",   FileKind::Text),
+            ("data.rs",   FileKind::Code),
         ];
         for (member_name, expected_kind) in &cases {
             let lines = vec![line(Some(member_name), LINE_CONTENT_START, "content")];
