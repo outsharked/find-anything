@@ -146,8 +146,63 @@ pub fn fts_candidates(
     phrase: bool,
     date: DateFilter,
 ) -> Result<Vec<CandidateRow>> {
-    let Some(fts_query) = build_fts_query(query, phrase) else {
-        return Ok(vec![]);
+    // When FTS terms are empty (e.g. `regex:.*`) but a path_prefix filter is
+    // active, fall back to a direct files-table scan so that path-scoped queries
+    // with trivial regex patterns still return results.  The caller's LIMIT is
+    // respected, so performance is bounded even for catch-all patterns.
+    let fts_query = match build_fts_query(query, phrase) {
+        Some(q) => q,
+        None if date.path_prefix.is_some() => {
+            let prefix = date.path_prefix.as_deref().unwrap_or("");
+            let filename_clause = if date.filename_only {
+                "AND f.id NOT LIKE '%::%'"   // not used for path_prefix fallback, but safe
+            } else { "" };
+            let mut p = ParamBinder::new();
+            let eq_ph   = p.push(prefix.to_string());
+            let like_ph = p.push(format!("{prefix}/%"));
+            let limit_ph = p.push(limit as i64);
+            let from_ph = p.push(date.from.unwrap_or(i64::MIN));
+            let to_ph   = p.push(date.to.unwrap_or(i64::MAX));
+            let kind_clause = if date.kinds.is_empty() {
+                String::new()
+            } else {
+                let phs = date.kinds.iter().map(|k| p.push(k.to_string())).collect::<Vec<_>>().join(", ");
+                format!("AND f.kind IN ({phs})")
+            };
+            // Return the filename row (line_number=0) for each matching file.
+            let sql = format!(
+                "SELECT f.path, f.kind, 0 AS line_number, f.id, f.mtime, f.size
+                 FROM files f
+                 WHERE (f.path = {eq_ph} OR f.path LIKE {like_ph})
+                   AND f.mtime BETWEEN {from_ph} AND {to_ph}
+                   {kind_clause}
+                   {filename_clause}
+                 LIMIT {limit_ph}"
+            );
+            let refs = p.as_refs();
+            let mut stmt = conn.prepare(&sql)?;
+            let raw: Vec<_> = stmt.query_map(refs.as_slice(), |row| {
+                let file_kind_str: String = row.get(1)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    FileKind::from(file_kind_str.as_str()),
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                ))
+            })?.collect::<rusqlite::Result<_>>()?;
+            let mut results = Vec::with_capacity(raw.len());
+            for (file_path, file_kind, file_id, mtime, size) in raw {
+                let (fp, ap) = split_composite_path(&file_path);
+                results.push(CandidateRow {
+                    file_path: fp, file_kind, archive_path: ap,
+                    line_number: 0, content: String::new(),
+                    mtime, size, file_id,
+                });
+            }
+            return Ok(results);
+        }
+        None => return Ok(vec![]),
     };
 
     struct RawRow {

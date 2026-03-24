@@ -417,3 +417,78 @@ async fn test_search_source_filter_restricts_results() {
         "source filter should exclude results from other sources");
     assert!(!resp.results.is_empty(), "should return results from the specified source");
 }
+
+// ── path_prefix filter ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_path_prefix_restricts_results() {
+    let srv = TestServer::spawn().await;
+
+    srv.post_bulk(&make_text_bulk("src", "docs/readme.txt",     "path prefix unique term xqz")).await;
+    srv.post_bulk(&make_text_bulk("src", "src/main.rs",         "path prefix unique term xqz")).await;
+    srv.post_bulk(&make_text_bulk("src", "src/lib/helper.rs",   "path prefix unique term xqz")).await;
+    srv.wait_for_idle().await;
+
+    // Restrict to files under "src/" only.
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=xqz&source=src&path_prefix=src"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.results.len(), 2, "should only return files under src/");
+    assert!(resp.results.iter().all(|r| r.path.starts_with("src/")),
+        "all results should be under src/");
+}
+
+#[tokio::test]
+async fn test_path_prefix_regex_catchall_fallback() {
+    // When regex terms are empty (e.g. `.*`) but path_prefix is set, the server
+    // falls back to a direct files-table scan so results are still returned.
+    let srv = TestServer::spawn().await;
+
+    srv.post_bulk(&make_text_bulk("src", "projects/code/only_file.txt", "some content here")).await;
+    srv.post_bulk(&make_text_bulk("src", "other/file.txt",              "some content here")).await;
+    srv.wait_for_idle().await;
+
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=.*&mode=regex&source=src&path_prefix=projects%2Fcode"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(!resp.results.is_empty(),
+        "regex .* with path_prefix should return results via fallback scan");
+    assert!(resp.results.iter().all(|r| r.path.starts_with("projects/code")),
+        "results should be restricted to path_prefix");
+}
+
+#[tokio::test]
+async fn test_path_prefix_exact_match_included() {
+    // A file whose path IS the prefix (not just under it) should also be returned.
+    let srv = TestServer::spawn().await;
+
+    srv.post_bulk(&make_text_bulk("src", "notes",      "exact prefix match term qvw")).await;
+    srv.post_bulk(&make_text_bulk("src", "notes/todo", "exact prefix match term qvw")).await;
+    srv.wait_for_idle().await;
+
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=qvw&source=src&path_prefix=notes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.results.len(), 2, "should include both exact match and children");
+}

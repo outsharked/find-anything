@@ -15,9 +15,21 @@
 	}>();
 
 	let debounceTimer: ReturnType<typeof setTimeout>;
+	let prevLength = 0;
 
 	function handleInput() {
+		const isDeletion = query.length < prevLength;
+		prevLength = query.length;
 		dispatch('rawInput', { query });
+
+		if (isDeletion) {
+			// Deleting characters: cancel any pending search and don't start a new one.
+			// The user can press Enter or type a new character to trigger a search.
+			clearTimeout(debounceTimer);
+			isTyping = false;
+			return;
+		}
+
 		isTyping = true;
 		clearTimeout(debounceTimer);
 		debounceTimer = setTimeout(() => {

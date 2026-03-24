@@ -282,10 +282,13 @@
 			const effectiveScope = prefixResult.scopeOverride ?? scope;
 			const effectiveMatch = prefixResult.matchOverride ?? matchType;
 			const effectiveKindsLoad = prefixResult.kindsOverride ?? selectedKinds;
-			const serverMode = toServerMode(effectiveScope, effectiveMatch);
+			const isSourcePathOnlyLoad = prefixResult.onlyPrefixes && !!prefixResult.dirSource && !!prefixResult.dirPrefix;
+			const loadLastSegment = prefixResult.dirPrefix?.split('/').pop() ?? '';
+			const loadQ = isSourcePathOnlyLoad ? loadLastSegment : (nlpResult?.query ?? prefixResult.query);
+			const serverMode = isSourcePathOnlyLoad ? 'file-exact' : toServerMode(effectiveScope, effectiveMatch);
 			const loadSrcs = prefixResult.dirSource ? [prefixResult.dirSource] : selectedSources;
-		const loadPathPrefix = prefixResult.dirSource && prefixResult.dirPrefix ? prefixResult.dirPrefix : undefined;
-		const resp = await search({ q: nlpResult?.query ?? prefixResult.query, mode: serverMode, sources: loadSrcs, kinds: effectiveKindsLoad, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive, pathPrefix: loadPathPrefix });
+			const loadPathPrefix = prefixResult.dirSource && prefixResult.dirPrefix ? prefixResult.dirPrefix : undefined;
+			const resp = await search({ q: loadQ, mode: serverMode, sources: loadSrcs, kinds: effectiveKindsLoad, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive, pathPrefix: loadPathPrefix });
 			if (resp.results.length === 0) {
 				noMoreResults = true;
 			} else {
@@ -316,25 +319,39 @@
 	async function doSearch(q: string, srcs: string[], push = true) {
 		resultsStale = false;
 		deletedPaths = new Set();
-		if (!hasSearchableContent(q)) {
+		// Parse query prefixes first so we can check for source-path-only queries.
+		const prefixResult = parseSearchPrefixes(q);
+
+		// A source:name/path with no free text is searchable once there's at least
+		// one path segment — use the last segment as the FTS term for file-exact.
+		const isSourcePathOnly = prefixResult.onlyPrefixes
+			&& !!prefixResult.dirSource
+			&& !!prefixResult.dirPrefix;
+
+		if (!hasSearchableContent(q) && !isSourcePathOnly) {
 			results = []; totalResults = 0; resultsCapped = false; noMoreResults = false; loadOffset = 0; searchError = null;
 			return;
 		}
 
-		// Parse query prefixes; prefixes override Advanced panel settings for this call.
-		const prefixResult = parseSearchPrefixes(q);
 		const effectiveScope = prefixResult.scopeOverride ?? scope;
 		const effectiveMatch = prefixResult.matchOverride ?? matchType;
 		const effectiveKinds = prefixResult.kindsOverride ?? selectedKinds;
-		const serverMode = toServerMode(effectiveScope, effectiveMatch);
 		const baseQuery = prefixResult.query;
 
-		// NLP parse: extract dates + clean stop words. Skip if user dismissed.
-		nlpResult = nlpSuppressed ? null : parseNlpQuery(baseQuery, serverMode);
-		// Manual date range always wins; NLP fills in when no manual range is set.
+		// When no free text is present but a source path is, search the path itself:
+		// use the last path segment as the FTS term with file-exact mode.
+		const lastPathSegment = prefixResult.dirPrefix?.split('/').pop() ?? '';
+		const apiQuery = isSourcePathOnly
+			? lastPathSegment
+			: (parseNlpQuery(baseQuery, toServerMode(effectiveScope, effectiveMatch))?.query ?? baseQuery);
+		const serverMode = isSourcePathOnly
+			? 'file-exact'
+			: toServerMode(effectiveScope, effectiveMatch);
+
+		// NLP parse for normal (non source-path-only) searches.
+		nlpResult = (isSourcePathOnly || nlpSuppressed) ? null : parseNlpQuery(baseQuery, serverMode);
 		effectiveDateFrom = dateFromTs ?? nlpResult?.dateFrom;
 		effectiveDateTo = dateToTs ?? nlpResult?.dateTo;
-		const apiQuery = nlpResult?.query ?? baseQuery;
 
 		if (prefixResult.dirPrefixError) {
 			searchError = prefixResult.dirPrefixError;

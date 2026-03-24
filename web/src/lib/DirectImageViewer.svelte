@@ -19,7 +19,6 @@
 	let dragOriginX = 0;
 	let dragOriginY = 0;
 
-	const MIN_SCALE = 0.1;
 	const MAX_SCALE = 10;
 
 	function clamp(v: number, min: number, max: number) {
@@ -62,12 +61,13 @@
 	function onWheel(e: WheelEvent) {
 		e.preventDefault();
 		const delta = e.deltaY > 0 ? 0.9 : 1.1;
-		scale = clamp(scale * delta, MIN_SCALE, MAX_SCALE);
+		scale = clamp(scale * delta, minScale, MAX_SCALE);
 		applyTransform();
 	}
 
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
+		if ((e.target as Element).closest('.toolbar')) return;
 		dragging = true;
 		dragStartX = e.clientX;
 		dragStartY = e.clientY;
@@ -87,20 +87,24 @@
 		dragging = false;
 	}
 
-	function onDblClick() {
+	function onDblClick(e: MouseEvent) {
+		if ((e.target as Element).closest('.toolbar')) return;
 		scale = fitScale;
 		offsetX = 0;
 		offsetY = 0;
 		applyTransform();
 	}
 
+	// Never zoom out below half of fitScale (or 0.01 before image loads).
+	$: minScale = Math.min(0.01, fitScale * 0.5);
+
 	function zoomIn() {
-		scale = clamp(scale * 1.25, MIN_SCALE, MAX_SCALE);
+		scale = clamp(scale * 1.25, minScale, MAX_SCALE);
 		applyTransform();
 	}
 
 	function zoomOut() {
-		scale = clamp(scale / 1.25, MIN_SCALE, MAX_SCALE);
+		scale = clamp(scale / 1.25, minScale, MAX_SCALE);
 		applyTransform();
 	}
 
@@ -110,6 +114,7 @@
 		offsetY = 0;
 		applyTransform();
 	}
+
 
 	onMount(() => {
 		container.addEventListener('wheel', onWheel, { passive: false });
@@ -122,13 +127,6 @@
 </script>
 
 <div class="viewer-wrap">
-	<div class="toolbar">
-		<button on:click={zoomIn} title="Zoom in">+</button>
-		<button on:click={zoomOut} title="Zoom out">−</button>
-		<button on:click={reset} title="Fit to viewport">
-			<IconFitViewport />
-		</button>
-	</div>
 	<div
 		class="container"
 		class:dragging
@@ -149,6 +147,13 @@
 			on:load={onImageLoad}
 			draggable="false"
 		/>
+		<div class="toolbar">
+			<button on:click|stopPropagation={zoomIn} title="Zoom in">+</button>
+			<button on:click|stopPropagation={zoomOut} title="Zoom out">−</button>
+			<button on:click|stopPropagation={reset} title="Fit to viewport">
+				<IconFitViewport />
+			</button>
+		</div>
 	</div>
 </div>
 
@@ -162,18 +167,24 @@
 	}
 
 	.toolbar {
+		position: absolute;
+		top: 8px;
+		left: 8px;
 		display: flex;
 		gap: 4px;
-		padding: 6px 12px;
-		background: var(--bg-secondary);
-		border-bottom: 1px solid var(--border);
-		flex-shrink: 0;
+		z-index: 10;
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+
+	.container:hover .toolbar {
+		opacity: 1;
 	}
 
 	.toolbar button {
-		background: var(--badge-bg);
-		border: 1px solid var(--border);
-		color: var(--text);
+		background: rgba(0, 0, 0, 0.45);
+		border: 1px solid rgba(255, 255, 255, 0.15);
+		color: #fff;
 		padding: 2px 10px;
 		border-radius: var(--radius);
 		cursor: pointer;
@@ -182,11 +193,12 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
+		backdrop-filter: blur(4px);
 	}
 
 	.toolbar button:hover {
-		border-color: var(--accent);
-		color: var(--accent);
+		background: rgba(0, 0, 0, 0.65);
+		border-color: rgba(255, 255, 255, 0.35);
 	}
 
 	.container {

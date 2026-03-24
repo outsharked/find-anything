@@ -10,7 +10,6 @@
 	import IconEmail from '$lib/icons/IconEmail.svelte';
 	import IconWrapOn from '$lib/icons/IconWrapOn.svelte';
 	import IconWrapOff from '$lib/icons/IconWrapOff.svelte';
-	import IconDupChevron from '$lib/icons/IconDupChevron.svelte';
 	import { getFile, createLink } from '$lib/api';
 	import { fileViewPageSize, contentLineStart, tabWidth as serverTabWidth } from '$lib/settingsStore';
 	import { highlightFile } from '$lib/highlight';
@@ -67,7 +66,7 @@
 	let metaLines: { content: string }[] = [];
 	/** Paths of duplicate/canonical copies of this file (dedup aliases). */
 	let duplicatePaths: string[] = [];
-	let duplicatesExpanded = false;
+	let duplicatesModalOpen = false;
 
 	// Original file view
 	let showOriginal = false;
@@ -692,6 +691,11 @@
 				{/if}
 			</button>
 			<div class="metadata">
+				{#if duplicatePaths.length > 0}
+					<button class="meta-item dup-badge" on:click={() => duplicatesModalOpen = true}>
+						{duplicatePaths.length} {duplicatePaths.length === 1 ? 'duplicate' : 'duplicates'}
+					</button>
+				{/if}
 				{#if fileKind && fileKind !== 'raw'}
 					<span class="meta-item kind-badge">{fileKind}</span>
 				{/if}
@@ -703,26 +707,19 @@
 				{/if}
 			</div>
 		</div>
-		{#if duplicatePaths.length === 1}
-			<div class="dup-bar dup-bar--inline">
-				<span class="dup-label">Duplicate:</span>
-				<button class="dup-link" on:click={() => openDuplicate(duplicatePaths[0])}>{duplicatePaths[0]}</button>
-			</div>
-		{:else if duplicatePaths.length > 1}
-			<div class="dup-bar">
-				<button class="dup-toggle" on:click={() => duplicatesExpanded = !duplicatesExpanded}>
-					<span class="dup-chevron" class:dup-chevron--open={duplicatesExpanded}><IconDupChevron /></span>
-					{duplicatePaths.length} duplicates
-				</button>
-				{#if duplicatesExpanded}
-					<div class="dup-list">
-						{#each duplicatePaths as dup}
-							<div class="dup-item">
-								<button class="dup-link" on:click={() => openDuplicate(dup)}>{dup}</button>
-							</div>
-						{/each}
-					</div>
-				{/if}
+
+		{#if duplicatesModalOpen}
+			<button class="dup-modal-backdrop" on:click={() => duplicatesModalOpen = false} aria-label="Close duplicates"></button>
+			<div class="dup-modal" role="dialog" aria-label="Duplicates">
+				<div class="dup-modal-header">
+					<span class="dup-modal-title">{duplicatePaths.length} {duplicatePaths.length === 1 ? 'Duplicate' : 'Duplicates'}</span>
+					<button class="dup-modal-close" on:click={() => duplicatesModalOpen = false}>✕</button>
+				</div>
+				<div class="dup-modal-list">
+					{#each duplicatePaths as dup}
+						<button class="dup-modal-link" on:click={() => { duplicatesModalOpen = false; openDuplicate(dup); }}>{dup}</button>
+					{/each}
+				</div>
 			</div>
 		{/if}
 		{#if showOriginal && canViewInline}
@@ -937,101 +934,110 @@
 		background: var(--bg);
 	}
 
-	.dup-bar {
-		padding: 2px 12px;
-		background: var(--bg-secondary);
-		border-bottom: 1px solid var(--border);
-		font-family: var(--font-mono);
-		font-size: 12px;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		flex-shrink: 0;
-	}
-
-	.dup-bar--inline {
-		flex-direction: row;
-		align-items: center;
-		gap: 6px;
-		padding-top: 4px;
-		padding-bottom: 4px;
-		padding-left: 24px;
-	}
-
-	.dup-label {
+	.dup-badge {
+		background: var(--badge-bg);
+		border: 1px solid var(--border);
 		color: var(--accent);
-		font-weight: 600;
-		flex-shrink: 0;
-		margin-right: 6px;
-	}
-
-	.dup-toggle {
-		background: none;
-		border: none;
-		padding: 4px 12px;
-		font-family: inherit;
-		font-size: inherit;
-		color: var(--accent);
+		border-radius: 3px;
 		cursor: pointer;
-		text-align: left;
+		font-size: 11px;
+		padding: 1px 6px;
+		line-height: 1.4;
 		font-weight: 600;
-		display: flex;
-		align-items: center;
-		gap: 5px;
 	}
 
-	.dup-toggle:hover {
-		text-decoration: underline;
+	.dup-badge:hover {
+		border-color: var(--accent);
 	}
 
-	.dup-chevron {
-		flex-shrink: 0;
-		display: inline-flex;
-		align-items: center;
-		transition: transform 0.15s;
-		color: var(--text);
-		vertical-align: middle;
-	}
-
-	.dup-chevron--open {
-		transform: rotate(90deg);
-	}
-
-	.dup-list {
-		padding-left: 12px;
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-	}
-
-	.dup-item {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.dup-item::before {
-		content: '•';
-		color: var(--text-muted);
-		flex-shrink: 0;
-	}
-
-	.dup-link {
-		background: none;
+	.dup-modal-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		z-index: 500;
 		border: none;
 		padding: 0;
-		font-family: inherit;
-		font-size: inherit;
-		color: var(--accent);
-		cursor: pointer;
-		text-align: left;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		max-width: 100%;
+		cursor: default;
 	}
 
-	.dup-link:hover {
+	.dup-modal {
+		position: fixed;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		z-index: 501;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		width: min(640px, calc(100vw - 32px));
+		max-height: min(400px, calc(100vh - 64px));
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+	}
+
+	.dup-modal-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 12px 16px;
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.dup-modal-title {
+		font-weight: 600;
+		font-size: 14px;
+		color: var(--text);
+	}
+
+	.dup-modal-close {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 14px;
+		padding: 2px 6px;
+		border-radius: 3px;
+		line-height: 1;
+	}
+
+	.dup-modal-close:hover {
+		color: var(--text);
+		background: var(--bg-hover, rgba(255,255,255,0.08));
+	}
+
+	.dup-modal-list {
+		overflow-y: auto;
+		padding: 8px 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.dup-modal-link {
+		background: none;
+		border: none;
+		padding: 7px 16px 7px 32px;
+		text-align: left;
+		font-family: var(--font-mono);
+		font-size: 12px;
+		color: var(--accent);
+		cursor: pointer;
+		white-space: normal;
+		word-break: break-all;
+		line-height: 1.5;
+		position: relative;
+	}
+
+	.dup-modal-link::before {
+		content: '•';
+		position: absolute;
+		left: 16px;
+		color: var(--text-muted);
+	}
+
+	.dup-modal-link:hover {
+		background: var(--bg-hover, rgba(255,255,255,0.06));
 		text-decoration: underline;
 	}
 

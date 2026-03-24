@@ -287,7 +287,18 @@
 			{nlpHighlightSpan}
 			bind:isTyping
 			on:change={(e) => dispatch('search', { query: e.detail.query })}
-			on:rawInput={(e) => { liveQuery = e.detail.query; }}
+			on:rawInput={(e) => {
+				const wasDeletion = e.detail.query.length < liveQuery.length;
+				liveQuery = e.detail.query;
+				if (wasDeletion) {
+					// Deletion: close typeahead and freeze activeToken so the
+					// reactive block doesn't re-trigger updateTypeahead.
+					closeTypeahead();
+					activeToken = getDirToken(liveQuery) ?? null;
+				} else {
+					activeToken = null; // typing forward: let reactive block fire
+				}
+			}}
 			on:focus={() => { searchFocused = true; }}
 			on:blur={() => { searchFocused = false; }}
 		/>

@@ -11,6 +11,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **Backspace/delete no longer triggers new search or typeahead** — `SearchBox` cancels the debounce on deletion and `TopBar` freezes the typeahead `activeToken`; searches and typeahead only fire when typing forward or pressing Enter
+- **Image viewer controls overlaid on image** — zoom +/−/fit buttons moved inside the image container as a transparent hover overlay (top-left, semi-transparent dark background with blur); the separate toolbar row is removed so the image gets the full height; `pointerdown` and `dblclick` handlers guard against the toolbar to prevent drag hijack and accidental fit-reset on double-click; minimum zoom scale is now dynamic (`Math.min(0.01, fitScale * 0.5)`) so zoom-out no longer snaps up to a hard-coded minimum that exceeds fit scale
+- **Duplicate paths moved to modal** — the inline expandable dup-bar row is replaced by a `"N duplicates"` badge button in the toolbar metadata area (before the kind badge); clicking opens a fixed-height scrollable modal (640 px wide) with bulleted path links; clicking the backdrop or ✕ closes it
+- **`source:` with path but no free text now runs a search** — when `source:name/segment` is present alone, the last path segment is used as a `file-exact` FTS query scoped to the source and path prefix; requires at least one path segment after the source name; fallback direct-files-table scan added for cases where FTS terms are empty (e.g. `regex:.*`) but `path_prefix` is set, with three new integration tests
 - **`source:` prefix minimum query length now ignores modifiers** — `hasSearchableContent` strips all prefix tokens before checking for 3+ characters of free text; `source:nas-data/path` or `doc:type:pdf` alone no longer trigger a search until a real query term is also present
 
 ### Added
