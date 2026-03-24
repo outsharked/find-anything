@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseSearchPrefixes, toServerMode } from './searchPrefixes';
+import { parseSearchPrefixes, toServerMode, hasSearchableContent } from './searchPrefixes';
 import type { SearchScope, SearchMatchType, PrefixToken } from './searchPrefixes';
 
 /** Simulate clicking ✕ on a chip: replaces the raw token with its value in the query. */
@@ -244,6 +244,92 @@ describe('chip removal', () => {
 		const r = parseSearchPrefixes(query);
 		// "file:" is one token with empty value; "hello" is a separate literal token
 		expect(simulateRemove(query, r.prefixTokens[0])).toBe('hello');
+	});
+});
+
+// ── source: prefix ──────────────────────────────────────────────────────────────
+
+describe('source: prefix', () => {
+	it('parses source + path', () => {
+		const r = parseSearchPrefixes('source:nas-data/multimedia/movies hello');
+		expect(r.dirSource).toBe('nas-data');
+		expect(r.dirPrefix).toBe('multimedia/movies');
+		expect(r.dirPrefixError).toBeNull();
+		expect(r.query).toBe('hello');
+		expect(r.prefixTokens).toHaveLength(1);
+		expect(r.prefixTokens[0].dirSource).toBe('nas-data');
+		expect(r.prefixTokens[0].dirPrefix).toBe('multimedia/movies');
+	});
+
+	it('source only (no path) gives empty dirPrefix', () => {
+		const r = parseSearchPrefixes('source:nas-data hello');
+		expect(r.dirSource).toBe('nas-data');
+		expect(r.dirPrefix).toBe('');
+		expect(r.dirPrefixError).toBeNull();
+	});
+
+	it('strips leading slash', () => {
+		const r = parseSearchPrefixes('source:/nas-data/multimedia hello');
+		expect(r.dirSource).toBe('nas-data');
+		expect(r.dirPrefix).toBe('multimedia');
+	});
+
+	it('strips trailing slash', () => {
+		const r = parseSearchPrefixes('source:nas-data/multimedia/ hello');
+		expect(r.dirSource).toBe('nas-data');
+		expect(r.dirPrefix).toBe('multimedia');
+	});
+
+	it('empty after normalisation produces error', () => {
+		const r = parseSearchPrefixes('source:/ hello');
+		expect(r.dirSource).toBeNull();
+		expect(r.dirPrefixError).not.toBeNull();
+	});
+
+	it('bare source: produces error', () => {
+		const r = parseSearchPrefixes('source: hello');
+		expect(r.dirSource).toBeNull();
+		expect(r.dirPrefixError).not.toBeNull();
+	});
+
+	it('preserves original casing', () => {
+		const r = parseSearchPrefixes('source:Nas-Data/Multimedia/Movies');
+		expect(r.dirSource).toBe('Nas-Data');
+		expect(r.dirPrefix).toBe('Multimedia/Movies');
+	});
+
+	it('absent when no source: token', () => {
+		const r = parseSearchPrefixes('hello world');
+		expect(r.dirSource).toBeNull();
+		expect(r.dirPrefix).toBeNull();
+		expect(r.dirPrefixError).toBeNull();
+	});
+});
+
+// ── hasSearchableContent ──────────────────────────────────────────────────────
+
+describe('hasSearchableContent', () => {
+	it('plain query with 3+ chars is searchable', () => {
+		expect(hasSearchableContent('foo')).toBe(true);
+	});
+	it('plain query under 3 chars is not searchable', () => {
+		expect(hasSearchableContent('fo')).toBe(false);
+	});
+	it('prefix-only query is not searchable', () => {
+		expect(hasSearchableContent('doc:')).toBe(false);
+		expect(hasSearchableContent('source:nas-data/path')).toBe(false);
+		expect(hasSearchableContent('type:pdf')).toBe(false);
+	});
+	it('prefix + short free text is not searchable', () => {
+		expect(hasSearchableContent('doc: fo')).toBe(false);
+	});
+	it('prefix + sufficient free text is searchable', () => {
+		expect(hasSearchableContent('doc:foo')).toBe(true);
+		expect(hasSearchableContent('source:nas-data/path foo')).toBe(true);
+		expect(hasSearchableContent('type:pdf invoice')).toBe(true);
+	});
+	it('multiple prefixes no free text is not searchable', () => {
+		expect(hasSearchableContent('doc: source:nas-data/foo')).toBe(false);
 	});
 });
 

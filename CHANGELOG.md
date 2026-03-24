@@ -11,6 +11,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **`source:` prefix minimum query length now ignores modifiers** — `hasSearchableContent` strips all prefix tokens before checking for 3+ characters of free text; `source:nas-data/path` or `doc:type:pdf` alone no longer trigger a search until a real query term is also present
+
+### Added
+
+- **`source:` search prefix** — restricts results to a specific source and optional path prefix; format `source:<source-name>[/path/to/dir]`; server applies `WHERE (path = ? OR path LIKE ?/%)` in both FTS5 and document-search modes
+- **`source:` typeahead with auto-advance** — typing `source:` opens a keyboard-navigable dropdown showing available sources; selecting one immediately fetches and recursively auto-advances through single-option directory levels until multiple choices are found; the entire path is resolved silently before any UI update (`resolveAutoPath` is a pure async function with no intermediate state mutations); desktop-only (hidden on mobile)
+
 - **`← results` button hidden on deeplink** — button now only renders when `results.length > 0`; navigating directly to a file URL no longer shows a back button that leads nowhere
 - **Media metadata scrollable container on mobile** — EXIF/audio/video metadata no longer appears in a separate inner-scroll box below the media; `MetaDrawer` mobile styles removed `overflow-y: auto` / `max-height: 40vh` so content flows naturally; `FileViewer` outer container switches to `overflow-y: auto` on mobile; `AudioViewer` and `VideoViewer` stack vertically with a divider instead of side-by-side
 - **`?` help button missing on desktop** — removed erroneous global `.help-wrap-outer { display: none; }` rule that was hiding the button at all viewport widths; it is now visible on desktop and hidden only on mobile (where the logo tap opens the mobile help panel instead)

@@ -37,6 +37,9 @@ pub struct SearchParams {
     pub kinds: Vec<String>,
     /// When true, fuzzy/exact/document/regex matching is case-sensitive. Default: false.
     pub case_sensitive: bool,
+    /// Optional path prefix filter from `dir:` client keyword.
+    /// Already normalised (no leading/trailing slashes).
+    pub path_prefix: Option<String>,
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
@@ -53,6 +56,7 @@ impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
         let mut date_to = None;
         let mut kinds = Vec::new();
         let mut case_sensitive = false;
+        let mut path_prefix: Option<String> = None;
 
         for (k, v) in form_urlencoded::parse(raw.as_bytes()) {
             match k.as_ref() {
@@ -69,6 +73,10 @@ impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
                 "date_to"        => date_to   = Some(v.parse::<i64>()
                     .map_err(|_| (StatusCode::BAD_REQUEST, "invalid date_to".to_string()))?),
                 "case_sensitive" => case_sensitive = matches!(v.as_ref(), "1" | "true"),
+                "path_prefix"    => {
+                    let p = v.trim().trim_start_matches('/').trim_end_matches('/').to_string();
+                    if !p.is_empty() { path_prefix = Some(p); }
+                }
                 _ => {}
             }
         }
@@ -83,6 +91,7 @@ impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
             date_to,
             kinds,
             case_sensitive,
+            path_prefix,
         })
     }
 }
@@ -254,7 +263,7 @@ pub async fn search(
 
     let content_store = Arc::clone(&state.content_store);
     let offset = params.offset;
-    let date_filter = DateFilter { from: params.date_from, to: params.date_to, kinds: params.kinds.into_iter().map(|s| FileKind::from(s.as_str())).collect(), filename_only: false };
+    let date_filter = DateFilter { from: params.date_from, to: params.date_to, kinds: params.kinds.into_iter().map(|s| FileKind::from(s.as_str())).collect(), filename_only: false, path_prefix: params.path_prefix };
     let case_sensitive = params.case_sensitive;
 
     // Only score enough candidates to fill this page plus a buffer for fuzzy

@@ -96,6 +96,7 @@
 					token.scope === 'file' ? 'filename' : token.scope === 'doc' ? 'document' : null,
 					token.match,
 					token.kind ? `type: ${token.kind}` : null,
+					token.dirSource ? `source: ${token.dirSource}${token.dirPrefix ? '/' + token.dirPrefix : ''}` : null,
 				].filter(Boolean).join(' · ')}</span>
 				<button class="nlp-dismiss" on:click={() => removePrefixToken(token)} aria-label="Remove prefix">✕</button>
 			</div>

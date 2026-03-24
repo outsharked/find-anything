@@ -10,11 +10,14 @@
 
 	const dispatch = createEventDispatcher<{
 		change: { query: string };
+		/** Fires immediately on every keystroke — used by typeahead, no debounce. */
+		rawInput: { query: string };
 	}>();
 
 	let debounceTimer: ReturnType<typeof setTimeout>;
 
 	function handleInput() {
+		dispatch('rawInput', { query });
 		isTyping = true;
 		clearTimeout(debounceTimer);
 		debounceTimer = setTimeout(() => {
@@ -73,6 +76,8 @@
 			on:input={handleInput}
 			on:keydown={handleKeydown}
 			on:scroll={syncScroll}
+			on:focus
+			on:blur
 			type="text"
 			placeholder="Search…"
 			autocomplete="off"

@@ -137,6 +137,8 @@ export interface SearchParams {
 	kinds?: string[];
 	/** When true, matching is case-sensitive. Default: false (case-insensitive). */
 	caseSensitive?: boolean;
+	/** Restrict results to files whose path starts with this prefix (no leading slash). */
+	pathPrefix?: string;
 }
 
 export async function search(params: SearchParams): Promise<SearchResponse> {
@@ -154,6 +156,7 @@ export async function search(params: SearchParams): Promise<SearchResponse> {
 		params.kinds.forEach((k) => url.searchParams.append('kind', k));
 	}
 	if (params.caseSensitive) url.searchParams.set('case_sensitive', '1');
+	if (params.pathPrefix) url.searchParams.set('path_prefix', params.pathPrefix);
 
 	const resp = await apiFetch(url.toString());
 	if (!resp.ok) {

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
+	import { createEventDispatcher, onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import SearchBox from '$lib/SearchBox.svelte';
 	import AdvancedSearch from '$lib/AdvancedSearch.svelte';
@@ -7,6 +7,8 @@
 	import AppLogo from '$lib/AppLogo.svelte';
 	import MobilePanel from '$lib/MobilePanel.svelte';
 	import SearchHelpContent from '$lib/SearchHelpContent.svelte';
+	import DirTypeahead from '$lib/DirTypeahead.svelte';
+	import { listDir } from '$lib/api';
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 
 	export let query: string;
@@ -42,6 +44,228 @@
 
 	let searchBox: SearchBox;
 	export function focus() { searchBox?.focus(); }
+
+	// ── Dir typeahead ──────────────────────────────────────────────────────────
+
+	let liveQuery = query;
+	let searchFocused = false;
+	let taOpen = false;
+	let taItems: string[] = [];
+	let taActiveIdx = -1;
+	let taLoading = false;
+	let taSourcePhase = false;
+	/**
+	 * The resolved token currently displayed in the typeahead (may differ from
+	 * liveQuery when auto-advance jumped ahead). Used by selectItem so it always
+	 * builds the next token from the correct resolved position.
+	 * Reset to null whenever the user types (liveQuery changes from rawInput).
+	 */
+	let activeToken: string | null = null;
+
+	// Simple in-memory cache: "source:prefix" → dir names
+	const dirCache = new Map<string, string[]>();
+
+	/** Extract the source: token being typed (last whitespace-delimited token). */
+	function getDirToken(q: string): string | null {
+		if (q !== q.trimEnd()) return null;
+		const last = q.split(/\s+/).pop() ?? '';
+		return last.startsWith('source:') ? last : null;
+	}
+
+	/** Parse a source: token into { phase, filter, source?, parentPath? }. */
+	function parseDirToken(token: string) {
+		const rest = token.slice(7).replace(/^\/+/, '');
+		const lastSlash = rest.lastIndexOf('/');
+		if (lastSlash === -1) {
+			return { phase: 'source' as const, filter: rest };
+		}
+		const beforeSlash = rest.slice(0, lastSlash);
+		const firstSlash = beforeSlash.indexOf('/');
+		const src = firstSlash === -1 ? beforeSlash : beforeSlash.slice(0, firstSlash);
+		const parentPath = firstSlash === -1 ? '' : beforeSlash.slice(firstSlash + 1);
+		return { phase: 'dir' as const, source: src, parentPath, filter: rest.slice(lastSlash + 1) };
+	}
+
+	/** Replace the source: token at the end of a query string with newToken. */
+	function replaceLastDirToken(q: string, newToken: string): string {
+		const parts = q.trimEnd().split(/\s+/);
+		parts[parts.length - 1] = newToken;
+		return parts.join(' ');
+	}
+
+	/**
+	 * Recursively fetch dirs, auto-advancing through single-option levels.
+	 * Returns the deepest path reached and the dirs at that level.
+	 * Pure: no UI state mutations — caller applies results once at the end.
+	 */
+	async function resolveAutoPath(
+		source: string,
+		path: string,
+		id: number
+	): Promise<{ path: string; dirs: string[] } | null> {
+		const cacheKey = `${source}:${path}`;
+		let dirs: string[];
+		if (dirCache.has(cacheKey)) {
+			dirs = dirCache.get(cacheKey)!;
+		} else {
+			const prefix = path ? path + '/' : '';
+			try {
+				const resp = await listDir(source, prefix);
+				dirs = resp.entries.filter(e => e.entry_type === 'dir').map(e => e.name);
+				dirCache.set(cacheKey, dirs);
+			} catch {
+				dirs = [];
+			}
+		}
+		if (id !== updateId) return null; // stale — abort
+		if (dirs.length === 1) {
+			// Single option: silently advance one level and recurse.
+			const next = path ? `${path}/${dirs[0]}` : dirs[0];
+			return resolveAutoPath(source, next, id);
+		}
+		return { path, dirs }; // 0 or 2+ options: stop here
+	}
+
+	let updateId = 0;
+
+	async function updateTypeahead(token: string) {
+		const id = ++updateId;
+		taOpen = true;
+		taLoading = true;
+		taItems = [];
+
+		const parsed = parseDirToken(token);
+
+		if (parsed.phase === 'source') {
+			taSourcePhase = true;
+			const f = parsed.filter.toLowerCase();
+			const matches = sources.filter(s => s.toLowerCase().startsWith(f));
+			if (id !== updateId) return;
+
+			if (matches.length !== 1) {
+				// 0 or 2+ sources: show list directly.
+				taLoading = false;
+				taItems = matches;
+				taActiveIdx = -1;
+				return;
+			}
+
+			// Exactly one source: resolve the full auto-advance path.
+			const src = matches[0];
+			const resolved = await resolveAutoPath(src, '', id);
+			if (!resolved || id !== updateId) return;
+
+			const finalToken = resolved.path
+				? `source:${src}/${resolved.path}/`
+				: `source:${src}/`;
+			activeToken = finalToken;
+			liveQuery = replaceLastDirToken(liveQuery, finalToken);
+			dispatch('search', { query: liveQuery });
+
+			taSourcePhase = false;
+			taLoading = false;
+			taItems = resolved.dirs;
+			taActiveIdx = -1;
+			taOpen = resolved.dirs.length > 0;
+			if (resolved.dirs.length === 0) liveQuery += ' '; // leaf: add space to close
+
+		} else {
+			taSourcePhase = false;
+			const { source, parentPath, filter } = parsed;
+
+			// Resolve auto-advance from current dir level.
+			const resolved = await resolveAutoPath(source, parentPath, id);
+			if (!resolved || id !== updateId) return;
+
+			if (resolved.path !== parentPath) {
+				// Path advanced: update the displayed token.
+				const finalToken = `source:${source}/${resolved.path}/`;
+				activeToken = finalToken;
+				liveQuery = replaceLastDirToken(liveQuery, finalToken);
+				dispatch('search', { query: liveQuery });
+			} else {
+				activeToken = token;
+			}
+
+			const f = filter.toLowerCase();
+			const items = resolved.dirs.filter(d => d.toLowerCase().startsWith(f));
+			taLoading = false;
+			taItems = items;
+			taActiveIdx = -1;
+			taOpen = items.length > 0;
+			if (items.length === 0) liveQuery += ' '; // leaf: add space to close
+		}
+	}
+
+	function closeTypeahead() {
+		taOpen = false;
+		taItems = [];
+		taActiveIdx = -1;
+		activeToken = null;
+	}
+
+	function selectItem(name: string) {
+		// Use the resolved token (may differ from liveQuery if auto-advance jumped ahead).
+		const token = activeToken ?? getDirToken(liveQuery);
+		if (!token) return;
+		const parsed = parseDirToken(token);
+		let newToken: string;
+		if (parsed.phase === 'source') {
+			newToken = `source:${name}/`;
+		} else {
+			const base = parsed.parentPath
+				? `${parsed.source}/${parsed.parentPath}/${name}`
+				: `${parsed.source}/${name}`;
+			newToken = `source:${base}/`;
+		}
+		activeToken = null; // reset so reactive block re-runs updateTypeahead for next level
+		liveQuery = replaceLastDirToken(liveQuery, newToken);
+		dispatch('search', { query: liveQuery });
+		taActiveIdx = -1;
+	}
+
+	// React to live query changes. Guard: skip when liveQuery was updated by
+	// auto-advance (activeToken set) to avoid re-triggering updateTypeahead.
+	$: {
+		const token = getDirToken(liveQuery);
+		if (token && searchFocused && token !== activeToken) {
+			updateTypeahead(token);
+		} else if (!token) {
+			closeTypeahead();
+		}
+	}
+
+	// Sync liveQuery when the query PROP changes externally (e.g. chip removed).
+	let _prevQuery = query;
+	$: if (query !== _prevQuery) {
+		_prevQuery = query;
+		if (!taOpen) liveQuery = query;
+	}
+
+	function handleTypeaheadKeydown(e: KeyboardEvent) {
+		if (!taOpen || !searchFocused) return;
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			taActiveIdx = Math.min(taActiveIdx + 1, taItems.length - 1);
+		} else if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			taActiveIdx = Math.max(taActiveIdx - 1, -1);
+		} else if ((e.key === 'Enter' || e.key === 'Tab') && taActiveIdx >= 0) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			selectItem(taItems[taActiveIdx]);
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			closeTypeahead();
+		}
+	}
+
+	onMount(() => {
+		document.addEventListener('keydown', handleTypeaheadKeydown, true);
+	});
+	onDestroy(() => {
+		document.removeEventListener('keydown', handleTypeaheadKeydown, true);
+	});
 </script>
 
 <div class="topbar">
@@ -63,7 +287,20 @@
 			{nlpHighlightSpan}
 			bind:isTyping
 			on:change={(e) => dispatch('search', { query: e.detail.query })}
+			on:rawInput={(e) => { liveQuery = e.detail.query; }}
+			on:focus={() => { searchFocused = true; }}
+			on:blur={() => { searchFocused = false; }}
 		/>
+		{#if taOpen}
+			<DirTypeahead
+				items={taItems}
+				activeIndex={taActiveIdx}
+				loading={taLoading}
+				sourcePhase={taSourcePhase}
+				on:select={(e) => selectItem(e.detail.name)}
+				on:hover={(e) => { taActiveIdx = e.detail.index; }}
+			/>
+		{/if}
 	</div>
 	{#if sources.length > 0}
 		<div class="advanced-wrap">
@@ -114,6 +351,7 @@
 	.search-wrap {
 		min-width: 260px;
 		flex: 1;
+		position: relative;
 	}
 
 	.tree-toggle {

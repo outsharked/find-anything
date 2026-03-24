@@ -23,7 +23,7 @@
 	import IconSpinner from '$lib/icons/IconSpinner.svelte';
 	import { parseNlpQuery } from '$lib/nlpQuery';
 	import type { NlpResult } from '$lib/nlpQuery';
-	import { parseSearchPrefixes, toServerMode, fromServerMode } from '$lib/searchPrefixes';
+	import { parseSearchPrefixes, toServerMode, fromServerMode, hasSearchableContent } from '$lib/searchPrefixes';
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 
 	// SvelteKit passes params to every layout/page component. Declare it to avoid
@@ -92,7 +92,7 @@
 		lastHandledEvent = $liveEvent;
 		const ev = $liveEvent;
 		const sourceMatches = selectedSources.length === 0 || selectedSources.includes(ev.source);
-		if (sourceMatches && query.trim().length >= 3) {
+		if (sourceMatches && hasSearchableContent(query)) {
 			if (ev.action === 'deleted') {
 				deletedPaths = new Set([...deletedPaths, `${ev.source}:${ev.path}`]);
 			} else {
@@ -270,12 +270,12 @@
 	}
 
 	function checkScroll() {
-		if (loadingMore || noMoreResults || fileView !== null || query.trim().length < 3) return;
+		if (loadingMore || noMoreResults || fileView !== null || !hasSearchableContent(query)) return;
 		if (isNearBottom()) triggerLoad();
 	}
 
 	async function triggerLoad() {
-		if (loadingMore || noMoreResults || query.trim().length < 3) return;
+		if (loadingMore || noMoreResults || !hasSearchableContent(query)) return;
 		loadingMore = true;
 		try {
 			const prefixResult = parseSearchPrefixes(query);
@@ -283,7 +283,9 @@
 			const effectiveMatch = prefixResult.matchOverride ?? matchType;
 			const effectiveKindsLoad = prefixResult.kindsOverride ?? selectedKinds;
 			const serverMode = toServerMode(effectiveScope, effectiveMatch);
-			const resp = await search({ q: nlpResult?.query ?? prefixResult.query, mode: serverMode, sources: selectedSources, kinds: effectiveKindsLoad, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
+			const loadSrcs = prefixResult.dirSource ? [prefixResult.dirSource] : selectedSources;
+		const loadPathPrefix = prefixResult.dirSource && prefixResult.dirPrefix ? prefixResult.dirPrefix : undefined;
+		const resp = await search({ q: nlpResult?.query ?? prefixResult.query, mode: serverMode, sources: loadSrcs, kinds: effectiveKindsLoad, limit: 50, offset: loadOffset, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive, pathPrefix: loadPathPrefix });
 			if (resp.results.length === 0) {
 				noMoreResults = true;
 			} else {
@@ -314,7 +316,7 @@
 	async function doSearch(q: string, srcs: string[], push = true) {
 		resultsStale = false;
 		deletedPaths = new Set();
-		if (q.trim().length < 3) {
+		if (!hasSearchableContent(q)) {
 			results = []; totalResults = 0; resultsCapped = false; noMoreResults = false; loadOffset = 0; searchError = null;
 			return;
 		}
@@ -333,6 +335,17 @@
 		effectiveDateFrom = dateFromTs ?? nlpResult?.dateFrom;
 		effectiveDateTo = dateToTs ?? nlpResult?.dateTo;
 		const apiQuery = nlpResult?.query ?? baseQuery;
+
+		if (prefixResult.dirPrefixError) {
+			searchError = prefixResult.dirPrefixError;
+			results = []; totalResults = 0; resultsCapped = false; noMoreResults = true;
+			return;
+		}
+		if (prefixResult.dirSource !== null && !sourceNames.includes(prefixResult.dirSource)) {
+			searchError = `source: unknown source "${prefixResult.dirSource}" — available: ${sourceNames.join(', ')}`;
+			results = []; totalResults = 0; resultsCapped = false; noMoreResults = true;
+			return;
+		}
 
 		searching = true;
 		searchError = null;
@@ -360,7 +373,9 @@
 			window.scrollTo(0, 0);
 		}
 		try {
-			const resp = await search({ q: apiQuery, mode: serverMode, sources: srcs, kinds: effectiveKinds, limit: 50, offset: 0, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive });
+			const effectiveSrcs = prefixResult.dirSource ? [prefixResult.dirSource] : srcs;
+		const effectivePathPrefix = prefixResult.dirSource && prefixResult.dirPrefix ? prefixResult.dirPrefix : undefined;
+		const resp = await search({ q: apiQuery, mode: serverMode, sources: effectiveSrcs, kinds: effectiveKinds, limit: 50, offset: 0, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, caseSensitive, pathPrefix: effectivePathPrefix });
 			if (mySearchId !== searchId) return;
 			const merged = mergePage([], resp.results, 0);
 			results = merged.results;

@@ -9,7 +9,7 @@ use super::split_composite_path;
 use super::{SQL_FTS_FILE_ID, SQL_FTS_FILENAME_ONLY, SQL_FTS_LINE_NUMBER};
 
 /// Combined search filter: optional date range (mtime), optional kind allowlist,
-/// and optional filename-only restriction.
+/// optional path prefix, and optional filename-only restriction.
 #[derive(Debug, Clone, Default)]
 pub struct DateFilter {
     pub from: Option<i64>,
@@ -18,11 +18,14 @@ pub struct DateFilter {
     pub kinds: Vec<FileKind>,
     /// When true, restrict matches to line_number = 0 (filename-only search).
     pub filename_only: bool,
+    /// When set, restrict results to files whose path equals this prefix or
+    /// starts with `<prefix>/`.  Already normalised (no leading/trailing slashes).
+    pub path_prefix: Option<String>,
 }
 
 impl DateFilter {
     pub fn is_active(&self) -> bool {
-        self.from.is_some() || self.to.is_some() || !self.kinds.is_empty()
+        self.from.is_some() || self.to.is_some() || !self.kinds.is_empty() || self.path_prefix.is_some()
     }
 }
 
@@ -185,6 +188,13 @@ pub fn fts_candidates(
             let phs = date.kinds.iter().map(|k| p.push(k.to_string())).collect::<Vec<_>>().join(", ");
             format!("AND f.kind IN ({phs})")
         };
+        let path_prefix_clause = if let Some(ref prefix) = date.path_prefix {
+            let eq_ph   = p.push(prefix.clone());
+            let like_ph = p.push(format!("{prefix}/%"));
+            format!("AND (f.path = {eq_ph} OR f.path LIKE {like_ph})")
+        } else {
+            String::new()
+        };
 
         let sql = format!(
             "SELECT f.path, f.kind, {SQL_FTS_LINE_NUMBER} AS line_number,
@@ -194,6 +204,7 @@ pub fn fts_candidates(
              WHERE lines_fts MATCH {fts_ph}
                AND f.mtime BETWEEN {from_ph} AND {to_ph}
                {kind_clause}
+               {path_prefix_clause}
                {filename_clause}
              LIMIT {limit_ph}"
         );
@@ -286,7 +297,7 @@ pub fn document_candidates(
         .reduce(|a, b| a.intersection(&b).copied().collect())
         .unwrap_or_default();
 
-    // Apply date/kind filter.
+    // Apply date/kind/path_prefix filter.
     if date.is_active() && !qualifying_ids.is_empty() {
         let from = date.from.unwrap_or(i64::MIN);
         let to = date.to.unwrap_or(i64::MAX);
@@ -301,9 +312,16 @@ pub fn document_candidates(
             let phs = date.kinds.iter().map(|k| p.push(k.to_string())).collect::<Vec<_>>().join(", ");
             format!("AND kind IN ({phs})")
         };
+        let path_prefix_clause = if let Some(ref prefix) = date.path_prefix {
+            let eq_ph   = p.push(prefix.clone());
+            let like_ph = p.push(format!("{prefix}/%"));
+            format!("AND (path = {eq_ph} OR path LIKE {like_ph})")
+        } else {
+            String::new()
+        };
 
         let sql = format!(
-            "SELECT id FROM files WHERE id IN ({id_phs}) AND mtime BETWEEN {from_ph} AND {to_ph} {kind_clause}"
+            "SELECT id FROM files WHERE id IN ({id_phs}) AND mtime BETWEEN {from_ph} AND {to_ph} {kind_clause} {path_prefix_clause}"
         );
         let mut stmt = conn.prepare(&sql)?;
         let refs = p.as_refs();

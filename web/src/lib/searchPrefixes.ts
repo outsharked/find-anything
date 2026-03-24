@@ -9,6 +9,10 @@ export interface PrefixToken {
 	scope: SearchScope | null;
 	match: SearchMatchType | null;
 	kind: string | null;          // set for type: tokens
+	/** Source name extracted from a `source:source/path` token. */
+	dirSource: string | null;
+	/** Path portion of a `source:source/path` token (may be empty string = entire source). */
+	dirPrefix: string | null;
 }
 
 export interface PrefixParseResult {
@@ -17,6 +21,14 @@ export interface PrefixParseResult {
 	matchOverride: SearchMatchType | null;
 	kindsOverride: string[] | null;   // null = use UI state
 	prefixTokens: PrefixToken[];      // for chips
+	/** Source extracted from `source:source/path`, or null if no source: token. */
+	dirSource: string | null;
+	/** Path prefix from `source:source/path` (empty string = entire source root). */
+	dirPrefix: string | null;
+	/** Syntax error when a `source:` token is malformed (e.g. empty after normalisation). */
+	dirPrefixError: string | null;
+	/** True when every token was a recognised prefix modifier and there is no free-text content. */
+	onlyPrefixes: boolean;
 }
 
 const SCOPE_MAP: Record<string, SearchScope> = {
@@ -62,16 +74,36 @@ export function parseSearchPrefixes(raw: string): PrefixParseResult {
 	const kindsFound: string[] = [];
 	const prefixTokens: PrefixToken[] = [];
 	const queryFragments: string[] = [];
+	let dirSource: string | null = null;
+	let dirPrefix: string | null = null;
+	let dirPrefixError: string | null = null;
 
 	for (const token of tokens) {
 		const lower = token.toLowerCase();
+
+		// source: prefix — source-scoped path filter (e.g. source:nas-data/multimedia/movies)
+		// Format: source:<source>[/<path>]  — source is the first path segment.
+		if (lower.startsWith('source:')) {
+			const rest = token.slice(7).replace(/^\/+/, '').replace(/\/+$/, '');
+			if (!rest) {
+				dirPrefixError = `"${token}" — expected format: source:source-name/optional/path`;
+			} else {
+				const slash = rest.indexOf('/');
+				const src = slash === -1 ? rest : rest.slice(0, slash);
+				const path = slash === -1 ? '' : rest.slice(slash + 1);
+				dirSource = src;
+				dirPrefix = path;
+				prefixTokens.push({ raw: token, value: '', scope: null, match: null, kind: null, dirSource: src, dirPrefix: path });
+			}
+			continue;
+		}
 
 		// type: prefix (single-level, takes kind value — cannot compound with scope/match)
 		if (lower.startsWith('type:')) {
 			const kindName = lower.slice(5);
 			if (kindName && !kindName.includes(':') && KIND_SET.has(kindName)) {
 				kindsFound.push(kindName);
-				prefixTokens.push({ raw: token, value: '', scope: null, match: null, kind: kindName });
+				prefixTokens.push({ raw: token, value: '', scope: null, match: null, kind: kindName, dirSource: null, dirPrefix: null });
 				continue;
 			}
 			// Unknown kind → treat as literal
@@ -102,7 +134,7 @@ export function parseSearchPrefixes(raw: string): PrefixParseResult {
 			// This token had at least one recognised prefix; last token's value wins overall
 			if (tokenScope !== null) scopeOverride = tokenScope;
 			if (tokenMatch !== null) matchOverride = tokenMatch;
-			prefixTokens.push({ raw: token, value: rest, scope: tokenScope, match: tokenMatch, kind: null });
+			prefixTokens.push({ raw: token, value: rest, scope: tokenScope, match: tokenMatch, kind: null, dirSource: null, dirPrefix: null });
 			if (rest) queryFragments.push(rest);
 		} else {
 			// No recognised prefix — treat as literal query text
@@ -110,9 +142,12 @@ export function parseSearchPrefixes(raw: string): PrefixParseResult {
 		}
 	}
 
+	const freeText = queryFragments.join(' ');
+	const onlyPrefixes = !freeText.trim() && tokens.length > 0;
+
 	// Safety fallback: if stripping all prefixes leaves empty query, use raw
-	let query = queryFragments.join(' ');
-	if (!query.trim()) query = raw.trim();
+	// (preserves behaviour for search execution; hasSearchableContent uses onlyPrefixes instead)
+	const query = freeText.trim() ? freeText : raw.trim();
 
 	return {
 		query,
@@ -120,7 +155,22 @@ export function parseSearchPrefixes(raw: string): PrefixParseResult {
 		matchOverride,
 		kindsOverride: kindsFound.length > 0 ? kindsFound : null,
 		prefixTokens,
+		dirSource,
+		dirPrefix,
+		dirPrefixError,
+		onlyPrefixes,
 	};
+}
+
+/**
+ * Returns true if the raw query string has enough free-text content to warrant
+ * a search request (≥3 non-whitespace characters after stripping all prefix
+ * modifiers). Prefix-only queries like `doc:source:foo/bar` return false.
+ */
+export function hasSearchableContent(raw: string): boolean {
+	const { query, onlyPrefixes } = parseSearchPrefixes(raw);
+	if (onlyPrefixes) return false;
+	return query.replace(/\s/g, '').length >= 3;
 }
 
 /** Compose scope + matchType into the server's mode string. */
