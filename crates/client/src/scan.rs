@@ -393,6 +393,8 @@ async fn push_non_archive_files(
     // Refine Unknown or Text kind using extracted content:
     // - A [FILE:mime] line emitted by dispatch means binary → use mime_to_kind.
     // - Text content lines (line_number > 0) present → promote to Text.
+    // - Non-empty LINE_METADATA with no mime/text hint → dispatch ran a specialist
+    //   extractor via magic bytes (e.g. extensionless DICOM); sniff to confirm.
     // - Neither → keep as-is.
     let kind = if file.kind == FileKind::Text || file.kind == FileKind::Unknown {
         if let Some(mime_line) = file.lines.iter().find(|l| l.line_number == LINE_METADATA && l.content.starts_with("[FILE:mime] ")) {
@@ -400,6 +402,12 @@ async fn push_non_archive_files(
             FileKind::from(find_extract_dispatch::mime_to_kind(mime))
         } else if file.lines.iter().any(|l| l.line_number >= LINE_CONTENT_START) {
             FileKind::Text
+        } else if file.kind == FileKind::Unknown
+            && file.lines.iter().any(|l| l.line_number == LINE_METADATA && !l.content.is_empty())
+        {
+            // Specialist extractor ran via dispatch magic-byte detection.
+            // Sniff the file to determine the kind.
+            detect_kind_from_magic(&file.abs_path)
         } else {
             file.kind.clone()
         }
@@ -426,6 +434,23 @@ async fn push_non_archive_files(
         ctx.maybe_flush().await?;
     }
     Ok(())
+}
+
+/// Detect file kind by reading magic bytes from `path`.
+/// Checks DICOM magic first (requires 132 bytes), then falls back to the
+/// `infer` crate for broad MIME detection. Returns Unknown if nothing matches.
+fn detect_kind_from_magic(path: &std::path::Path) -> FileKind {
+    use std::io::Read;
+    let mut buf = vec![0u8; 512];
+    if let Ok(mut f) = std::fs::File::open(path) {
+        let n = f.read(&mut buf).unwrap_or(0);
+        buf.truncate(n);
+        let kind_str = find_extract_dispatch::sniff_kind_from_bytes(&buf);
+        if !kind_str.is_empty() {
+            return FileKind::from(kind_str);
+        }
+    }
+    FileKind::Unknown
 }
 
 /// Process one file: resolve its effective config, extract content via
@@ -474,13 +499,36 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
     }
 
     let size = size_of(abs_path).unwrap_or(0);
-    let kind = FileKind::from(extract::detect_kind(abs_path));
+    let mut kind = FileKind::from(extract::detect_kind(abs_path));
+
+    // For extensionless files that `detect_kind` can't classify by extension,
+    // sniff the first 512 bytes. If a specialist type is recognised (DICOM, image,
+    // audio, video, …), record the kind now so it is stored correctly, and route
+    // to `find-extract-dispatch` — which will re-detect via magic bytes and hand
+    // off to the right specialist — instead of falling through to the inline text
+    // extractor, which would silently discard binary content.
+    let magic_override_route = if kind == FileKind::Unknown && abs_path.extension().is_none() {
+        let sniff_kind = detect_kind_from_magic(abs_path);
+        if sniff_kind != FileKind::Unknown {
+            kind = sniff_kind;
+            Some(subprocess::ExtractorRoute::Subprocess(
+                subprocess::resolve_binary_for_dispatch(&eff_scan.extractor_dir),
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     if !ctx.quiet {
         info!("Processing {rel_path}");
     }
 
-    match subprocess::resolve_extractor(abs_path, &eff_scan, &eff_scan.extractor_dir, SCAN_INLINE_SET) {
+    let resolved_route = magic_override_route.unwrap_or_else(|| {
+        subprocess::resolve_extractor(abs_path, &eff_scan, &eff_scan.extractor_dir, SCAN_INLINE_SET)
+    });
+    match resolved_route {
         subprocess::ExtractorRoute::External(ref ext_cfg) => {
             match ext_cfg.mode {
                 ExternalExtractorMode::Stdout => {

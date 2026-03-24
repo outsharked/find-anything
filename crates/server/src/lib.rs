@@ -267,6 +267,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/recent/stream",  get(routes::stream_recent))
         .route("/api/v1/tree",           get(routes::list_dir))
         .route("/api/v1/raw",            get(routes::get_raw))
+        .route("/api/v1/view",           get(routes::get_view))
         .route("/api/v1/links",          post(routes::post_link))
         .route("/api/v1/links/{code}",   get(routes::get_link))
         .route("/api/v1/auth/session",   post(routes::create_session).delete(routes::delete_session))

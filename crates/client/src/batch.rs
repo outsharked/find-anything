@@ -9,9 +9,11 @@ use find_common::api::{BulkRequest, FileKind, IndexFile, IndexingFailure, IndexL
 
 use crate::api::ApiClient;
 
-/// Blake3 hash of a file's raw bytes, used as the content-store key.
-/// Returns `None` for empty files (the all-zeros hash would falsely
-/// deduplicate all empty files against each other).
+/// Content-store key for a file: blake3 of its raw bytes mixed with
+/// [`SCANNER_VERSION`].  Including the scanner version ensures that upgrading
+/// extraction logic produces a new key, so old blobs become orphaned and
+/// compaction can remove them while fresh content gets stored.
+/// Returns `None` for empty files.
 pub(crate) fn hash_file(path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut hasher = blake3::Hasher::new();
@@ -24,6 +26,7 @@ pub(crate) fn hash_file(path: &Path) -> Option<String> {
         total += n;
     }
     if total == 0 { return None; }
+    hasher.update(&SCANNER_VERSION.to_le_bytes());
     Some(hasher.finalize().to_hex().to_string())
 }
 

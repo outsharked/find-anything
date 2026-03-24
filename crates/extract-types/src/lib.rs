@@ -11,6 +11,23 @@ pub use index_line::{
     LINE_PATH, LINE_METADATA, LINE_CONTENT_START,
 };
 
+/// Compute the content-store key for raw file `bytes`.
+///
+/// Mixes [`SCANNER_VERSION`] into the hash so that upgrading the extraction
+/// logic produces a new key for every file.  Old blobs (under the previous
+/// version's keys) become orphaned and are removed by the next compaction run,
+/// while the fresh blobs carry the updated extracted content.
+///
+/// Returns `None` for empty slices to avoid deduplicating all empty files
+/// under a single key.
+pub fn content_hash(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() { return None; }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(bytes);
+    hasher.update(&SCANNER_VERSION.to_le_bytes());
+    Some(hasher.finalize().to_hex().to_string())
+}
+
 /// Build a [`globset::GlobSet`] from a list of glob patterns.
 ///
 /// Backslashes are normalised to forward slashes. For patterns ending in

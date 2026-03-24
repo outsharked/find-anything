@@ -21,7 +21,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
-- **DICOM support** — metadata extraction (`find-extract-dicom`) indexes DICOM tags (PatientName, Modality, StudyDescription, dimensions, etc.); inline PNG preview via `find-preview-dicom` subprocess (`GET /api/v1/dicom-preview`); `FileKind::Dicom` variant added; extensionless DICOM files detected via magic bytes (DICM at offset 128); JPEG2000 decoding available as optional `jpeg2000` Cargo feature
+- **DICOM support** — metadata extraction (`find-extract-dicom`) indexes DICOM tags (PatientName, Modality, StudyDescription, dimensions, etc.); inline PNG preview via `find-preview-dicom` subprocess (served through the unified `GET /api/v1/view` endpoint); `FileKind::Dicom` variant added; extensionless DICOM files detected via magic bytes (DICM at offset 128); JPEG2000 decoding available as optional `jpeg2000` Cargo feature
+- **Unified `GET /api/v1/view` image endpoint** — replaces the separate `/api/v1/raw?convert=png` (where the client guessed the format from the file extension) and `/api/v1/dicom-preview`; the server looks up the file's `kind` in the source DB and decides: serve native bytes for browser-compatible formats (detected by magic bytes), convert to PNG via the `image` crate for other image kinds, or run `find-preview-dicom` for DICOM; the client uses a single `viewUrl` for all inline image and DICOM display
 - **DICOM metadata uses `[DICOM:Tag] value` format** — consistent with EXIF `[EXIF:Make] Apple` so `parseMetaTags` can parse and display each field in the metadata drawer; previously bare values like `study: 20260323` were not parsed; `SCANNER_VERSION` bumped to 6 to trigger re-extraction
 - **`[fa:duplicate]` prefix for duplicate path entries in metadata** — `FileViewer` no longer guesses by absence of `[`; only `[fa:duplicate] `-prefixed entries are treated as duplicate paths; untagged metadata (DICOM) goes to `metaLines` instead of `duplicatePaths`
 
@@ -60,6 +61,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 - **highlight.js language packs lazy-loaded per language** — 27 language packs are now dynamic imports instead of statically bundled; each pack is fetched on first use for that file type; `highlightFile` and `highlightLine` are now async; search result context lines render plain text immediately then update with highlighting once the pack loads
 - **RTF.js build warning suppressed** — Vite `onwarn` handler silences the chunk-too-large warning for the rtf.js chunk, which is intentionally large and lazy-loaded only when an RTF file is opened
+- **Vite dev server binds to `0.0.0.0`** — added `host: true` to `vite.config.ts` so the dev server is reachable from Windows Chrome when running inside WSL2 (previously bound to `127.0.0.1` only)
 
 ### Fixed
 

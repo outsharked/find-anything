@@ -11,6 +11,9 @@ pub fn detect_kind(path: &Path) -> &'static str {
     if find_extract_pe::accepts(path) {
         return "executable";
     }
+    if find_extract_dicom::accepts(path) {
+        return "dicom";
+    }
     if find_extract_media::accepts(path) {
         // Determine if it's image, audio, or video
         let ext = path

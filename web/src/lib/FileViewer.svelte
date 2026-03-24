@@ -109,15 +109,10 @@
 	// or is a member of a ZIP archive.
 	$: isSvg = /\.svgz?$/i.test(archivePath ?? path);
 	$: canViewInline = (fileKind === 'dicom' && !isArchiveMember) || (canServeArchiveMember && (fileKind === 'image' || (fileKind === 'pdf' && !isEncrypted) || fileKind === 'video' || fileKind === 'audio' || isSvg));
-	// For images the browser can't render natively, request server-side PNG conversion.
-	// Check the member's own extension for archive members.
-	const BROWSER_IMAGE_EXTS = new Set(['jpg','jpeg','png','gif','webp','svg','svgz','avif','bmp','ico']);
-	$: imageExtPath = archivePath ?? path;
-	$: needsConversion = fileKind === 'image' && !BROWSER_IMAGE_EXTS.has((imageExtPath.split('.').pop() ?? '').toLowerCase());
-	$: rawInlineUrl = needsConversion
-		? `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}&convert=png`
-		: `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}`;
-	$: dicomPreviewUrl = `/api/v1/dicom-preview?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`;
+	// Unified image/dicom view URL — server determines the representation.
+	$: viewUrl = `/api/v1/view?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}`;
+	// Raw URL for audio/video/PDF/SVG streaming (range requests required for media).
+	$: rawInlineUrl = `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}`;
 	$: fileName = path.split('/').pop() ?? path;
 	// Member download: the server can extract members from ZIP archives up to a configured
 	// nesting depth (window.find_anything_config.download_zip_member_levels).
@@ -736,7 +731,7 @@
 				</div>
 			{:else if fileKind === 'image'}
 				<div class="image-viewer-panel">
-					<DirectImageViewer src={rawInlineUrl} />
+					<DirectImageViewer src={viewUrl} />
 					<MetaDrawer initialOpen={false}>
 						{#if metaLines.length > 0}
 							{#each metaLines as meta}
@@ -754,7 +749,7 @@
 				</div>
 			{:else if fileKind === 'dicom'}
 				<div class="image-viewer-panel">
-					<DirectImageViewer src={dicomPreviewUrl} />
+					<DirectImageViewer src={viewUrl} />
 					<MetaDrawer initialOpen={false}>
 						{#if metaLines.length > 0}
 							{#each metaLines as meta}

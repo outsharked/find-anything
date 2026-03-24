@@ -608,6 +608,10 @@ pub struct ServerScanConfig {
     /// Can be overridden per-upload by the client's value. Default: 100.
     #[serde(default = "default_server_max_content_size_mb")]
     pub max_content_size_mb: u64,
+    /// Maximum seconds the DICOM preview subprocess may run before being killed.
+    /// Default: 30.
+    #[serde(default = "default_dicom_preview_timeout_secs")]
+    pub dicom_preview_timeout_secs: u64,
 }
 
 impl Default for ServerScanConfig {
@@ -615,12 +619,14 @@ impl Default for ServerScanConfig {
         Self {
             subprocess_timeout_secs: default_server_subprocess_timeout_secs(),
             max_content_size_mb: default_server_max_content_size_mb(),
+            dicom_preview_timeout_secs: default_dicom_preview_timeout_secs(),
         }
     }
 }
 
 fn default_server_subprocess_timeout_secs() -> u64 { 600 }
 fn default_server_max_content_size_mb() -> u64 { 100 }
+fn default_dicom_preview_timeout_secs() -> u64 { 30 }
 
 /// Configuration for share link generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]

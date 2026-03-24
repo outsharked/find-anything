@@ -284,7 +284,7 @@ fn zip_from_archive<R: Read + std::io::Seek>(
         } else {
             None
         };
-        let file_hash = if bytes.is_empty() { None } else { Some(blake3::hash(&bytes).to_hex().to_string()) };
+        let file_hash = find_extract_types::content_hash(&bytes);
         callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: member_size });
     }
     Ok(())
@@ -344,7 +344,7 @@ fn tar_streaming<R: Read>(mut archive: tar::Archive<R>, display_prefix: &str, cf
         } else {
             None
         };
-        let file_hash = if bytes.is_empty() { None } else { Some(blake3::hash(&bytes).to_hex().to_string()) };
+        let file_hash = find_extract_types::content_hash(&bytes);
         callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: member_size });
     }
     Ok(())
@@ -428,7 +428,7 @@ fn sevenz_process_entry(
         None
     };
 
-    let file_hash = if bytes.is_empty() { None } else { Some(blake3::hash(&bytes).to_hex().to_string()) };
+    let file_hash = find_extract_types::content_hash(&bytes);
     callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: Some(entry.size()) });
     Ok(true)
 }
@@ -639,7 +639,7 @@ fn single_compressed<R: Read>(reader: R, path: &Path, cfg: &ExtractorConfig) -> 
     reader.take(size_limit as u64).read_to_end(&mut bytes)?;
 
     let decompressed_size = bytes.len() as u64;
-    let file_hash = if bytes.is_empty() { None } else { Some(blake3::hash(&bytes).to_hex().to_string()) };
+    let file_hash = find_extract_types::content_hash(&bytes);
     Ok(MemberBatch {
         lines: extract_member_bytes(bytes, &inner_name, path.to_str().unwrap_or(""), cfg),
         file_hash,

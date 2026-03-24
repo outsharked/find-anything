@@ -1,0 +1,20 @@
+[package]
+name = "find-extract-dicom"
+version = "0.6.2"
+edition = "2021"
+
+[lib]
+name = "find_extract_dicom"
+path = "src/lib.rs"
+
+[[bin]]
+name = "find-extract-dicom"
+path = "src/main.rs"
+
+[dependencies]
+find-extract-types = { path = "../../extract-types" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+dicom-object = "0.9"
+dicom-dictionary-std = "0.9"

@@ -20,6 +20,7 @@ find-extract-html  = { path = "../html" }
 find-extract-office = { path = "../office" }
 find-extract-epub  = { path = "../epub" }
 find-extract-pe    = { path = "../pe" }
+find-extract-dicom = { path = "../dicom" }
 
 anyhow               = { workspace = true }
 tracing              = { workspace = true }

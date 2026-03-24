@@ -1,0 +1,21 @@
+[package]
+name = "find-preview-dicom"
+version = "0.6.2"
+edition = "2021"
+
+[[bin]]
+name = "find-preview-dicom"
+path = "src/main.rs"
+
+[features]
+# Enable JPEG 2000 decoding via the OpenJPEG C library.
+# Requires a C toolchain and the openjpeg2 system library (or it is compiled
+# from source via the openjp2-sys crate).  Release builds enable this;
+# local dev without a C toolchain can omit it.
+jpeg2000 = ["dicom-pixeldata/openjp2"]
+
+[dependencies]
+anyhow         = { workspace = true }
+dicom-object   = "0.9"
+dicom-pixeldata = { version = "0.9", features = ["image"] }
+image          = { version = "0.25", default-features = false, features = ["png"] }

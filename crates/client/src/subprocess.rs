@@ -317,11 +317,7 @@ pub async fn run_external_tempdir(
             // Fall through to filename-only on extraction failure.
         }
 
-        let file_hash = if bytes.is_empty() {
-            None
-        } else {
-            Some(blake3::hash(&bytes).to_hex().to_string())
-        };
+        let file_hash = find_extract_types::content_hash(&bytes);
 
         let mut content_lines = dispatch_from_bytes(&bytes, &member_name, ext_config);
         // Set archive_path to member_rel on all returned lines.
@@ -361,6 +357,12 @@ fn resolve_binary(name: &str, extractor_dir: &Option<String>) -> String {
 /// Resolve the path to the find-extract-archive binary.
 pub fn resolve_binary_for_archive(extractor_dir: &Option<String>) -> String {
     resolve_binary("find-extract-archive", extractor_dir)
+}
+
+/// Resolve the path to the find-extract-dispatch binary.
+#[allow(dead_code)] // used by find-scan; other binaries share this module
+pub fn resolve_binary_for_dispatch(extractor_dir: &Option<String>) -> String {
+    resolve_binary("find-extract-dispatch", extractor_dir)
 }
 
 /// Resolve the extractor route for a given file path.
@@ -432,6 +434,9 @@ pub fn resolve_extractor(
     // epub must come before the dispatch fallthrough to preserve its dedicated extractor.
     if ext == "epub" {
         return ExtractorRoute::Subprocess(resolve_binary("find-extract-epub", extractor_dir));
+    }
+    if ext == "dcm" || ext == "dicom" {
+        return ExtractorRoute::Subprocess(resolve_binary("find-extract-dicom", extractor_dir));
     }
 
     // 6. Text/code and everything else — dispatch (inline if Text is in inline_set).

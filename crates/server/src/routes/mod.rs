@@ -12,6 +12,7 @@ mod settings;
 mod stats;
 mod tree;
 pub mod upload;
+mod view;
 
 pub use admin::{compact, delete_source, inbox_clear, inbox_pause, inbox_resume, inbox_retry, inbox_show, inbox_status, update_check, update_apply};
 pub use bulk::bulk;
@@ -27,6 +28,7 @@ pub use stats::{get_stats, stream_stats};
 pub use tree::{list_dir, list_sources};
 pub use upload::{upload_init, upload_patch, upload_status};
 pub use self::settings::get_settings;
+pub use view::get_view;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -172,6 +174,46 @@ pub(super) fn source_db_path(state: &AppState, source: &str) -> Result<std::path
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(state.data_dir.join("sources").join(format!("{}.db", source)))
+}
+
+/// Validate a relative path and resolve it to a canonical filesystem path
+/// within the source's configured root.
+///
+/// Returns `(canonical_root, canonical_full)` on success, or an appropriate
+/// `StatusCode` error response on failure (bad path, source not configured,
+/// file not found, path traversal).
+pub(super) fn resolve_source_path(
+    state: &AppState,
+    source: &str,
+    path: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), StatusCode> {
+    // Reject paths that start with '/' or contain '..' components.
+    if path.starts_with('/') || path.starts_with('\\') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    for component in std::path::Path::new(path).components() {
+        if matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        ) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    let source_root_str = state
+        .config
+        .sources
+        .get(source)
+        .and_then(|sc| sc.path.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let source_root = std::path::Path::new(source_root_str);
+    let canonical_root = source_root.canonicalize().map_err(|_| StatusCode::NOT_FOUND)?;
+    let canonical_full = source_root.join(path).canonicalize().map_err(|_| StatusCode::NOT_FOUND)?;
+    if !canonical_full.starts_with(&canonical_root) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok((canonical_root, canonical_full))
 }
 
 /// Convert a `Vec<ContextLine>` into `(start, match_index, Vec<String>)`.

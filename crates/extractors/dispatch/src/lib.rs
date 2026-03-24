@@ -8,7 +8,7 @@ use tracing::warn;
 /// Dispatch extraction from in-memory bytes.
 ///
 /// Runs extractors in priority order:
-///   PDF → media → HTML → office → EPUB → PE → text → MIME fallback
+///   PDF → DICOM → media → HTML → office → EPUB → PE → text → MIME fallback
 ///
 /// Returns content/metadata lines.  Does NOT include a filename line at
 /// `line_number = 0` (the caller is responsible for that).  Does NOT set
@@ -21,6 +21,15 @@ pub fn dispatch_from_bytes(bytes: &[u8], name: &str, cfg: &ExtractorConfig) -> V
         match find_extract_pdf::extract_from_bytes(bytes, name, cfg) {
             Ok(lines) => return lines,
             Err(e) => warn!("PDF extraction failed for '{}': {}", name, e),
+        }
+        return vec![];
+    }
+
+    // ── DICOM (before media — extensionless DICOM must be caught by magic bytes) ─
+    if find_extract_dicom::accepts(member_path) || find_extract_dicom::accepts_bytes(bytes) {
+        match find_extract_dicom::extract_from_bytes(bytes, name, cfg) {
+            Ok(lines) => return lines,
+            Err(e) => warn!("DICOM extraction failed for '{}': {}", name, e),
         }
         return vec![];
     }
@@ -121,6 +130,7 @@ pub fn dispatch_from_path(path: &Path, cfg: &ExtractorConfig) -> Result<Vec<Inde
     let limit = (cfg.max_content_kb as u64 * 1024).max(8192);
 
     let claimed_by_specialist = find_extract_pdf::accepts(path)
+        || find_extract_dicom::accepts(path)
         || find_extract_media::accepts(path)
         || find_extract_html::accepts(path)
         || find_extract_office::accepts(path)
@@ -159,6 +169,17 @@ pub fn dispatch_from_path(path: &Path, cfg: &ExtractorConfig) -> Result<Vec<Inde
             Err(e) => { warn!("skipping {} (read error): {e}", path.display()); return Ok(vec![]); }
         };
         sniff.truncate(n);
+
+        // DICOM magic at offset 128 — re-read full file before dispatching.
+        if find_extract_dicom::accepts_bytes(&sniff) {
+            let mut buf = Vec::new();
+            if let Err(e) = open!(path).take(limit).read_to_end(&mut buf) {
+                warn!("skipping {} (read error): {e}", path.display());
+                return Ok(vec![]);
+            }
+            return Ok(dispatch_from_bytes(&buf, &name, cfg));
+        }
+
         if find_extract_text::accepts_bytes(path, &sniff) {
             // Looks like text — read the rest up to the limit.
             let remaining = limit.saturating_sub(sniff.len() as u64);
@@ -188,6 +209,24 @@ pub fn is_open_blocking_ext_path(path: &Path) -> bool {
     find_extract_text::is_open_blocking_ext_path(path)
 }
 
+/// Sniff the kind of a file from its raw bytes using magic byte detection.
+///
+/// Checks DICOM magic first (requires 132 bytes), then falls back to the
+/// `infer` crate. Returns `""` (empty string) if the content is unrecognised
+/// or empty — callers should treat `""` as Unknown.
+pub fn sniff_kind_from_bytes(bytes: &[u8]) -> &'static str {
+    if find_extract_dicom::accepts_bytes(bytes) {
+        return "dicom";
+    }
+    if let Some(t) = infer::get(bytes) {
+        let kind = mime_to_kind(t.mime_type());
+        if kind != "binary" {
+            return kind;
+        }
+    }
+    ""
+}
+
 /// Map a MIME type string to a file kind string.
 ///
 /// This is the single source of truth — previously duplicated in
@@ -197,7 +236,8 @@ pub fn mime_to_kind(mime: &str) -> &'static str {
     if mime.starts_with("audio/") { return "audio"; }
     if mime.starts_with("video/") { return "video"; }
     if mime.starts_with("text/")  { return "text"; }
-    if mime == "application/pdf"  { return "pdf"; }
+    if mime == "application/pdf"   { return "pdf"; }
+    if mime == "application/dicom" { return "dicom"; }
     if matches!(mime,
         "application/zip"
         | "application/x-tar"

@@ -4,6 +4,7 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+[ ] CHORE: Optimize "tree" queries- it makes one query per level of the tree view
 [ ] FEAT: Duplicate management view?
 [ ] BUG: App ID is not persisted, each rebuild makes it not show up in pinned taskbar items
 [ ] BUG: Windows shows "stop watcher" before connecting to service, it should know right away status of watcher
