@@ -18,15 +18,16 @@
 	let loadError = false;
 	let showSpinner = false;
 	let spinnerTimer: ReturnType<typeof setTimeout> | null = null;
+	let activeSrc: string | undefined;
 
 	function clearSpinnerTimer() {
 		if (spinnerTimer !== null) { clearTimeout(spinnerTimer); spinnerTimer = null; }
 	}
 
-	// Reset loading state whenever the source URL changes.
+	// Reset loading state only when src actually changes value.
 	// Delay the spinner by 1 s so fast/cached images don't flash.
-	$: {
-		src;
+	$: if (src !== activeSrc) {
+		activeSrc = src;
 		loaded = false;
 		loadError = false;
 		showSpinner = false;
@@ -194,14 +195,12 @@
 </script>
 
 <div class="viewer-wrap">
-	{#if showSpinner}<div class="img-loading"><div class="img-spinner"></div></div>{/if}
 	{#if loadError}
 		<div class="img-error">Image could not be displayed. The source file may not be accessible — check your source path configuration.</div>
 	{/if}
 	<div
 		class="container"
 		class:dragging
-		class:loading={!loaded && !loadError}
 		class:hidden={loadError}
 		bind:this={container}
 		on:pointerdown={onPointerDown}
@@ -212,6 +211,7 @@
 		role="img"
 		aria-label="Image viewer"
 	>
+		{#if showSpinner}<div class="img-loading"><div class="img-spinner"></div></div>{/if}
 		<img
 			bind:this={img}
 			{src}
@@ -294,10 +294,12 @@
 	}
 
 	.img-loading {
-		flex: 1;
+		position: absolute;
+		inset: 0;
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		z-index: 5;
 	}
 
 	.img-spinner {
@@ -322,10 +324,6 @@
 		color: var(--fg-muted, rgba(255, 255, 255, 0.5));
 		font-size: 13px;
 		text-align: center;
-	}
-
-	.container.loading {
-		visibility: hidden;
 	}
 
 	.container.hidden {
