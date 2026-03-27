@@ -201,7 +201,8 @@
 	<div
 		class="container"
 		class:dragging
-		class:hidden={!loaded || loadError}
+		class:loading={!loaded && !loadError}
+		class:hidden={loadError}
 		bind:this={container}
 		on:pointerdown={onPointerDown}
 		on:pointermove={onPointerMove}
@@ -321,6 +322,10 @@
 		color: var(--fg-muted, rgba(255, 255, 255, 0.5));
 		font-size: 13px;
 		text-align: center;
+	}
+
+	.container.loading {
+		visibility: hidden;
 	}
 
 	.container.hidden {
