@@ -88,8 +88,8 @@
 	on:filterChange={(e) => dispatch('filterChange', e.detail)}
 />
 
-{#if prefixTokens.length > 0}
-	<div class="nlp-bar prefix-bar">
+{#if prefixTokens.length > 0 || nlpDateLabel}
+	<div class="nlp-bar">
 		{#each prefixTokens as token (token.raw)}
 			<div class="nlp-chip prefix-chip">
 				<span class="nlp-label">{[
@@ -101,23 +101,20 @@
 				<button class="nlp-dismiss" on:click={() => removePrefixToken(token)} aria-label="Remove prefix">✕</button>
 			</div>
 		{/each}
-	</div>
-{/if}
-
-{#if nlpDateLabel}
-	<div class="nlp-bar">
-		<div class="nlp-chip" class:conflict={nlpConflict}>
-			<span class="nlp-label">Filtered: {nlpDateLabel}</span>
-			{#if nlpConflict}
-				<span
-					class="conflict-icon"
-					title={`A date was detected in your query ("${nlpDetectedPhrase}") but a manual date range is also set in Advanced search. The manual range takes precedence — clear the Advanced date range to use the query date instead.`}
-					aria-label="Date conflict: manual range overrides query date"
-				>!</span>
-			{:else}
-				<button class="nlp-dismiss" on:click={() => dispatch('clearNlpDate')} aria-label="Clear detected date">✕</button>
-			{/if}
-		</div>
+		{#if nlpDateLabel}
+			<div class="nlp-chip" class:conflict={nlpConflict}>
+				<span class="nlp-label">Filtered: {nlpDateLabel}</span>
+				{#if nlpConflict}
+					<span
+						class="conflict-icon"
+						title={`A date was detected in your query ("${nlpDetectedPhrase}") but a manual date range is also set in Advanced search. The manual range takes precedence — clear the Advanced date range to use the query date instead.`}
+						aria-label="Date conflict: manual range overrides query date"
+					>!</span>
+				{:else}
+					<button class="nlp-dismiss" on:click={() => dispatch('clearNlpDate')} aria-label="Clear detected date">✕</button>
+				{/if}
+			</div>
+		{/if}
 	</div>
 {/if}
 
@@ -175,17 +172,16 @@
 		padding: 6px 16px 0;
 		display: flex;
 		align-items: center;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
 		gap: 6px;
+		overflow: hidden;
+		flex-shrink: 0;
 	}
 
-	.prefix-bar {
-		flex-wrap: wrap;
-	}
-
-	.nlp-chip {
+.nlp-chip {
 		display: inline-flex;
 		align-items: center;
+		flex-shrink: 0;
 		gap: 6px;
 		padding: 3px 8px;
 		border-radius: 20px;

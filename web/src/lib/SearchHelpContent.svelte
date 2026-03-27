@@ -19,11 +19,13 @@
 	<div class="help-section">
 		<div class="help-heading">File type</div>
 		<div class="help-row"><code>type:pdf</code><span>PDF files</span></div>
-		<div class="help-row"><code>type:text</code><span>Code &amp; text files</span></div>
+		<div class="help-row"><code>type:text</code><span>Text files</span></div>
+		<div class="help-row"><code>type:code</code><span>Code files</span></div>
+		<div class="help-row"><code>type:document</code><span>Office files</span></div>
+		<div class="help-row"><code>type:epub</code><span>eBook files</span></div>
 		<div class="help-row"><code>type:image</code><span>Images</span></div>
 		<div class="help-row"><code>type:audio</code><span>Audio</span></div>
 		<div class="help-row"><code>type:video</code><span>Video</span></div>
-		<div class="help-row"><code>type:document</code><span>Office / eBook</span></div>
 		<div class="help-row"><code>type:archive</code><span>Archives (ZIP, RAR, …)</span></div>
 	</div>
 	<div class="help-section">
