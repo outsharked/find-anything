@@ -4,11 +4,17 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+[ ] Rotate image buttoins
+[ ] For known keywords, highlight it when the : is type. Do typeahead pick list for valid options where appropriate (type), desktop only
+[ ] Add 'show log' for windows service
+[ ] FEAT: Ask if install as user or root, then choose location to install.
+    - Ask if installing client or server.
+
 [ ] FEAT: Duplicate management view?
 [ ] BUG: App ID is not persisted, each rebuild makes it not show up in pinned taskbar items
-[ ] BUG: Windows shows "stop watcher" before connecting to service, it should know right away status of watcher
+[ ] BUG: Windows shows "stop watcher" befChore connecting to service, it should know right away status of watcher
 [ ] CHORE: Server install should also be able to chain client install
-[ ] CHORE: Include **/AppData/**, **/bin/**, **/obj/**, **/\*.log by default, "**/pnpm/\*\*", vscode-remote-wsl
+[ ] CHORE: Include **/AppData/**, **/bin/**, **/obj/**, **/\*.log by default, "**/pnpm/\*\*", "**/*:Zone.Identifier" vscode-remote-wsl
 [ ] FEAT: admin email for: failed items (daily status); low disk space; overall statistics. "every day" or only warning
 [ ] FEAT: Guard against low disk space
 [ ] FEAT: Allow non-zip archive members to be streamable, if they are below a configrable threshold in size

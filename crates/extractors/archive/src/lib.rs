@@ -59,6 +59,10 @@ where
     F: FnMut(MemberBatch),
 {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("");
+    if is_iwork_ext(ext) {
+        return iwork_streaming(path, cfg, callback);
+    }
     let kind = detect_kind_from_name(name).context("not a recognized archive")?;
     dispatch_streaming(path, &kind, cfg, callback)
 }
@@ -85,7 +89,14 @@ pub fn is_archive_ext(ext: &str) -> bool {
     matches!(
         ext.to_lowercase().as_str(),
         "zip" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" | "txz" | "7z"
+        | "pages" | "numbers" | "key"
     )
+}
+
+/// True for Apple iWork extensions (.pages, .numbers, .key).
+/// These are ZIP-based documents; only `preview.jpg` is worth extracting.
+fn is_iwork_ext(ext: &str) -> bool {
+    matches!(ext.to_lowercase().as_str(), "pages" | "numbers" | "key")
 }
 
 // ============================================================================
@@ -218,6 +229,53 @@ fn zip_streaming(path: &Path, cfg: &ExtractorConfig, callback: CB<'_>) -> Result
     let file = File::open(path)?;
     let archive = zip::ZipArchive::new(file).context("opening zip")?;
     zip_from_archive(archive, path.to_str().unwrap_or(""), cfg, callback)
+}
+
+/// Extract only `preview.jpg` from a top-level iWork file (.pages/.numbers/.key).
+///
+/// iWork files are ZIP archives whose text content is in proprietary .iwa
+/// (Snappy-compressed protobuf) files.  The only extractable artefact is the
+/// JPEG preview Apple embeds at the root of the ZIP.  We emit it as a single
+/// archive member so the image viewer can display it.
+fn iwork_streaming(path: &Path, cfg: &ExtractorConfig, callback: CB<'_>) -> Result<()> {
+    let file = File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file).context("opening iwork file as zip")?;
+    let display_prefix = path.to_str().unwrap_or("");
+    extract_iwork_preview(&mut archive, display_prefix, cfg, callback);
+    Ok(())
+}
+
+/// Find `preview.jpg` (or `preview-web.jpg`) inside an iWork ZIP and emit it
+/// as a `MemberBatch`.  Called for both top-level files and nested members.
+fn extract_iwork_preview<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    display_prefix: &str,
+    cfg: &ExtractorConfig,
+    callback: CB<'_>,
+) {
+    let preview_name = if archive.by_name("preview.jpg").is_ok() {
+        "preview.jpg"
+    } else if archive.by_name("preview-web.jpg").is_ok() {
+        "preview-web.jpg"
+    } else {
+        return; // no preview available
+    };
+
+    let mut entry = match archive.by_name(preview_name) {
+        Ok(e) => e,
+        Err(e) => { warn!("iwork: failed to open {preview_name} in {display_prefix}: {e:#}"); return; }
+    };
+
+    let size_limit = cfg.max_content_kb * 1024;
+    let member_size = Some(entry.size());
+    let mut bytes = Vec::new();
+    if let Err(e) = (&mut entry as &mut dyn Read).take(size_limit as u64).read_to_end(&mut bytes) {
+        warn!("iwork: failed to read {preview_name} in {display_prefix}: {e:#}");
+        return;
+    }
+    let file_hash = find_extract_types::content_hash(&bytes);
+    let lines = extract_member_bytes(bytes, preview_name, display_prefix, cfg);
+    callback(MemberBatch { lines, file_hash, skip_reason: None, mtime: None, size: member_size });
 }
 
 /// Core ZIP extractor, generic over any `Read + Seek` source.
@@ -1351,6 +1409,28 @@ fn extract_member_bytes(mut bytes: Vec<u8>, entry_name: &str, display_prefix: &s
         .to_lowercase();
     if let Some(spec) = cfg.external_dispatch.get(&member_ext) {
         return run_external_member_dispatch(&bytes, entry_name, cfg, spec);
+    }
+
+    // Apple iWork members nested inside another archive: extract only preview.jpg.
+    // Move bytes into a Cursor since we return early regardless of success.
+    if is_iwork_ext(&member_ext) {
+        let mut lines = make_filename_line(entry_name);
+        if let Ok(mut inner_archive) = zip::ZipArchive::new(Cursor::new(bytes)) {
+            let inner_prefix = format!("{display_prefix}::{entry_name}");
+            let mut preview_lines: Vec<IndexLine> = Vec::new();
+            extract_iwork_preview(&mut inner_archive, &inner_prefix, cfg, &mut |batch| {
+                preview_lines.extend(batch.lines);
+            });
+            // Re-prefix each preview line's archive_path so the composite path becomes
+            // e.g. "outer.zip::document.pages::preview.jpg".
+            for mut line in preview_lines {
+                if let Some(ap) = line.archive_path {
+                    line.archive_path = Some(format!("{entry_name}::{ap}"));
+                }
+                lines.push(line);
+            }
+        }
+        return lines;
     }
 
     // Always index the filename so the member is discoverable by name.

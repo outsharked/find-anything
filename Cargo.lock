@@ -1610,6 +1610,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "find-extract-iwork"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "find-extract-media"
 version = "0.7.1"
 dependencies = [

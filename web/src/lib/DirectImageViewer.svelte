@@ -55,8 +55,9 @@
 	let flipV = false;
 	let brightness = 100;
 	let contrast = 100;
+	let rotation = 0; // degrees, multiples of 90
 
-	$: adjustActive = invert || flipH || flipV || brightness !== 100 || contrast !== 100;
+	$: adjustActive = invert || flipH || flipV || brightness !== 100 || contrast !== 100 || rotation !== 0;
 
 	$: imgFilter = [
 		invert ? 'invert(1)' : '',
@@ -74,6 +75,7 @@
 		flipV = false;
 		brightness = 100;
 		contrast = 100;
+		rotation = 0;
 	}
 
 	const MAX_SCALE = 10;
@@ -86,8 +88,18 @@
 		if (img) {
 			const sx = scale * (flipH ? -1 : 1);
 			const sy = scale * (flipV ? -1 : 1);
-			img.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${sx}, ${sy})`;
+			img.style.transform = `translate(${offsetX}px, ${offsetY}px) rotate(${rotation}deg) scale(${sx}, ${sy})`;
 		}
+	}
+
+	function rotateLeft() {
+		rotation = (rotation - 90 + 360) % 360;
+		applyTransform();
+	}
+
+	function rotateRight() {
+		rotation = (rotation + 90) % 360;
+		applyTransform();
 	}
 
 	function onImageLoad() {
@@ -95,6 +107,7 @@
 		showSpinner = false;
 		loaded = true;
 		loadError = false;
+		rotation = 0;
 		if (svgMode) {
 			scale = 1;
 			fitScale = 1;
@@ -227,6 +240,8 @@
 			<button on:click|stopPropagation={reset} title="Fit to viewport">
 				<IconFitViewport />
 			</button>
+			<button on:click|stopPropagation={rotateLeft} title="Rotate left">↺</button>
+			<button on:click|stopPropagation={rotateRight} title="Rotate right">↻</button>
 			<button
 				on:click|stopPropagation={() => (adjustOpen = !adjustOpen)}
 				title="Adjust image"

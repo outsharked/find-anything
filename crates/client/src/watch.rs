@@ -19,6 +19,7 @@ use walkdir::WalkDir;
 use crate::api::ApiClient;
 use crate::batch::{build_index_files, hash_file};
 use crate::subprocess;
+use crate::upload::{self, hints_from_scan};
 
 /// Options passed to `run_watch` from the CLI entry point.
 pub struct WatchOptions {
@@ -637,6 +638,13 @@ async fn handle_update(
             let ext_config = extractor_config_from_scan(eff_scan);
             subprocess::extract_inline(kind, abs_path, &ext_config)
         }
+        subprocess::ExtractorRoute::ServerOnly => {
+            let mtime = mtime_of(abs_path).unwrap_or(0);
+            if let Err(e) = upload::upload_file(api, abs_path, rel_path, mtime, source_name, hints_from_scan(eff_scan)).await {
+                warn!("server-only upload failed for {rel_path}: {e:#}");
+            }
+            return Ok(());
+        }
     };
 
     let mtime = mtime_of(abs_path).unwrap_or(0);
@@ -995,6 +1003,13 @@ async fn handle_dir_rename(
                 subprocess::ExtractorRoute::Inline(kind) => {
                     let ext_config = extractor_config_from_scan(&new_eff_scan);
                     subprocess::extract_inline(kind, new_abs, &ext_config)
+                }
+                subprocess::ExtractorRoute::ServerOnly => {
+                    let mtime = mtime_of(new_abs).unwrap_or(0);
+                    if let Err(e) = upload::upload_file(api, new_abs, &new_rel, mtime, source_name, hints_from_scan(&new_eff_scan)).await {
+                        warn!("server-only upload failed for {new_rel}: {e:#}");
+                    }
+                    continue;
                 }
             };
             let mtime = mtime_of(new_abs).unwrap_or(0);

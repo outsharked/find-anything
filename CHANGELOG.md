@@ -12,6 +12,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Added
 
 - **`source:` prefix in search help** — `source:` is now listed under "Scope prefixes" in the `?` help panel
+- **iWork file support** — `.pages`, `.numbers`, and `.key` files are now classified as `document` kind instead of `archive`; the archive extractor extracts the embedded `preview.jpg` (or `preview-web.jpg`) so iWork files are previewable in the image viewer; nested iWork members inside ZIP archives also produce preview images
+- **`server_only` extractor routing** — setting `pages = "server_only"` (or any extension) in `[scan.extractors]` causes the client to upload the file to the server for extraction rather than processing it locally; useful for tools (e.g. Apache Tika via `find-extract-iwork`) installed only on the server
+- **`[scan.extractors]` forwarded to find-scan on upload** — `ServerScanConfig` gains an `extractors` map; these are serialised into the temp `client.toml` written when the server delegates an upload to `find-scan`, so server-side external extractors (e.g. `find-extract-iwork`) are applied during upload processing
+- **`find-extract-iwork` binary** — thin wrapper that invokes `java -jar <tika-app.jar> --text <file>`; configure as `pages = { mode = "stdout", bin = "/path/to/find-extract-iwork", args = ["/path/to/tika-app.jar", "{file}"] }` in `[scan.extractors]` on the server
+- **Image rotate buttons** — left/right 90° rotate buttons added to the image viewer toolbar; rotation resets on new image load
 
 ---
 

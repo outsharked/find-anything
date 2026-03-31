@@ -15,6 +15,7 @@ members = [
     "crates/extractors/pe",
     "crates/extractors/dicom",
     "crates/extractors/dispatch",
+    "crates/extractors/iwork",
     "crates/preview-dicom",
     "crates/windows/service",
     "crates/windows/tray",

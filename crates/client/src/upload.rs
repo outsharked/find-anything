@@ -11,6 +11,18 @@ use tracing::{info, warn};
 
 use crate::api::ApiClient;
 use find_common::api::{UploadInitResponse, UploadScanHints};
+use find_common::config::ScanConfig;
+
+/// Build the scan hints to forward when uploading a file to the server.
+#[allow(dead_code)] // used by find-scan and find-watch; not all binaries include both
+pub fn hints_from_scan(scan: &ScanConfig) -> UploadScanHints {
+    UploadScanHints {
+        exclude: scan.exclude.clone(),
+        exclude_extra: scan.exclude_extra.clone(),
+        include: vec![],
+        max_content_size_mb: Some(scan.max_content_size_mb),
+    }
+}
 
 const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4 MB
 

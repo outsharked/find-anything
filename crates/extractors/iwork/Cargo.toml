@@ -1,0 +1,11 @@
+[package]
+name = "find-extract-iwork"
+version = "0.7.1"
+edition = "2021"
+
+[[bin]]
+name = "find-extract-iwork"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }

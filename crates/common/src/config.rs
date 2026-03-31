@@ -638,6 +638,12 @@ pub struct ServerScanConfig {
     /// Default: 30.
     #[serde(default = "default_dicom_preview_timeout_secs")]
     pub dicom_preview_timeout_secs: u64,
+    /// External extractors available on the server, forwarded to find-scan when
+    /// processing uploaded files. Same format as `[scan.extractors]` on the client.
+    /// Use this to configure tools like `find-extract-iwork` (Apache Tika wrapper)
+    /// that are only installed on the server.
+    #[serde(default)]
+    pub extractors: std::collections::HashMap<String, ExternalExtractorConfig>,
 }
 
 impl Default for ServerScanConfig {
@@ -646,6 +652,7 @@ impl Default for ServerScanConfig {
             subprocess_timeout_secs: default_server_subprocess_timeout_secs(),
             max_content_size_mb: default_server_max_content_size_mb(),
             dicom_preview_timeout_secs: default_dicom_preview_timeout_secs(),
+            extractors: std::collections::HashMap::new(),
         }
     }
 }

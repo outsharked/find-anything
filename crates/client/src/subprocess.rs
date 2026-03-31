@@ -55,6 +55,8 @@ pub enum ExtractorRoute {
     Subprocess(String),
     /// Use a user-configured external tool.
     External(ExternalExtractorConfig),
+    /// Upload to server for server-side extraction (configured via `"server_only"` in scan.extractors).
+    ServerOnly,
 }
 
 /// Identifies which in-process extractor library to call.
@@ -390,6 +392,7 @@ pub fn resolve_extractor(
     // 1. User-configured extractor override.
     if let Some(entry) = scan.extractors.get(&ext) {
         match entry {
+            ExtractorEntry::Builtin(s) if s == "server_only" => return ExtractorRoute::ServerOnly,
             ExtractorEntry::Builtin(_) => {} // fall through to built-in routing
             ExtractorEntry::External(cfg) => return ExtractorRoute::External(cfg.clone()),
         }

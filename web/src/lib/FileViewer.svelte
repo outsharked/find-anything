@@ -98,11 +98,13 @@
 	$: rawInlinePath = archivePath ? `${path}::${archivePath}` : path;
 	// For archive members, the raw endpoint only supports ZIP archives — RAR/TAR/7z members
 	// cannot be extracted for inline viewing.  All archives in the composite path (outer +
-	// any intermediate) must be ZIPs for the server to serve the member.
+	// any intermediate) must be ZIPs (or ZIP-based iWork formats) for the server to serve the member.
+	const isZipLike = (ext: string) =>
+		ext === 'zip' || ext === 'pages' || ext === 'numbers' || ext === 'key';
 	$: canServeArchiveMember = !isArchiveMember || (
-		outerExt === 'zip' &&
+		isZipLike(outerExt) &&
 		(archivePath ?? '').split('::').slice(0, -1).every(
-			part => (part.split('.').pop() ?? '').toLowerCase() === 'zip'
+			part => isZipLike((part.split('.').pop() ?? '').toLowerCase())
 		)
 	);
 	// Images, PDFs, videos, and audio can be shown inline when the file is directly accessible

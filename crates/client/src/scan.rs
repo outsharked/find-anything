@@ -9,7 +9,7 @@ use globset::GlobSet;
 use tracing::{info, warn};
 
 use find_common::{
-    api::{FileKind, IndexFile, IndexLine, IndexingFailure, UploadScanHints, SCANNER_VERSION, LINE_METADATA, LINE_CONTENT_START},
+    api::{FileKind, IndexFile, IndexLine, IndexingFailure, SCANNER_VERSION, LINE_METADATA, LINE_CONTENT_START},
     config::{extractor_config_from_scan, load_dir_override, ExternalExtractorMode, ScanConfig},
     path::is_composite,
 };
@@ -19,7 +19,7 @@ use crate::batch::{build_index_files, build_member_index_files, index_file_bytes
 use crate::extract;
 use crate::lazy_header;
 use crate::subprocess;
-use crate::upload;
+use crate::upload::{self, hints_from_scan};
 
 
 
@@ -357,15 +357,6 @@ impl<'a> ScanContext<'a> {
             self.submit(vec![]).await?;
         }
         Ok(())
-    }
-}
-
-fn hints_from_scan(scan: &ScanConfig) -> UploadScanHints {
-    UploadScanHints {
-        exclude: scan.exclude.clone(),
-        exclude_extra: scan.exclude_extra.clone(),
-        include: vec![],
-        max_content_size_mb: Some(scan.max_content_size_mb),
     }
 }
 
@@ -826,6 +817,13 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                 extract_ms,
                 is_new,
             }).await?;
+        }
+        subprocess::ExtractorRoute::ServerOnly => {
+            if let Err(e) = upload::upload_file(ctx.api, abs_path, rel_path, mtime, ctx.source_name, hints_from_scan(&eff_scan)).await {
+                warn!("server-only upload failed for {rel_path}: {e:#}");
+                return Ok(false);
+            }
+            return Ok(true);
         }
         subprocess::ExtractorRoute::Inline(inline_kind) => {
             // `inline_kind` is the InlineKind enum variant (bound here to avoid shadowing

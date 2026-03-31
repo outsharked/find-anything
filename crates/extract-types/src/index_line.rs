@@ -47,7 +47,8 @@ pub fn detect_kind_from_ext(ext: &str) -> &'static str {
         "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "flv" => "video",
         "docx" | "docm" | "dotx" | "dotm"
         | "xlsx" | "xls" | "xlsm" | "xltx" | "xltm"
-        | "pptx" | "pptm" | "potx" | "potm" => "document",
+        | "pptx" | "pptm" | "potx" | "potm"
+        | "pages" | "numbers" | "key" => "document",
         "epub" => "epub",
         "dcm" | "dicom" => "dicom",
         // Known binary formats

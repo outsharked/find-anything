@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use find_common::api::UploadScanHints;
-use find_common::config::ServerScanConfig;
+use find_common::config::{ExternalExtractorConfig, ExternalExtractorMode, ServerScanConfig};
 
 /// Sidecar metadata file for an in-progress upload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,11 +147,12 @@ async fn run_index_upload(
 
     let include_toml = toml_string_array(hints.map(|h| h.include.as_slice()).unwrap_or(&[]));
 
+    let extractors_toml = toml_extractors(&server_scan.extractors);
     let toml = format!(
         "[server]\nurl = \"{server_url}\"\ntoken = \"{token}\"\n\n\
          [[sources]]\nname = \"{}\"\npath = \"{}\"\ninclude = {include_toml}\n\n\
          [scan]\nsubprocess_timeout_secs = {}\nmax_content_size_mb = {}\n\
-         exclude = {exclude_toml}\nexclude_extra = {exclude_extra_toml}\n",
+         exclude = {exclude_toml}\nexclude_extra = {exclude_extra_toml}{extractors_toml}",
         meta.source,
         temp_root.display(),
         server_scan.subprocess_timeout_secs,
@@ -213,6 +214,28 @@ fn resolve_find_scan() -> String {
 fn toml_string_array(items: &[String]) -> String {
     let inner: Vec<String> = items.iter().map(|s| format!("\"{s}\"")).collect();
     format!("[{}]", inner.join(", "))
+}
+
+/// Serialise `[scan.extractors]` entries for the temp client.toml forwarded to find-scan.
+/// Only external extractors are included; `"server_only"` entries are intentionally omitted
+/// (they are a client-side routing hint only and would cause infinite upload loops).
+fn toml_extractors(extractors: &std::collections::HashMap<String, ExternalExtractorConfig>) -> String {
+    if extractors.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("\n[scan.extractors]\n");
+    let mut entries: Vec<_> = extractors.iter().collect();
+    entries.sort_by_key(|(k, _)| k.as_str()); // deterministic output
+    for (ext, cfg) in entries {
+        let mode = match cfg.mode {
+            ExternalExtractorMode::Stdout  => "stdout",
+            ExternalExtractorMode::TempDir => "tempdir",
+        };
+        let bin = cfg.bin.replace('\\', "\\\\").replace('"', "\\\"");
+        let args = toml_string_array(&cfg.args);
+        s.push_str(&format!("{ext} = {{ mode = \"{mode}\", bin = \"{bin}\", args = {args} }}\n"));
+    }
+    s
 }
 
 /// Background task: remove stale upload files (no activity for 2 hours).
