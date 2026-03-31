@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **`source:` prefix in search help** — `source:` is now listed under "Scope prefixes" in the `?` help panel
+
 ---
 
 ## [0.7.1] - 2026-03-24

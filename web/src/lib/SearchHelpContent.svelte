@@ -3,6 +3,7 @@
 		<div class="help-heading">Scope prefixes</div>
 		<div class="help-row"><code>file:</code><span>Search filenames only</span></div>
 		<div class="help-row"><code>doc:</code><span>Search whole document (all matching lines)</span></div>
+		<div class="help-row"><code>source:</code><span>Limit to a specific source/path</span></div>
 		<div class="help-row"><em>(none)</em><span>Search individual lines (default)</span></div>
 	</div>
 	<div class="help-section">
