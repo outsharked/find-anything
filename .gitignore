@@ -1,8 +1,9 @@
 /target/
-/config/
+/.config/
 /tmp/
 /test-data/
 /packaging/windows/Output/
 *.log
 /.worktrees/
 doc/
+vite.config.timestamp-*

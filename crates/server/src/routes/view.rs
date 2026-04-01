@@ -72,7 +72,18 @@ pub async fn get_view(
 
     let kind = match kind_result {
         Ok(Some(k)) => k,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(None) => {
+            // The exact path wasn't found. For iWork documents (.pages, .numbers,
+            // .key), the viewer constructs composite URLs like `doc.pages::preview.jpg`
+            // but only the outer document is indexed (no child DB entry for the preview).
+            // Fall back: look up the parent path and, if it's an iWork document, serve
+            // the ZIP member directly.
+            if let Some(iwork_kind) = iwork_parent_kind(&state, &params.source, &params.path).await {
+                iwork_kind
+            } else {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+        }
         Err(s) => return s.into_response(),
     };
 
@@ -81,6 +92,8 @@ pub async fn get_view(
     match kind.as_str() {
         "image" => serve_image(&state, &params.source, &params.path).await,
         "dicom" => serve_dicom(&state, &params.source, &params.path).await,
+        // iWork documents whose composite path targets an embedded image member.
+        "iwork_preview" => serve_image(&state, &params.source, &params.path).await,
         _ => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
     }
 }
@@ -167,6 +180,50 @@ async fn serve_dicom(state: &AppState, source: &str, path: &str) -> Response {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// iWork extensions that are ZIP-based and may contain an embedded preview image.
+fn is_iwork_ext(path: &str) -> bool {
+    let leaf = path.rsplit("::").next().unwrap_or(path);
+    let ext = std::path::Path::new(leaf)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    matches!(ext.as_str(), "pages" | "numbers" | "key")
+}
+
+/// When a composite path like `doc.pages::preview.jpg` is not itself in the DB,
+/// check whether the parent segment (`doc.pages`) is an iWork document. If so,
+/// return the synthetic kind `"iwork_preview"` so the caller can serve the
+/// ZIP-embedded image via `serve_image`.
+async fn iwork_parent_kind(state: &AppState, source: &str, path: &str) -> Option<String> {
+    // Only applies to composite paths.
+    let last_sep = path.rfind("::")?;
+    let parent_path = &path[..last_sep];
+
+    // Parent must have an iWork extension.
+    if !is_iwork_ext(parent_path) {
+        return None;
+    }
+
+    let db_path = super::source_db_path(state, source).ok()?;
+    let parent_path = parent_path.to_owned();
+
+    tokio::task::spawn_blocking(move || -> Option<String> {
+        if !db_path.exists() { return None; }
+        let conn = rusqlite::Connection::open(&db_path).ok()?;
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+        conn.query_row(
+            "SELECT kind FROM files WHERE path = ?1 LIMIT 1",
+            rusqlite::params![parent_path],
+            |row| row.get::<_, String>(0),
+        ).optional().ok()??;
+        // Parent found — signal iWork preview serving.
+        Some("iwork_preview".to_owned())
+    })
+    .await
+    .ok()?
+}
 
 /// Get the last path component's file stem from a possibly composite path.
 fn stem_from_path(path: &str) -> String {

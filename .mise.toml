@@ -18,46 +18,6 @@ run = "pnpm install"
 sources = ["pnpm-lock.yaml", "package.json"]
 outputs = ["node_modules"]
 
-# ── Rust server ───────────────────────────────────────────────────────────────
-
-[tasks.server]
-description = "Start the Rust API server, auto-rebuild on source changes (requires cargo-watch)"
-run = "cargo watch -w crates -x 'run -p find-server -- --config config/server.toml'"
-
-[tasks.server-once]
-description = "Start the Rust API server (single run, no watching)"
-run = "cargo run -p find-server --bin find-server -- --config config/server.toml"
-
-[tasks.dev]
-description = "Start Rust API + Vite dev server (full dev environment with live reload)"
-run = """
-mkdir -p web/build
-# setsid puts cargo-watch in its own process group so that
-# "kill -TERM -$API_PID" reaches cargo-watch AND all its children
-# (cargo run, find-server).  Without this, kill only hits cargo-watch
-# and find-server keeps running, holding port 8765.
-RUST_LOG=debug setsid cargo watch -w crates -x 'run -p find-server --bin find-server -- --config config/server.toml' &
-API_PID=$!
-trap "kill -TERM -$API_PID 2>/dev/null" EXIT INT TERM
-pnpm --dir web dev
-"""
-
-# ── Client / scanning ─────────────────────────────────────────────────────────
-
-[tasks.scan]
-description = "Incremental scan of all configured sources"
-run = [
-  "cargo build --workspace",
-  "cargo run -p find-client --bin find-scan -- --config config/client.toml",
-]
-
-[tasks.scan-upgrade]
-description = "Upgrade scan of all configured sources (rescans anything scanned with older version of find-scan)"
-run = [
-  "cargo build --workspace",
-  "cargo run -p find-client --bin find-scan -- --config config/client.toml --upgrade",
-]
-
 [tasks.build]
 description = "Build all binaries for x86_64 Linux (server and client)"
 run = [
@@ -129,17 +89,56 @@ description = "Generate HTML test coverage report → target/llvm-cov/html/index
 run = "cargo llvm-cov --workspace --html && echo 'Report: target/llvm-cov/html/index.html'"
 
 
-# ── Admin ─────────────────────────────────────────────────────────────────────
+# Dev Server Tasks
+
+# These tasks expect config files at .config/server.toml and .config/client.toml, which should be symlinks to your 
+# actual config files (e.g. in ~/.config/find-anything/) or files you want to use for testing 
+
+[tasks.server]
+description = "Start the Rust API server, auto-rebuild on source changes (requires cargo-watch)"
+run = "cargo watch -w crates -x 'run -p find-server -- --config .config/server.toml'"
+
+[tasks.server-once]
+description = "Start the Rust API server (single run, no watching)"
+run = "cargo run -p find-server --bin find-server -- --config .config/server.toml"
+
+[tasks.dev]
+description = "Start Rust API + Vite dev server (full dev environment with live reload)"
+run = """
+mkdir -p web/build
+# setsid puts cargo-watch in its own process group so that
+# "kill -TERM -$API_PID" reaches cargo-watch AND all its children
+# (cargo run, find-server).  Without this, kill only hits cargo-watch
+# and find-server keeps running, holding port 8765.
+RUST_LOG=debug setsid cargo watch -w crates -x 'run -p find-server --bin find-server -- --config .config/server.toml' &
+API_PID=$!
+trap "kill -TERM -$API_PID 2>/dev/null" EXIT INT TERM
+pnpm --dir web dev
+"""
+
+[tasks.scan]
+description = "Incremental scan of all configured sources"
+run = [
+  "cargo build --workspace",
+  "cargo run -p find-client --bin find-scan -- --config .config/client.toml",
+]
+
+[tasks.scan-upgrade]
+description = "Upgrade scan of all configured sources (rescans anything scanned with older version of find-scan)"
+run = [
+  "cargo build --workspace",
+  "cargo run -p find-client --bin find-scan -- --config .config/client.toml --upgrade",
+]
 
 [tasks.admin]
 description = "Show inbox status (pending and failed files)"
-run = "cargo run -p find-client --bin find-admin -- --config config/client.toml"
+run = "cargo run -p find-client --bin find-admin -- --config .config/client.toml"
 
 [tasks.bench-storage]
 description = "Benchmark content store backends (stop find-server first — find-test opens store files directly)"
 run = [
   "cargo build -p find-server --bin find-test",
-  "cargo run -p find-server --bin find-test -- bench-storage --config config/server.toml --concurrency 1 --concurrency 4 --concurrency 16",
+  "cargo run -p find-server --bin find-test -- bench-storage --config .config/server.toml --concurrency 1 --concurrency 4 --concurrency 16",
 ]
 
 # ── Database management ───────────────────────────────────────────────────────

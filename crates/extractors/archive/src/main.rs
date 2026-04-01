@@ -43,6 +43,9 @@ fn main() {
         exclude_patterns: args.get(5)
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default(),
+        server_only_exts: args.get(6)
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default(),
         ..Default::default()
     };
 

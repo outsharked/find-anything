@@ -26,6 +26,7 @@ fn make_bulk_with_kind(source: &str, path: &str, content: &str, kind: FileKind) 
             file_hash: None,
             scanner_version: SCANNER_VERSION,
             is_new: true,
+            force: false,
         }],
         delete_paths: vec![],
         scan_timestamp: Some(1_700_000_000),

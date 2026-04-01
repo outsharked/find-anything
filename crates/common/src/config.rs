@@ -513,6 +513,18 @@ pub fn extractor_config_from_scan(scan: &ScanConfig) -> ExtractorConfig {
         })
         .collect();
 
+    // Collect extensions configured as "server_only" so the archive extractor can
+    // delegate those members to the server rather than processing them inline.
+    let server_only_exts: Vec<String> = scan.extractors.iter()
+        .filter_map(|(ext, entry)| {
+            if matches!(entry, ExtractorEntry::Builtin(s) if s == "server_only") {
+                Some(ext.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // Resolve the ffprobe binary path:
     // - explicit "" in config → disabled
     // - explicit non-empty path → use as-is
@@ -529,6 +541,7 @@ pub fn extractor_config_from_scan(scan: &ScanConfig) -> ExtractorConfig {
         exclude_patterns: scan.exclude.clone(),
         external_dispatch,
         ffprobe_path,
+        server_only_exts,
     }
 }
 
@@ -640,8 +653,7 @@ pub struct ServerScanConfig {
     pub dicom_preview_timeout_secs: u64,
     /// External extractors available on the server, forwarded to find-scan when
     /// processing uploaded files. Same format as `[scan.extractors]` on the client.
-    /// Use this to configure tools like `find-extract-iwork` (Apache Tika wrapper)
-    /// that are only installed on the server.
+    /// Use this to configure external extraction tools that are only installed on the server.
     #[serde(default)]
     pub extractors: std::collections::HashMap<String, ExternalExtractorConfig>,
 }

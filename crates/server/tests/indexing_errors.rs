@@ -52,6 +52,7 @@ fn completion_upsert_bulk(source: &str, path: &str, mtime: i64) -> BulkRequest {
             file_hash: None,
             scanner_version: SCANNER_VERSION,
             is_new: true,
+            force: false,
         }],
         delete_paths: vec![],
         scan_timestamp: None,

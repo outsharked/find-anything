@@ -53,6 +53,14 @@ PDF files are processed by a text extraction engine that recovers the text conte
 
 Older `.doc`, `.xls`, `.ppt` formats (Office 97–2003) are not currently supported.
 
+### Apple iWork (.pages, .numbers, .key)
+
+iWork files are ZIP-based documents. Text content is extracted natively.
+
+- The embedded JPEG preview is extracted and shown in the image viewer
+- Text is extracted from IWA (iWork Archive) protobuf files for modern iWork documents (.pages, .numbers, .key created in iWork 2013 or later)
+- Older pre-2013 iWork documents (XML-based format) are also supported
+
 ### EPUB
 
 EPUB files are extracted by reading the spine (the ordered list of content documents) and stripping HTML tags from each chapter. Metadata (title, author, language) is indexed as file-level metadata visible in the file viewer.
@@ -78,6 +86,7 @@ data.zip::inner.zip::nested-file.txt
 | Format | Extension(s) |
 |---|---|
 | ZIP | `.zip` |
+| Apple iWork | `.pages`, `.numbers`, `.key` |
 | TAR | `.tar` |
 | Gzipped TAR | `.tar.gz`, `.tgz` |
 | Bzip2 TAR | `.tar.bz2`, `.tbz2` |

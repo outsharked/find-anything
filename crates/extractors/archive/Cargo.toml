@@ -26,6 +26,7 @@ tracing = { workspace = true }
 
 # Archive formats
 zip = "8"
+snap = "1"
 tar = "0.4"
 flate2 = "1"
 bzip2 = "0.6"

@@ -421,6 +421,43 @@ fn tgz_members_have_size() {
     }
 }
 
+// ============================================================================
+// iWork preview extraction (.pages inside .zip)
+// ============================================================================
+
+/// iwork_preview.zip contains test.pages (a ZIP with preview.jpg inside).
+/// The extractor should emit a [IWORK_PREVIEW] metadata line on the document
+/// entry. No separate child entry is created for the preview image — it is
+/// served on demand by the view endpoint directly from the ZIP.
+#[test]
+fn iwork_preview_extracted_from_nested_pages() {
+    use find_extract_types::LINE_METADATA;
+
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/iwork_preview.zip");
+    let lines = extract(&fixture, &default_cfg()).unwrap();
+
+    // No separate child entry for the preview image.
+    assert!(
+        !has_path(&lines, "test.pages::preview.jpg"),
+        "test.pages::preview.jpg should not be a separate indexed entry"
+    );
+
+    // [IWORK_PREVIEW] metadata line must exist on the parent entry.
+    let meta = lines.iter().find(|l| {
+        l.archive_path.as_deref() == Some("test.pages")
+            && l.line_number == LINE_METADATA
+            && l.content.starts_with("[IWORK_PREVIEW] ")
+    });
+    assert!(
+        meta.is_some(),
+        "[IWORK_PREVIEW] metadata line not found for test.pages; all lines for test.pages = {:?}",
+        lines.iter()
+            .filter(|l| l.archive_path.as_deref() == Some("test.pages"))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// The skip_reason field must be absent for successfully extracted members.
 #[test]
 fn solid_7z_block_no_skip_reason() {

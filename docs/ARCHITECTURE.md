@@ -312,6 +312,10 @@ PDF → DICOM → Media → HTML → Office → EPUB → PE → Text → MIME fa
 **Depth limiting**: Controlled by `scan.archives.max_depth` (default: 10). When exceeded,
 only the filename is indexed and a warning is logged.
 
+**iWork members** (`.pages`, `.numbers`, `.key`): detected by `is_iwork_ext()`. The extractor opens the member bytes as a ZIP and extracts the embedded `preview.jpg` / `preview-web.jpg`, emitting it as a child entry (e.g. `doc.pages::preview.jpg`, `kind=image`). The outer `.pages` entry gets `kind=archive`. Text lives in binary `.iwa` protobuf files and requires Tika — see `server_only` delegation below.
+
+**`server_only` delegation for archive members**: When a member's extension is in `ExtractorConfig::server_only_exts` (populated from extensions configured as `"server_only"` in `scan.extractors`), the extractor writes the raw member bytes to a temp file (`fa-member-XXXXXXXX/<leaf>`) and sets `MemberBatch::delegate_temp_path` instead of extracting inline. `scan.rs` then uploads the temp file to the server via the normal upload path (using the composite path, e.g. `outer.zip::doc.pages`) and deletes the temp dir. The server runs `find-scan` on the uploaded file, which applies the server-side extractor config (e.g. Tika for `.pages`). The `server_only_exts` list is passed as arg[6] to the `find-extract-archive` subprocess.
+
 ---
 
 ## Content Extraction: Memory Model

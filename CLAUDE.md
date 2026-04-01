@@ -172,6 +172,22 @@ bound.) Results are grouped server-side into virtual directory nodes and file
 nodes. Only immediate children of the prefix are returned; the UI lazy-loads
 subdirectories on expand.
 
+### iWork extraction (.pages, .numbers, .key)
+
+iWork files are ZIP-based documents. Extraction is handled natively by the archive extractor — no Java, Tika, or external tools required.
+
+**Preview:** The archive extractor recognises `.pages`/`.numbers`/`.key` extensions via `is_iwork_ext()` and extracts the embedded `preview.jpg` (or `preview-web.jpg`). This becomes a child entry in the index — e.g. `doc.pages::preview.jpg` with `kind=image` — which is fully searchable and viewable in the image viewer. The outer `.pages` file is indexed with `kind=archive`.
+
+**Text:** Full text is extracted natively from `.iwa` (IWA snappy-compressed protobuf) files inside the ZIP. Old-format pre-2013 iWork files (XML-based) are also supported via XML tag stripping. No external dependencies needed.
+
+**Key files:**
+- `crates/extractors/archive/src/iwork.rs` — all iWork-specific logic: `is_iwork_ext`, `iwork_streaming`, `iwork_extract_preview_into_lines`, IWA decompression and text extraction
+- `crates/extractors/archive/src/lib.rs` — calls into `iwork::` module; `server_only_exts` delegation logic still present for other extension types
+- `crates/extract-types/src/extractor_config.rs` — `ExtractorConfig::server_only_exts`
+- `crates/common/src/config.rs` — `extractor_config_from_scan` populates `server_only_exts`
+- `crates/client/src/subprocess.rs` — passes `server_only_exts` as arg[6] to the archive subprocess
+- `crates/client/src/scan.rs` — uploads delegated temp files after submitting the filename batch
+
 ### find-upload → find-scan delegation (plan 088)
 
 `find-upload` sends files to the server as chunked PATCH uploads. When the

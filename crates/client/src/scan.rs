@@ -41,6 +41,14 @@ pub struct ScanOptions {
     /// Files with `indexed_at >= force_since` are skipped (already done in a
     /// prior partial run). Pass the same epoch to resume an interrupted run.
     pub force_since: Option<i64>,
+    /// Override the mtime used for the indexed file instead of reading it from
+    /// the filesystem.  Used by the upload delegation path so that find-scan
+    /// stores the original file mtime (supplied by the client) rather than the
+    /// temp file's creation time.
+    pub mtime_override: Option<i64>,
+    /// Bypass the server-side stale-mtime guard for all submitted IndexFiles.
+    /// Implied by `--force`; also set directly by the upload delegation path.
+    pub force_index: bool,
 }
 
 /// Source-specific parameters for `run_scan` and `scan_single_file`.
@@ -158,7 +166,7 @@ pub async fn run_scan(
         local_files.len(),
     );
 
-    let mut ctx = ScanContext::new(api, source_name, paths, scan, opts.quiet, source.subdir.is_none());
+    let mut ctx = ScanContext::new(api, source_name, paths, scan, opts.quiet, source.subdir.is_none(), opts.force_since.is_some() || opts.force_index);
 
     // Submit deletions immediately so removed files are gone before new/modified
     // files are indexed.  This also ensures renames (delete + add) don't leave a
@@ -282,6 +290,9 @@ struct ScanContext<'a> {
     /// Whether to include `scan_timestamp` in submitted batches. False for
     /// partial (subdir) rescans so the source's last-scanned time is not updated.
     emit_scan_timestamp: bool,
+    /// When true, all submitted IndexFiles have `force=true`, bypassing the
+    /// server-side stale-mtime guard. Set when `--force` is active.
+    force: bool,
     batch: Vec<IndexFile>,
     batch_bytes: usize,
     failures: Vec<IndexingFailure>,
@@ -304,6 +315,7 @@ impl<'a> ScanContext<'a> {
         scan: &ScanConfig,
         quiet: bool,
         emit_scan_timestamp: bool,
+        force: bool,
     ) -> Self {
         let scan_start = std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -316,6 +328,7 @@ impl<'a> ScanContext<'a> {
             quiet,
             scan_start,
             emit_scan_timestamp,
+            force,
             batch: Vec::with_capacity(scan.batch_size),
             batch_bytes: 0,
             failures: Vec::new(),
@@ -337,6 +350,11 @@ impl<'a> ScanContext<'a> {
                 self.batch.len(),
                 delete_paths.len(),
             );
+        }
+        if self.force {
+            for file in &mut self.batch {
+                file.force = true;
+            }
         }
         let scan_ts = self.emit_scan_timestamp.then_some(self.scan_start);
         submit_batch(
@@ -588,6 +606,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                         file_hash: None,
                         scanner_version: SCANNER_VERSION,
                         is_new,
+                        force: false,
                     };
                     ctx.batch.push(outer_start);
                     ctx.submit(vec![]).await?;
@@ -650,6 +669,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                         file_hash: outer_hash,
                         scanner_version: SCANNER_VERSION,
                         is_new,
+                        force: false,
                     });
                 }
             }
@@ -681,6 +701,7 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                     file_hash: None, // no hash on start sentinel — avoids premature dedup alias
                     scanner_version: SCANNER_VERSION,
                     is_new,
+                    force: false,
                 };
                 ctx.batch.push(outer_start);
                 ctx.submit(vec![]).await?;
@@ -690,11 +711,15 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                     abs_path.to_path_buf(), &eff_scan, &subprocess::resolve_binary_for_archive(&eff_scan.extractor_dir));
 
                 let mut members_submitted: usize = 0;
+                let mut outer_content_lines: Vec<IndexLine> = Vec::new();
                 while let Some(member_batch) = member_rx.recv().await {
+                    // Accumulate outer_lines (e.g. iWork text) for the completion upsert.
+                    outer_content_lines.extend(member_batch.outer_lines.iter().cloned());
+
                     // A batch with empty lines and a skip_reason is a summary failure
                     // that applies to the outer archive itself (e.g. 7z solid block too
                     // large).  Record the failure on the outer archive path and move on.
-                    if member_batch.lines.is_empty() {
+                    if member_batch.lines.is_empty() && member_batch.outer_lines.is_empty() {
                         if let Some(reason) = member_batch.skip_reason {
                             if ctx.failures.len() < MAX_FAILURES_PER_BATCH {
                                 ctx.failures.push(IndexingFailure {
@@ -730,11 +755,30 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
 
                     let file_hash = member_batch.file_hash;
                     let member_mtime = member_batch.mtime.unwrap_or(mtime);
+                    let delegate_temp_path = member_batch.delegate_temp_path.clone();
+                    // Reconstruct the composite member path for upload/failure reporting.
+                    let member_archive_path = member_batch.lines.first()
+                        .and_then(|l| l.archive_path.as_deref())
+                        .map(|ap| format!("{rel_path}::{ap}"));
                     for file in build_member_index_files(rel_path, member_mtime, member_batch.size, member_batch.lines, file_hash) {
                         ctx.batch_bytes += index_file_bytes(&file);
                         members_submitted += 1;
                         ctx.batch.push(file);
                         ctx.maybe_flush().await?;
+                    }
+                    // Upload delegated members to the server for server-side extraction.
+                    // This runs after the filename-only batch is submitted so the member
+                    // is already findable by name even if the upload fails.
+                    if let (Some(tmp), Some(composite_path)) = (delegate_temp_path, member_archive_path) {
+                        let tmp_path = std::path::Path::new(&tmp);
+                        match upload::upload_file(ctx.api, tmp_path, &composite_path, member_mtime, ctx.source_name, hints_from_scan(&eff_scan)).await {
+                            Ok(()) => {}
+                            Err(e) => warn!("server-only member upload failed for {composite_path}: {e:#}"),
+                        }
+                        // Always clean up the temp dir (contains the single member file).
+                        if let Some(parent) = tmp_path.parent() {
+                            let _ = std::fs::remove_dir_all(parent);
+                        }
                     }
                 }
 
@@ -760,16 +804,38 @@ async fn process_file(ctx: &mut ScanContext<'_>, rel_path: &str, abs_path: &Path
                 // without disturbing any member rows.  If indexing was interrupted before
                 // this point the outer file retains mtime=0, causing the next scan to
                 // re-index the archive from scratch.
+                //
+                // outer_content_lines carries any text extracted from the archive itself
+                // (e.g. iWork IWA text) that belongs to the outer file, not to a member.
+                let mut outer_lines = vec![IndexLine { archive_path: None, line_number: 0, content: format!("[PATH] {}", rel_path) }];
+                // Re-number accumulated content lines starting at 1.
+                for (i, mut line) in outer_content_lines.into_iter().enumerate() {
+                    line.line_number = i + 1;
+                    outer_lines.push(line);
+                }
+                // iWork files (.pages/.numbers/.key) are documents, not user-navigable
+                // archives.  Storing them as kind=Archive causes the tree UI to show them
+                // as expandable nodes.  The start sentinel above uses kind=Archive so the
+                // server deletes stale members; this completion upsert uses the natural
+                // kind from the extension (Document) for correct UI behaviour.
+                let ext_lc = Path::new(rel_path).extension()
+                    .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                let completion_kind = if find_extract_archive::is_iwork_ext(&ext_lc) {
+                    FileKind::Document
+                } else {
+                    kind
+                };
                 ctx.batch.push(IndexFile {
                     path: rel_path.to_string(),
                     mtime,
                     size: Some(size),
-                    kind,
-                    lines: vec![IndexLine { archive_path: None, line_number: 0, content: format!("[PATH] {}", rel_path) }],
+                    kind: completion_kind,
+                    lines: outer_lines,
                     extract_ms: None,
                     file_hash: outer_hash,
                     scanner_version: SCANNER_VERSION,
                     is_new,
+                    force: false,
                 });
         }
         subprocess::ExtractorRoute::Subprocess(ref binary) => {
@@ -865,8 +931,8 @@ pub async fn scan_single_file(
     scan: &ScanConfig,
     opts: &ScanOptions,
 ) -> Result<()> {
-    let mtime = mtime_of(abs_path).unwrap_or(0);
-    let mut ctx = ScanContext::new(api, source.name, source.paths, scan, opts.quiet, true);
+    let mtime = opts.mtime_override.unwrap_or_else(|| mtime_of(abs_path).unwrap_or(0));
+    let mut ctx = ScanContext::new(api, source.name, source.paths, scan, opts.quiet, true, opts.force_since.is_some() || opts.force_index);
     process_file(&mut ctx, rel_path, abs_path, mtime, false).await?;
     ctx.submit(vec![]).await?;
     info!("done");

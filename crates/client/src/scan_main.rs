@@ -60,6 +60,13 @@ struct Args {
     /// For a directory: all files under it are re-indexed (mtime is ignored).
     #[arg(value_name = "PATH")]
     path: Option<PathBuf>,
+
+    /// Override the mtime stored for the indexed file (Unix seconds).
+    /// Only valid with a single-file PATH argument.
+    /// Used by the upload delegation path so find-scan stores the original
+    /// file mtime rather than the temp file's creation time.
+    #[arg(long, value_name = "SECS")]
+    mtime: Option<i64>,
 }
 
 /// Parse a `--force` timestamp value into a Unix epoch (seconds).
@@ -165,6 +172,8 @@ async fn main() -> Result<()> {
         quiet: args.quiet,
         dry_run: args.dry_run,
         force_since,
+        mtime_override: args.mtime,
+        force_index: force_since.is_some(),
     };
 
     // Single-file mode: scan one specific file and exit.

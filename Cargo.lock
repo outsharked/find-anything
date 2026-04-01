@@ -1547,6 +1547,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sevenz-rust2",
+ "snap",
  "tar",
  "tempfile",
  "tracing",
@@ -1607,13 +1608,6 @@ dependencies = [
  "find-extract-types",
  "scraper",
  "serde",
-]
-
-[[package]]
-name = "find-extract-iwork"
-version = "0.7.1"
-dependencies = [
- "anyhow",
 ]
 
 [[package]]
@@ -5268,6 +5262,12 @@ dependencies = [
  "quote",
  "syn 2.0.115",
 ]
+
+[[package]]
+name = "snap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
 name = "socket2"

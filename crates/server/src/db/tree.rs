@@ -159,22 +159,55 @@ pub fn list_dir(conn: &Connection, prefix: &str) -> Result<Vec<DirEntry>> {
 
 /// Return all directory listings needed to expand the tree to reveal `path`.
 ///
-/// For a path like `src/lib/api.ts` this queries `""`, `"src/"`, and
-/// `"src/lib/"` and returns a map of prefix → children.  Only the outer
-/// filesystem portion of the path is considered (the `::` archive suffix, if
-/// any, is stripped — archive members cannot be pre-fetched this way).
+/// For a plain path like `src/lib/api.ts` this queries `""`, `"src/"`, and
+/// `"src/lib/"`.  For composite paths the archive member levels are included
+/// too: `"a/b/c.zip::d/e/file.txt"` also queries `"a/b/c.zip::"` and
+/// `"a/b/c.zip::d/"` and `"a/b/c.zip::d/e/"`.
+///
+/// This allows the client to reveal any file — including files deep inside
+/// archives — with a single round-trip rather than one request per level.
 pub fn expand_tree(conn: &Connection, path: &str) -> Result<std::collections::HashMap<String, Vec<DirEntry>>> {
-    let outer = match path.find("::") {
-        Some(i) => &path[..i],
-        None => path,
-    };
-    let prefixes = dir_prefixes(outer);
+    let prefixes = all_dir_prefixes(path);
     let mut result = std::collections::HashMap::with_capacity(prefixes.len());
     for prefix in prefixes {
         let entries = list_dir(conn, &prefix)?;
         result.insert(prefix, entries);
     }
     Ok(result)
+}
+
+/// Return every directory prefix required to reveal `path` in the tree.
+///
+/// Both `/` separators (filesystem dirs) and `::` separators (archive
+/// boundaries) generate a new prefix.  Examples:
+///
+/// - `"src/lib/api.ts"` → `["", "src/", "src/lib/"]`
+/// - `"a.zip::b/c.txt"` → `["", "a.zip::", "a.zip::b/"]`
+/// - `"a/b.zip::c/d.zip::e.txt"` →
+///   `["", "a/", "a/b.zip::", "a/b.zip::c/", "a/b.zip::c/d.zip::", "a/b.zip::c/d.zip::"]`
+///   (the last `::` prefix lists `d.zip`'s contents)
+fn all_dir_prefixes(path: &str) -> Vec<String> {
+    let mut prefixes = vec![String::new()]; // root always included
+    let mut current = String::new();
+    let bytes = path.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b':' && bytes[i + 1] == b':' {
+            // Archive boundary: the accumulated string so far is the archive path.
+            // Add it with "::" appended as the prefix for listing its root contents.
+            current.push_str("::");
+            prefixes.push(current.clone());
+            i += 2;
+        } else if bytes[i] == b'/' {
+            current.push('/');
+            prefixes.push(current.clone());
+            i += 1;
+        } else {
+            current.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    prefixes
 }
 
 /// Return all directory prefixes that must be open to reveal `path`.
@@ -214,6 +247,96 @@ pub fn split_composite_path(path: &str) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── expand_tree ──────────────────────────────────────────────────────────
+
+    /// expand_tree for a plain path returns the same outer-directory listings
+    /// as the old implementation (root + each ancestor dir).
+    #[test]
+    fn expand_tree_plain_path() {
+        let conn = test_db();
+        ins(&conn, "src/lib/api.ts", "text");
+        ins(&conn, "src/main.rs", "text");
+        ins(&conn, "README.md", "text");
+
+        let levels = expand_tree(&conn, "src/lib/api.ts").unwrap();
+        assert!(levels.contains_key(""), "must include root");
+        assert!(levels.contains_key("src/"), "must include src/");
+        assert!(levels.contains_key("src/lib/"), "must include src/lib/");
+        assert!(!levels.contains_key("src/lib/api.ts"), "file itself is not a dir");
+    }
+
+    /// expand_tree for a composite path returns outer dirs AND archive member
+    /// dirs in a single response, so no follow-up listDir calls are needed.
+    #[test]
+    fn expand_tree_composite_path_includes_archive_levels() {
+        let conn = test_db();
+        ins(&conn, "backups/data.zip", "archive");
+        ins(&conn, "backups/data.zip::docs/notes/file.txt", "text");
+        ins(&conn, "backups/data.zip::docs/readme.txt", "text");
+        ins(&conn, "other/unrelated.txt", "text");
+
+        let levels = expand_tree(&conn, "backups/data.zip::docs/notes/file.txt").unwrap();
+
+        // Outer filesystem levels
+        assert!(levels.contains_key(""), "root missing");
+        assert!(levels.contains_key("backups/"), "backups/ missing");
+
+        // Archive member levels
+        assert!(levels.contains_key("backups/data.zip::"), "archive root missing");
+        assert!(levels.contains_key("backups/data.zip::docs/"), "docs/ inside archive missing");
+
+        // Root listing contains the backups/ dir
+        let root = &levels[""];
+        assert!(root.iter().any(|e| e.name == "backups"), "root must list backups/");
+
+        // Archive root listing contains the docs/ virtual dir
+        let archive_root = &levels["backups/data.zip::"];
+        assert!(archive_root.iter().any(|e| e.name == "docs"), "archive root must list docs/");
+
+        // docs/ listing contains notes/ and readme.txt
+        let docs = &levels["backups/data.zip::docs/"];
+        assert!(docs.iter().any(|e| e.name == "notes"), "docs must list notes/");
+        assert!(docs.iter().any(|e| e.name == "readme.txt"), "docs must list readme.txt");
+    }
+
+    // ── all_dir_prefixes ─────────────────────────────────────────────────────
+
+    #[test]
+    fn all_dir_prefixes_plain_path() {
+        let p = all_dir_prefixes("src/lib/api.ts");
+        assert_eq!(p, vec!["", "src/", "src/lib/"]);
+    }
+
+    #[test]
+    fn all_dir_prefixes_root_file() {
+        let p = all_dir_prefixes("README.md");
+        assert_eq!(p, vec![""]);
+    }
+
+    #[test]
+    fn all_dir_prefixes_archive_flat_member() {
+        let p = all_dir_prefixes("a.zip::file.txt");
+        assert_eq!(p, vec!["", "a.zip::"]);
+    }
+
+    #[test]
+    fn all_dir_prefixes_archive_nested_member() {
+        let p = all_dir_prefixes("a.zip::b/c.txt");
+        assert_eq!(p, vec!["", "a.zip::", "a.zip::b/"]);
+    }
+
+    #[test]
+    fn all_dir_prefixes_deep_composite() {
+        let p = all_dir_prefixes("backups/data.zip::docs/notes/file.txt");
+        assert_eq!(p, vec!["", "backups/", "backups/data.zip::", "backups/data.zip::docs/", "backups/data.zip::docs/notes/"]);
+    }
+
+    #[test]
+    fn all_dir_prefixes_nested_archive() {
+        let p = all_dir_prefixes("a.zip::b/inner.zip::c/file.txt");
+        assert_eq!(p, vec!["", "a.zip::", "a.zip::b/", "a.zip::b/inner.zip::", "a.zip::b/inner.zip::c/"]);
+    }
 
     // ── split_composite_path ─────────────────────────────────────────────────
 

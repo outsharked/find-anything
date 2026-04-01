@@ -220,6 +220,7 @@ fn make_archive_member_bulk(source: &str, archive_path: &str, member_name: &str,
         file_hash: None,
         scanner_version: SCANNER_VERSION,
         is_new: true,
+        force: false,
     };
 
     let member = IndexFile {
@@ -236,6 +237,7 @@ fn make_archive_member_bulk(source: &str, archive_path: &str, member_name: &str,
         file_hash: None,
         scanner_version: SCANNER_VERSION,
         is_new: true,
+        force: false,
     };
 
     BulkRequest {

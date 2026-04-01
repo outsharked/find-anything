@@ -76,7 +76,7 @@
 	$: if (preferOriginal !== _prevPreferOriginal) {
 		_prevPreferOriginal = preferOriginal;
 		if (fileKind !== null) {
-			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg;
+			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg || (iworkPreviewName !== null && preferOriginal);
 		}
 	}
 	// Parsed image dimensions for the aspect-ratio loading placeholder.
@@ -84,13 +84,31 @@
 	$: placeholderStyle = imgDims
 		? `width: min(${imgDims.width}px, 100%); aspect-ratio: ${imgDims.width} / ${imgDims.height}; max-height: min(${imgDims.height}px, 100%); min-height: 0;`
 		: '';
+	// iWork preview: present when the document has an embedded preview image.
+	// The preview name is stored in metadata as "[IWORK_PREVIEW] preview.jpg".
+	// Set by applyFileData / applyFileMeta; cannot use metaLines because [IWORK_PREVIEW]
+	// is deliberately filtered out of metaLines so it doesn't appear in the UI.
+	let iworkPreviewName: string | null = null;
+	$: iworkPreviewUrl = iworkPreviewName
+		? `/api/v1/view?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath + '::' + iworkPreviewName)}`
+		: null;
 	// archivePath is set when this file is a member of an archive.
 	// path is always the outer (real) file path — it never contains '::'.
 	$: isArchiveMember = archivePath !== null;
 
 	// For inline archive browsing: tracks the current dir prefix within the archive.
+	// Also enabled for ZIP-like archive members (.pages/.numbers/.key/.zip) so the
+	// user can browse into a nested iWork document or zipped archive.
 	let archivePrefix = '';
-	$: if (fileKind === 'archive' && !archivePath && path) archivePrefix = path + '::';
+	$: {
+		const leafName = archivePath ? (archivePath.split('/').pop()?.split('::').pop() ?? '') : '';
+		const memberExt = (leafName.split('.').pop() ?? '').toLowerCase();
+		if (fileKind === 'archive' && path && (!archivePath || isZipLike(memberExt))) {
+			archivePrefix = archivePath ? `${path}::${archivePath}::` : `${path}::`;
+		} else {
+			archivePrefix = '';
+		}
+	}
 	// Download/stream URL for the outer file (used for download link and PDF iframe).
 	$: rawUrl = `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`;
 	// For inline image display, use the composite path for archive members so the
@@ -392,10 +410,13 @@
 		const compositePath = archivePath ? `${path}::${archivePath}` : path;
 		metaLines = [];
 		duplicatePaths = [];
+		iworkPreviewName = null;
 		for (const s of data.metadata) {
 			if (!s || s === compositePath) continue;
 			if (s.startsWith('[fa:duplicate] ')) {
 				duplicatePaths.push(s.slice('[fa:duplicate] '.length));
+			} else if (s.startsWith('[IWORK_PREVIEW] ')) {
+				iworkPreviewName = s.slice('[IWORK_PREVIEW] '.length);
 			} else {
 				metaLines.push({ content: s });
 			}
@@ -419,7 +440,7 @@
 		// For PDF/video/SVG, only set on initial load to preserve the user's toggle preference.
 		const noToggleKind = fileKind === 'image' || fileKind === 'audio' || fileKind === 'dicom';
 		if (isInitial || noToggleKind) {
-			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg;
+			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg || (iworkPreviewName !== null && preferOriginal);
 		}
 	}
 
@@ -432,10 +453,13 @@
 		const compositePath = archivePath ? `${path}::${archivePath}` : path;
 		metaLines = [];
 		duplicatePaths = [];
+		iworkPreviewName = null;
 		for (const s of data.metadata) {
 			if (!s || s === compositePath) continue;
 			if (s.startsWith('[fa:duplicate] ')) {
 				duplicatePaths.push(s.slice('[fa:duplicate] '.length));
+			} else if (s.startsWith('[IWORK_PREVIEW] ')) {
+				iworkPreviewName = s.slice('[IWORK_PREVIEW] '.length);
 			} else {
 				metaLines.push({ content: s });
 			}
@@ -448,7 +472,7 @@
 		}
 		const noToggleKind = fileKind === 'image' || fileKind === 'audio' || fileKind === 'dicom';
 		if (isInitial || noToggleKind) {
-			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg;
+			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg || (iworkPreviewName !== null && preferOriginal);
 		}
 	}
 
@@ -643,8 +667,12 @@
 				<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}>
 					{showOriginal ? 'View Source' : 'View SVG'}
 				</button>
+			{:else if iworkPreviewUrl}
+				<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}>
+					{showOriginal ? 'View Extracted' : 'View Preview'}
+				</button>
 			{/if}
-			{#if !(showOriginal && canViewInline) && fileKind !== 'image' && fileKind !== 'video' && fileKind !== 'audio' && fileKind !== 'dicom' && (hasOverflow || wordWrap)}
+			{#if !(showOriginal && (canViewInline || iworkPreviewUrl)) && fileKind !== 'image' && fileKind !== 'video' && fileKind !== 'audio' && fileKind !== 'dicom' && (hasOverflow || wordWrap)}
 				<button class="toolbar-btn toolbar-icon-btn" on:click={toggleWordWrap} title={wordWrap ? 'Disable word wrap' : 'Enable word wrap'}>
 					{#if wordWrap}
 						<IconWrapOn />
@@ -726,7 +754,11 @@
 				</div>
 			</div>
 		{/if}
-		{#if showOriginal && canViewInline}
+		{#if showOriginal && iworkPreviewUrl && !canViewInline}
+			<div class="image-viewer-panel">
+				<DirectImageViewer src={iworkPreviewUrl} />
+			</div>
+		{:else if showOriginal && canViewInline}
 			{#if isSvg}
 				<div class="image-viewer-panel">
 					<DirectImageViewer src={rawInlineUrl} svgMode={true} />
@@ -821,8 +853,8 @@
 					{/if}
 				{:else if markdownFormat && isMarkdown && !markdownTooLarge}
 					<MarkdownViewer rendered={String(renderedMarkdown)} />
-				{:else if codeLines.length === 0 && metaLines.length === 0 && fileKind === 'archive' && !archivePath}
-					<!-- Archive root: show member listing inline -->
+				{:else if codeLines.length === 0 && metaLines.length === 0 && archivePrefix}
+					<!-- Archive root or ZIP-like archive member: show member listing inline -->
 					<DirListing
 						source={source}
 						prefix={archivePrefix}

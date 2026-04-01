@@ -332,6 +332,7 @@ mod tests {
             file_hash: None,
             scanner_version: 0,
             is_new: false,
+            force: false,
         }
     }
 

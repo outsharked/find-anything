@@ -14,6 +14,12 @@ const dirCache = new Map<string, DirEntry[]>();
 // Concurrent callers for the same path share one request instead of racing.
 const inflight = new Map<string, Promise<void>>();
 
+// Outer paths that have already been successfully expanded.
+// Prevents redundant expand calls when archive member directories auto-expand
+// serially (each level finishes before the next becomes visible, so the
+// in-flight dedup alone doesn't catch them).
+const expanded = new Set<string>();
+
 export function getCachedDir(source: string, prefix: string): DirEntry[] | undefined {
 	return dirCache.get(`${source}:${prefix}`);
 }
@@ -24,21 +30,20 @@ export function setCachedDir(source: string, prefix: string, entries: DirEntry[]
 
 /**
  * Fetch all directory levels needed to reveal `filePath` in one request.
- * Concurrent calls for the same (source, path) share the in-flight promise.
+ * Concurrent calls for the same (source, filePath) share the in-flight promise.
  *
- * Composite paths (`archive.zip::member`) are handled by stripping the `::…`
- * suffix — only outer filesystem directories are fetchable via expand.
+ * The server handles both outer filesystem directories and archive member
+ * directories in a single response, so the full path is passed as-is.
  */
 export function prefetchTreePath(source: string, filePath: string): Promise<void> {
-	const outerPath = filePath.includes('::')
-		? filePath.slice(0, filePath.indexOf('::'))
-		: filePath;
-
-	const key = `${source}:${outerPath}`;
+	const key = `${source}:${filePath}`;
+	if (expanded.has(key)) return Promise.resolve();
 	const existing = inflight.get(key);
 	if (existing) return existing;
 
-	const promise = doExpand(source, outerPath).finally(() => inflight.delete(key));
+	const promise = doExpand(source, filePath)
+		.then(() => { expanded.add(key); })
+		.finally(() => { inflight.delete(key); });
 	inflight.set(key, promise);
 	return promise;
 }

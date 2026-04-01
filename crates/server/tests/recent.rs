@@ -25,6 +25,7 @@ fn make_bulk_with_mtime(source: &str, path: &str, content: &str, mtime: i64) -> 
             file_hash: None,
             scanner_version: SCANNER_VERSION,
             is_new: true,
+            force: false,
         }],
         delete_paths: vec![],
         scan_timestamp: Some(mtime),

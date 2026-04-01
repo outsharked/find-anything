@@ -9,8 +9,10 @@ use globset::GlobSet;
 use tracing::warn;
 use xz2::read::XzDecoder;
 
-use find_extract_types::IndexLine;
-use find_extract_types::{build_globset, ExternalDispatchMode, ExternalMemberDispatch, ExtractorConfig};
+use find_extract_types::{IndexLine, build_globset, ExternalDispatchMode, ExternalMemberDispatch, ExtractorConfig};
+
+mod iwork;
+pub use iwork::is_iwork_ext;
 
 /// One batch of lines for a single archive member, with its content hash.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -33,10 +35,21 @@ pub struct MemberBatch {
     /// None for entries where the size is not available (e.g. corrupt/streaming entries).
     #[serde(default)]
     pub size: Option<u64>,
+    /// If set, the member's raw bytes were written to this temp file path instead of being
+    /// extracted inline.  The caller (scan.rs) is responsible for uploading the file to the
+    /// server and deleting it afterwards.  Only set for extensions listed in
+    /// `ExtractorConfig::server_only_exts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegate_temp_path: Option<String>,
+    /// Lines to be attached to the outer archive file's own content entry rather than to
+    /// this specific member.  Used by iWork extraction to store IWA text content alongside
+    /// the outer .pages/.numbers/.key file without requiring a separate extractor binary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outer_lines: Vec<IndexLine>,
 }
 
 // Internal callback alias for brevity.
-type CB<'a> = &'a mut dyn FnMut(MemberBatch);
+pub(crate) type CB<'a> = &'a mut dyn FnMut(MemberBatch);
 
 /// Returns true if any path component starts with `.` (and is not `.` or `..`).
 /// Used to skip hidden members (e.g. `.terraform/`, `.git/`) when
@@ -61,7 +74,7 @@ where
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("");
     if is_iwork_ext(ext) {
-        return iwork_streaming(path, cfg, callback);
+        return iwork::iwork_streaming(path, cfg, callback);
     }
     let kind = detect_kind_from_name(name).context("not a recognized archive")?;
     dispatch_streaming(path, &kind, cfg, callback)
@@ -91,12 +104,6 @@ pub fn is_archive_ext(ext: &str) -> bool {
         "zip" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" | "txz" | "7z"
         | "pages" | "numbers" | "key"
     )
-}
-
-/// True for Apple iWork extensions (.pages, .numbers, .key).
-/// These are ZIP-based documents; only `preview.jpg` is worth extracting.
-fn is_iwork_ext(ext: &str) -> bool {
-    matches!(ext.to_lowercase().as_str(), "pages" | "numbers" | "key")
 }
 
 // ============================================================================
@@ -231,53 +238,6 @@ fn zip_streaming(path: &Path, cfg: &ExtractorConfig, callback: CB<'_>) -> Result
     zip_from_archive(archive, path.to_str().unwrap_or(""), cfg, callback)
 }
 
-/// Extract only `preview.jpg` from a top-level iWork file (.pages/.numbers/.key).
-///
-/// iWork files are ZIP archives whose text content is in proprietary .iwa
-/// (Snappy-compressed protobuf) files.  The only extractable artefact is the
-/// JPEG preview Apple embeds at the root of the ZIP.  We emit it as a single
-/// archive member so the image viewer can display it.
-fn iwork_streaming(path: &Path, cfg: &ExtractorConfig, callback: CB<'_>) -> Result<()> {
-    let file = File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file).context("opening iwork file as zip")?;
-    let display_prefix = path.to_str().unwrap_or("");
-    extract_iwork_preview(&mut archive, display_prefix, cfg, callback);
-    Ok(())
-}
-
-/// Find `preview.jpg` (or `preview-web.jpg`) inside an iWork ZIP and emit it
-/// as a `MemberBatch`.  Called for both top-level files and nested members.
-fn extract_iwork_preview<R: Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    display_prefix: &str,
-    cfg: &ExtractorConfig,
-    callback: CB<'_>,
-) {
-    let preview_name = if archive.by_name("preview.jpg").is_ok() {
-        "preview.jpg"
-    } else if archive.by_name("preview-web.jpg").is_ok() {
-        "preview-web.jpg"
-    } else {
-        return; // no preview available
-    };
-
-    let mut entry = match archive.by_name(preview_name) {
-        Ok(e) => e,
-        Err(e) => { warn!("iwork: failed to open {preview_name} in {display_prefix}: {e:#}"); return; }
-    };
-
-    let size_limit = cfg.max_content_kb * 1024;
-    let member_size = Some(entry.size());
-    let mut bytes = Vec::new();
-    if let Err(e) = (&mut entry as &mut dyn Read).take(size_limit as u64).read_to_end(&mut bytes) {
-        warn!("iwork: failed to read {preview_name} in {display_prefix}: {e:#}");
-        return;
-    }
-    let file_hash = find_extract_types::content_hash(&bytes);
-    let lines = extract_member_bytes(bytes, preview_name, display_prefix, cfg);
-    callback(MemberBatch { lines, file_hash, skip_reason: None, mtime: None, size: member_size });
-}
-
 /// Core ZIP extractor, generic over any `Read + Seek` source.
 ///
 /// Called for top-level ZIPs (via a file path) and for nested ZIPs
@@ -326,6 +286,25 @@ fn zip_from_archive<R: Read + std::io::Seek>(
             }
         }
 
+        // server_only delegation: read full bytes and forward to scan.rs for upload.
+        let ext_lc = Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if cfg.server_only_exts.iter().any(|s| s == &ext_lc) {
+            let delegation_limit = (cfg.max_temp_file_mb * 1024 * 1024) as u64;
+            let mut full_bytes = Vec::new();
+            let _ = (&mut entry as &mut dyn Read).take(delegation_limit).read_to_end(&mut full_bytes);
+            let file_hash = find_extract_types::content_hash(&full_bytes);
+            let mut lines = make_filename_line(&name);
+            if is_iwork_ext(&ext_lc) {
+                iwork::iwork_extract_preview_into_lines(&full_bytes, &name, &mut lines);
+            }
+            let delegate_temp_path = write_delegate_temp_file(&full_bytes, &name)
+                .map_err(|e| warn!("server_only: temp write failed for {name} in {display_prefix}: {e:#}"))
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned());
+            callback(MemberBatch { lines, file_hash, skip_reason: None, mtime, size: member_size, delegate_temp_path, outer_lines: vec![] });
+            continue;
+        }
+
         // Read up to size_limit bytes; truncate naturally via take().
         // Content is truncated at the limit rather than skipped.
         let mut bytes = Vec::new();
@@ -343,7 +322,7 @@ fn zip_from_archive<R: Read + std::io::Seek>(
             None
         };
         let file_hash = find_extract_types::content_hash(&bytes);
-        callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: member_size });
+        callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: member_size, delegate_temp_path: None, outer_lines: vec![] });
     }
     Ok(())
 }
@@ -384,6 +363,27 @@ fn tar_streaming<R: Read>(mut archive: tar::Archive<R>, display_prefix: &str, cf
             }
         }
 
+        // server_only delegation: read full bytes and forward to scan.rs for upload.
+        // The tar crate drains remaining entry bytes on Entry::drop() so no explicit
+        // drain is needed after a partial read.
+        let ext_lc = Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if cfg.server_only_exts.iter().any(|s| s == &ext_lc) {
+            let delegation_limit = (cfg.max_temp_file_mb * 1024 * 1024) as u64;
+            let mut full_bytes = Vec::new();
+            let _ = (&mut entry as &mut dyn Read).take(delegation_limit).read_to_end(&mut full_bytes);
+            let file_hash = find_extract_types::content_hash(&full_bytes);
+            let mut lines = make_filename_line(&name);
+            if is_iwork_ext(&ext_lc) {
+                iwork::iwork_extract_preview_into_lines(&full_bytes, &name, &mut lines);
+            }
+            let delegate_temp_path = write_delegate_temp_file(&full_bytes, &name)
+                .map_err(|e| warn!("server_only: temp write failed for {name} in {display_prefix}: {e:#}"))
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned());
+            callback(MemberBatch { lines, file_hash, skip_reason: None, mtime, size: member_size, delegate_temp_path, outer_lines: vec![] });
+            continue;
+        }
+
         // Read up to size_limit bytes; truncate naturally via take().
         // The tar crate drains remaining entry bytes on Entry::drop(), so a
         // partial read here won't desync the stream.
@@ -403,7 +403,7 @@ fn tar_streaming<R: Read>(mut archive: tar::Archive<R>, display_prefix: &str, cf
             None
         };
         let file_hash = find_extract_types::content_hash(&bytes);
-        callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: member_size });
+        callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: member_size, delegate_temp_path: None, outer_lines: vec![] });
     }
     Ok(())
 }
@@ -447,6 +447,35 @@ fn sevenz_process_entry(
         }
     }
 
+    // Compute mtime before reading (uses entry metadata, not stream data).
+    let mtime = if entry.has_last_modified_date {
+        std::time::SystemTime::from(entry.last_modified_date)
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs() as i64)
+            .and_then(sanitize_archive_mtime)
+    } else {
+        None
+    };
+
+    // server_only delegation: read full bytes (up to max_temp_file_mb), drain the
+    // rest to keep the solid-block stream in sync, write to temp file for upload.
+    let ext_lc = Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if cfg.server_only_exts.iter().any(|s| s == &ext_lc) {
+        let delegation_limit = (cfg.max_temp_file_mb * 1024 * 1024) as u64;
+        let mut full_bytes = Vec::new();
+        let _ = (reader as &mut dyn Read).take(delegation_limit).read_to_end(&mut full_bytes);
+        let _ = std::io::copy(reader, &mut std::io::sink());
+        let file_hash = find_extract_types::content_hash(&full_bytes);
+        let lines = make_filename_line(&name);
+        let delegate_temp_path = write_delegate_temp_file(&full_bytes, &name)
+            .map_err(|e| warn!("server_only: temp write failed for {name} in {display_prefix}: {e:#}"))
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned());
+        callback(MemberBatch { lines, file_hash, skip_reason: None, mtime, size: Some(entry.size()), delegate_temp_path, outer_lines: vec![] });
+        return Ok(true);
+    }
+
     // Read up to size_limit bytes; truncate naturally via take().
     // Content is truncated at the limit rather than skipped.
     // After the bounded read, drain any remaining bytes for this entry to keep
@@ -476,18 +505,9 @@ fn sevenz_process_entry(
     } else {
         None
     };
-    let mtime = if entry.has_last_modified_date {
-        std::time::SystemTime::from(entry.last_modified_date)
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_secs() as i64)
-            .and_then(sanitize_archive_mtime)
-    } else {
-        None
-    };
 
     let file_hash = find_extract_types::content_hash(&bytes);
-    callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: Some(entry.size()) });
+    callback(MemberBatch { lines: extract_member_bytes(bytes, &name, display_prefix, cfg), file_hash, skip_reason, mtime, size: Some(entry.size()), delegate_temp_path: None, outer_lines: vec![] });
     Ok(true)
 }
 
@@ -704,6 +724,8 @@ fn single_compressed<R: Read>(reader: R, path: &Path, cfg: &ExtractorConfig) -> 
         skip_reason: None,
         mtime: None, // single-file wrapper: caller uses outer archive's filesystem mtime
         size: Some(decompressed_size),
+        delegate_temp_path: None,
+        outer_lines: vec![],
     })
 }
 
@@ -735,7 +757,7 @@ fn handle_nested_archive(
     callback: CB<'_>,
 ) {
     // Always emit the filename of the nested archive itself, with its size.
-    callback(MemberBatch { lines: make_filename_line(outer_name), file_hash: None, skip_reason: None, mtime: None, size: outer_size });
+    callback(MemberBatch { lines: make_filename_line(outer_name), file_hash: None, skip_reason: None, mtime: None, size: outer_size, delegate_temp_path: None, outer_lines: vec![] });
 
     if cfg.max_depth == 0 {
         warn!(
@@ -767,7 +789,7 @@ fn handle_nested_archive(
                 l
             })
             .collect();
-        callback(MemberBatch { lines: p, file_hash: inner_batch.file_hash, skip_reason: inner_batch.skip_reason, mtime: inner_batch.mtime, size: inner_batch.size });
+        callback(MemberBatch { lines: p, file_hash: inner_batch.file_hash, skip_reason: inner_batch.skip_reason, mtime: inner_batch.mtime, size: inner_batch.size, delegate_temp_path: inner_batch.delegate_temp_path, outer_lines: vec![] });
     };
 
     // Use `reader` as `&mut dyn Read` throughout so that tar_streaming<GzDecoder<&mut dyn Read>>
@@ -1397,7 +1419,28 @@ mod tests {
     }
 }
 
-fn extract_member_bytes(mut bytes: Vec<u8>, entry_name: &str, display_prefix: &str, cfg: &ExtractorConfig) -> Vec<IndexLine> {
+/// Write `bytes` to a uniquely-named temp file for server-side delegation.
+///
+/// Creates `<tempdir>/fa-member-XXXXXXXX/<leaf_filename>` and returns the path.
+/// The directory is NOT auto-deleted on drop — the caller (scan.rs) is responsible
+/// for removing it after uploading.
+fn write_delegate_temp_file(bytes: &[u8], entry_name: &str) -> Result<std::path::PathBuf> {
+    let leaf = Path::new(entry_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("member");
+    let dir = tempfile::Builder::new()
+        .prefix("fa-member-")
+        .tempdir()
+        .context("creating delegate temp dir")?;
+    let path = dir.path().join(leaf);
+    std::fs::write(&path, bytes).context("writing delegate temp file")?;
+    // Prevent auto-deletion: scan.rs cleans up after upload.
+    let _ = dir.keep();
+    Ok(path)
+}
+
+pub(crate) fn extract_member_bytes(mut bytes: Vec<u8>, entry_name: &str, display_prefix: &str, cfg: &ExtractorConfig) -> Vec<IndexLine> {
     // Check external_dispatch first: if this extension has a registered external
     // extractor, delegate to it and return its output.  This ensures consistent
     // behaviour regardless of whether the file is found at top level or nested
@@ -1415,21 +1458,7 @@ fn extract_member_bytes(mut bytes: Vec<u8>, entry_name: &str, display_prefix: &s
     // Move bytes into a Cursor since we return early regardless of success.
     if is_iwork_ext(&member_ext) {
         let mut lines = make_filename_line(entry_name);
-        if let Ok(mut inner_archive) = zip::ZipArchive::new(Cursor::new(bytes)) {
-            let inner_prefix = format!("{display_prefix}::{entry_name}");
-            let mut preview_lines: Vec<IndexLine> = Vec::new();
-            extract_iwork_preview(&mut inner_archive, &inner_prefix, cfg, &mut |batch| {
-                preview_lines.extend(batch.lines);
-            });
-            // Re-prefix each preview line's archive_path so the composite path becomes
-            // e.g. "outer.zip::document.pages::preview.jpg".
-            for mut line in preview_lines {
-                if let Some(ap) = line.archive_path {
-                    line.archive_path = Some(format!("{entry_name}::{ap}"));
-                }
-                lines.push(line);
-            }
-        }
+        iwork::iwork_extract_preview_into_lines(&bytes, entry_name, &mut lines);
         return lines;
     }
 

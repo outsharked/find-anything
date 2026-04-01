@@ -204,6 +204,7 @@ pub fn make_text_bulk(source: &str, path: &str, content: &str) -> BulkRequest {
             file_hash: Some(fnv_hash_hex(path, content)),
             scanner_version: SCANNER_VERSION,
             is_new: true,
+            force: false,
         }],
         delete_paths: vec![],
         scan_timestamp: Some(1_700_000_000),

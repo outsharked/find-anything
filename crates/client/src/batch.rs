@@ -87,7 +87,7 @@ pub fn build_index_files(
             content: format!("[PATH] {}", rel_path),
         });
         ensure_metadata_slot(&mut all_lines);
-        return vec![IndexFile { path: rel_path, mtime, size: Some(size), kind, lines: all_lines, extract_ms: None, file_hash: None, scanner_version: SCANNER_VERSION, is_new: false }];
+        return vec![IndexFile { path: rel_path, mtime, size: Some(size), kind, lines: all_lines, extract_ms: None, file_hash: None, scanner_version: SCANNER_VERSION, is_new: false, force: false }];
     }
 
     // Group by archive_path.
@@ -121,6 +121,7 @@ pub fn build_index_files(
         file_hash: None,
         scanner_version: SCANNER_VERSION,
         is_new: false,
+        force: false,
     });
 
     // One IndexFile per archive member, with composite path "zip::member".
@@ -143,6 +144,7 @@ pub fn build_index_files(
             file_hash: None,
             scanner_version: SCANNER_VERSION,
             is_new: false,
+            force: false,
         });
     }
 
@@ -203,6 +205,7 @@ pub fn build_member_index_files(
             file_hash: file_hash.clone(),
             scanner_version: SCANNER_VERSION,
             is_new: false,
+            force: false,
         });
     }
     result

@@ -74,24 +74,26 @@
 	async function expandDir() {
 		if (!loaded) {
 			try {
-				if (entry.kind === 'archive') {
+				// The cache key for archive roots uses a trailing "::" (the prefix
+				// used by list_dir / expandTreePath for archive root listings).
+				const cacheKey = entry.kind === 'archive' ? entry.path + '::' : entry.path;
+				let cached = getCachedDir(source, cacheKey);
+				if (!cached && activePath) {
+					// Warm all ancestor and archive-member levels in one request;
+					// concurrent TreeRows share the same in-flight promise via treeCache.
+					await prefetchTreePath(source, activePath);
+					cached = getCachedDir(source, cacheKey);
+				}
+				if (cached) {
+					children = cached;
+				} else if (entry.kind === 'archive') {
 					const resp = await listArchiveMembers(source, entry.path);
 					children = resp.entries;
+					setCachedDir(source, cacheKey, children);
 				} else {
-					let cached = getCachedDir(source, entry.path);
-					if (!cached && activePath) {
-						// Warm all ancestor levels in one request; concurrent
-						// TreeRows share the same in-flight promise via treeCache.
-						await prefetchTreePath(source, activePath);
-						cached = getCachedDir(source, entry.path);
-					}
-					if (cached) {
-						children = cached;
-					} else {
-						const resp = await listDir(source, entry.path);
-						children = resp.entries;
-						setCachedDir(source, entry.path, children);
-					}
+					const resp = await listDir(source, entry.path);
+					children = resp.entries;
+					setCachedDir(source, entry.path, children);
 				}
 				loaded = true;
 			} catch {

@@ -51,19 +51,28 @@ pub struct TestServer {
 
 impl TestServer {
     pub async fn spawn() -> Self {
+        Self::spawn_with_extra_config("").await
+    }
+
+    /// Spawn with additional TOML appended to the base server config.
+    /// Useful for adding `[sources.*]` blocks or `[scan.extractors]`.
+    pub async fn spawn_with_extra_config(extra: &str) -> Self {
         let data_dir = tempfile::TempDir::new().expect("tempdir");
         let data_path = data_dir.path().to_str().unwrap().to_string();
 
+        // Bind first so we know the actual port; include it in `bind` so the
+        // server's upload handler can construct the correct callback URL when
+        // spawning find-scan as a subprocess (used by server_only extractor flow).
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
         let config_toml = format!(
-            "[server]\ndata_dir = \"{data_path}\"\ntoken = \"{TEST_TOKEN}\"\n"
+            "[server]\ndata_dir = \"{data_path}\"\ntoken = \"{TEST_TOKEN}\"\nbind = \"{addr}\"\n{extra}"
         );
         let (config, _) = parse_server_config(&config_toml).expect("parse config");
 
         let state = create_app_state(config).await.expect("create_app_state");
         let app = build_router(state);
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("local_addr");
 
         tokio::spawn(async move {
             serve(listener, app).await.expect("serve");
@@ -126,8 +135,20 @@ pub struct TestEnv {
 
 impl TestEnv {
     pub async fn new() -> Self {
-        let server = TestServer::spawn().await;
+        Self::new_with_server_config("").await
+    }
+
+    /// Like `new()` but spawns the server with extra TOML config.
+    /// The source dir is created first so its path can be included in the config.
+    pub async fn new_with_server_config(extra_server_toml: &str) -> Self {
         let source_dir = tempfile::TempDir::new().expect("source tempdir");
+        let source_path = source_dir.path().to_str().unwrap().replace('\\', "/");
+        // Always include a source entry for test-source so the view endpoint
+        // can resolve files from the source directory.
+        let source_config = format!(
+            "[sources.{TEST_SOURCE}]\npath = \"{source_path}\"\n{extra_server_toml}"
+        );
+        let server = TestServer::spawn_with_extra_config(&source_config).await;
         Self {
             server,
             source_dir,
@@ -230,6 +251,8 @@ impl TestEnv {
             quiet: true,
             dry_run: false,
             force_since: None,
+            mtime_override: None,
+            force_index: false,
         };
         find_client::scan::run_scan(&api, &source, &scan, &opts)
             .await
@@ -255,6 +278,7 @@ impl TestEnv {
     }
 
     /// Fetch the stored content lines for a file via GET /api/v1/file.
+    /// Returns only content lines (line_number >= LINE_CONTENT_START).
     /// Returns an empty vec if the file has no stored content (blob not found).
     pub async fn get_file_lines(&self, rel_path: &str) -> Vec<String> {
         use find_common::api::FileResponse;
@@ -273,5 +297,33 @@ impl TestEnv {
             .await
             .expect("FileResponse json");
         resp.lines
+    }
+
+    /// Fetch the stored metadata lines for a file via GET /api/v1/file.
+    /// Returns reserved lines (line 0 = path, line 1 = metadata string).
+    /// This is where [IWORK_PREVIEW], [EXIF:...], etc. are stored.
+    pub async fn get_file_metadata(&self, rel_path: &str) -> Vec<String> {
+        self.get_file_response(rel_path, None).await.metadata
+    }
+
+    /// Fetch the full FileResponse for a file (optionally an archive member via archive_path).
+    pub async fn get_file_response(&self, rel_path: &str, archive_path: Option<&str>) -> find_common::api::FileResponse {
+        let mut url = format!(
+            "{}/api/v1/file?source={}&path={}",
+            self.server.base_url,
+            self.source_name,
+            rel_path,
+        );
+        if let Some(ap) = archive_path {
+            url.push_str(&format!("&archive_path={}", ap));
+        }
+        self.server.client
+            .get(&url)
+            .send()
+            .await
+            .expect("GET /api/v1/file")
+            .json()
+            .await
+            .expect("FileResponse json")
     }
 }

@@ -307,6 +307,8 @@ async fn s10_force_reindexes_all_files() {
         quiet: true,
         dry_run: false,
         force_since: Some(force_since),
+        mtime_override: None,
+        force_index: false,
     };
     find_client::scan::run_scan(&api, &source, &env.scan_config(), &opts)
         .await
@@ -355,6 +357,7 @@ async fn s11_upgrade_reindexes_old_scanner_version() {
             file_hash: None,
             scanner_version: 0, // intentionally old
             is_new: true,
+            force: false,
         }],
         delete_paths: vec![],
         scan_timestamp: None,
@@ -406,6 +409,8 @@ async fn s11_upgrade_reindexes_old_scanner_version() {
         quiet: true,
         dry_run: false,
         force_since: None,
+        mtime_override: None,
+        force_index: false,
     };
     find_client::scan::run_scan(&api, &source, &env.scan_config(), &opts)
         .await

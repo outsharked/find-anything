@@ -494,6 +494,7 @@ mod tests {
             extract_ms: None,
             file_hash: None,
             is_new: true,
+            force: false,
         }
     }
 
@@ -866,6 +867,7 @@ mod tests {
                 extract_ms: None,
                 file_hash: None,
                 is_new: true,
+                force: false,
             }],
             delete_paths: vec![],
             rename_paths: vec![],
@@ -938,6 +940,7 @@ mod tests {
                 extract_ms: None,
                 file_hash: None,
                 is_new: true,
+                force: false,
             }],
             delete_paths: vec![],
             rename_paths: vec![],

@@ -4,6 +4,7 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+[ ] Find .pages, .mumbers, .key files for integration tests
 [ ] Rotate image buttoins
 [ ] For known keywords, highlight it when the : is type. Do typeahead pick list for valid options where appropriate (type), desktop only
 [ ] Add 'show log' for windows service

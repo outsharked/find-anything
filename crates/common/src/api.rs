@@ -39,7 +39,7 @@ impl FileKind {
 
     /// True for kinds whose extracted lines are passed through the text normalizer.
     pub fn is_text_like(&self) -> bool {
-        matches!(self, Self::Text | Self::Code | Self::Pdf)
+        matches!(self, Self::Text | Self::Code | Self::Pdf | Self::Document)
     }
 }
 
@@ -192,6 +192,12 @@ pub struct IndexFile {
     /// Defaults to false (treated as a modify) when absent (older clients).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_new: bool,
+    /// When true, the server skips the stale-mtime guard and always applies
+    /// this upsert.  Set by `find-scan --force` so that explicit reindex
+    /// requests always succeed, even if the stored mtime is newer than the
+    /// file's own mtime (e.g. after a failed first extraction run).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
 }
 
 /// One extraction failure reported by the client.
@@ -946,6 +952,7 @@ mod file_kind_tests {
     fn file_kind_is_text_like() {
         assert!(FileKind::Text.is_text_like());
         assert!(FileKind::Pdf.is_text_like());
+        assert!(FileKind::Document.is_text_like());
         assert!(!FileKind::Image.is_text_like());
         assert!(!FileKind::Archive.is_text_like());
         assert!(!FileKind::Unknown.is_text_like());

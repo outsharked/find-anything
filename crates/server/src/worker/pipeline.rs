@@ -70,13 +70,17 @@ pub(super) fn process_file_phase1_fallback(
     let old_size_kind   = existing_record.map(|(_, _, size, kind, _, _)| (size, FileKind::from(kind.as_str())));
 
     // Stale-mtime guard: skip if the stored mtime is already newer.
-    if let Some(stored) = stored_mtime {
-        if file.mtime > 0 && file.mtime < stored {
-            tracing::debug!(
-                "skipping stale upsert for {} (incoming mtime={} < stored={})",
-                file.path, file.mtime, stored
-            );
-            return Ok(Phase1Outcome::Skipped);
+    // Bypassed when file.force is set — explicit reindex actions (find-scan
+    // --force, upload delegation) must always succeed regardless of stored mtime.
+    if !file.force {
+        if let Some(stored) = stored_mtime {
+            if file.mtime > 0 && file.mtime < stored {
+                tracing::debug!(
+                    "skipping stale upsert for {} (incoming mtime={} < stored={})",
+                    file.path, file.mtime, stored
+                );
+                return Ok(Phase1Outcome::Skipped);
+            }
         }
     }
 
@@ -238,6 +242,7 @@ pub(super) fn filename_only_file(file: &IndexFile) -> IndexFile {
         file_hash: None,
         scanner_version: file.scanner_version,
         is_new: file.is_new,
+        force: file.force,
     }
 }
 
@@ -265,6 +270,7 @@ pub(super) fn outer_archive_stub(file: &IndexFile) -> IndexFile {
         file_hash: None,
         scanner_version: file.scanner_version,
         is_new: file.is_new,
+        force: file.force,
     }
 }
 
@@ -300,6 +306,7 @@ mod tests {
             extract_ms: None,
             file_hash: None,
             is_new: true,
+            force: false,
         }
     }
 

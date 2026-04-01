@@ -66,6 +66,12 @@ pub struct ExtractorConfig {
     /// When set, ffprobe is invoked as a child process for every video file
     /// and the output is merged into the `[VIDEO:...]` metadata line.
     pub ffprobe_path: Option<String>,
+    /// File extensions (lowercase, without dot) that the archive extractor should
+    /// delegate to the server rather than processing inline.  When a ZIP member
+    /// has one of these extensions, its raw bytes are written to a temp file and
+    /// a `MemberBatch` with `delegate_temp_path` set is emitted; scan.rs then
+    /// uploads the temp file to the server for server-side extraction.
+    pub server_only_exts: Vec<String>,
 }
 
 impl Default for ExtractorConfig {
@@ -80,6 +86,7 @@ impl Default for ExtractorConfig {
             exclude_patterns: vec![],
             external_dispatch: std::collections::HashMap::new(),
             ffprobe_path: None,
+            server_only_exts: vec![],
         }
     }
 }
