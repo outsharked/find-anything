@@ -458,6 +458,103 @@ fn iwork_preview_extracted_from_nested_pages() {
     );
 }
 
+// ============================================================================
+// Real-world modern iWork files (IWA/protobuf format, iWork 2013+)
+// Source: https://github.com/orcastor/iwork-converter/tree/master/testdata (MIT)
+// ============================================================================
+
+fn modern_pages() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/modern.pages")
+}
+
+fn modern_numbers() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/modern.numbers")
+}
+
+fn modern_key() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/modern.key")
+}
+
+/// modern.pages is a Chinese-language purchase contract. Verify that IWA text
+/// extraction finds the document title and produces a preview metadata line.
+#[test]
+fn modern_pages_extracts_text_and_preview() {
+    use find_extract_types::LINE_METADATA;
+
+    let mut batches: Vec<MemberBatch> = Vec::new();
+    extract_streaming(&modern_pages(), &default_cfg(), &mut |b| batches.push(b)).unwrap();
+
+    // There should be exactly one batch (the preview image member).
+    let preview_batch = batches.iter().find(|b| {
+        b.lines.iter().any(|l| l.content == "preview.jpg")
+    });
+    assert!(preview_batch.is_some(), "no preview batch found");
+
+    // Outer lines should contain [IWORK_PREVIEW] and Chinese contract text.
+    let outer: Vec<&str> = batches.iter()
+        .flat_map(|b| b.outer_lines.iter().map(|l| l.content.as_str()))
+        .collect();
+
+    assert!(
+        outer.iter().any(|s| s.starts_with("[IWORK_PREVIEW]")),
+        "missing [IWORK_PREVIEW] in outer_lines; outer = {:?}", outer
+    );
+    // The document title "购 销 合 同" (purchase/sale contract) should be present.
+    assert!(
+        outer.iter().any(|s| s.contains("购") && s.contains("合") && s.contains("同")),
+        "Chinese contract title not found; outer = {:?}", outer
+    );
+    // Verify no outer_lines have line_number == LINE_METADATA except the preview line.
+    let meta_lines: Vec<_> = batches.iter()
+        .flat_map(|b| b.outer_lines.iter())
+        .filter(|l| l.line_number == LINE_METADATA)
+        .collect();
+    assert!(
+        meta_lines.iter().all(|l| l.content.starts_with("[IWORK_PREVIEW]")),
+        "unexpected metadata lines: {:?}", meta_lines
+    );
+}
+
+/// modern.numbers is a Chinese-language spreadsheet. Verify preview metadata present.
+#[test]
+fn modern_numbers_has_preview_metadata() {
+    let mut batches: Vec<MemberBatch> = Vec::new();
+    extract_streaming(&modern_numbers(), &default_cfg(), &mut |b| batches.push(b)).unwrap();
+
+    let outer: Vec<&str> = batches.iter()
+        .flat_map(|b| b.outer_lines.iter().map(|l| l.content.as_str()))
+        .collect();
+
+    assert!(
+        outer.iter().any(|s| s.starts_with("[IWORK_PREVIEW]")),
+        "missing [IWORK_PREVIEW] in outer_lines; outer = {:?}", outer
+    );
+}
+
+/// modern.key is a Keynote presentation containing "Lorem Ipsum Dolor".
+/// Verify text extraction and preview metadata.
+#[test]
+fn modern_key_extracts_latin_text() {
+    let mut batches: Vec<MemberBatch> = Vec::new();
+    extract_streaming(&modern_key(), &default_cfg(), &mut |b| batches.push(b)).unwrap();
+
+    let outer: Vec<&str> = batches.iter()
+        .flat_map(|b| b.outer_lines.iter().map(|l| l.content.as_str()))
+        .collect();
+
+    assert!(
+        outer.iter().any(|s| s.starts_with("[IWORK_PREVIEW]")),
+        "missing [IWORK_PREVIEW] in outer_lines; outer = {:?}", outer
+    );
+    assert!(
+        outer.iter().any(|s| s.contains("Lorem") || s.contains("Ipsum")),
+        "Lorem Ipsum text not found in modern.key; outer = {:?}", outer
+    );
+}
+
 /// The skip_reason field must be absent for successfully extracted members.
 #[test]
 fn solid_7z_block_no_skip_reason() {
