@@ -9,6 +9,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable formatter timeouts** — `batch_formatter_timeout_secs` (default 60) and `per_file_formatter_timeout_secs` (default 10) added to `[normalization]` in `server.toml`; previously hardcoded constants with `#[cfg(test)]` overrides
+
+### Fixed
+
+- **Server crash (OOM) on large archive batches** — `process_request_phase1` serialised the entire normalised `BulkRequest` to a `Vec<u8>` before writing it to the `.gz` inbox file, holding the full content in memory twice simultaneously. For a large 7z batch this could double peak memory (e.g. 800 MB of extracted content → ~1.6 GB peak). Fixed by streaming directly into the `GzEncoder` via `serde_json::to_writer`.
+- **Batch formatter could hang indefinitely** — `apply_batch_formatter` called `std::process::Command::status()` with no timeout. A hung or slow prettier/biome run (e.g. a large YAML file) would block the inbox worker forever. Fixed with a 60-second timeout matching the per-file formatter pattern.
+- **Search result line numbers off-by-one near chunk boundaries** — `chunk_blob` used `current.is_empty()` to decide whether to prepend a `\n` separator. When an empty line fell exactly at a chunk boundary, `push_str("")` left `current` empty even though the line's position had been recorded as `chunk_start`. The following non-empty line then also skipped its separator, causing all subsequent blob positions to be shifted -1 relative to their FTS `line_number`s, producing wrong context lines and incorrect line number display in search results.
+
 ---
 
 ## [0.7.2] - 2026-04-01

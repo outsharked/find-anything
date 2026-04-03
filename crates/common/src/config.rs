@@ -977,15 +977,30 @@ pub struct NormalizationSettings {
     /// successfully wins. Empty list = word-wrap only.
     #[serde(default)]
     pub formatters: Vec<FormatterConfig>,
+
+    /// Maximum seconds a batch formatter process may run before it is killed
+    /// and the per-file fallback is tried. Default: 60.
+    #[serde(default = "default_batch_formatter_timeout_secs")]
+    pub batch_formatter_timeout_secs: u64,
+
+    /// Maximum seconds a per-file formatter process may run before it is
+    /// killed and that file is skipped (kept with its original content).
+    /// Default: 10.
+    #[serde(default = "default_per_file_formatter_timeout_secs")]
+    pub per_file_formatter_timeout_secs: u64,
 }
 
 fn default_norm_max_line_length() -> usize { 120 }
+fn default_batch_formatter_timeout_secs() -> u64 { 60 }
+fn default_per_file_formatter_timeout_secs() -> u64 { 10 }
 
 impl Default for NormalizationSettings {
     fn default() -> Self {
         Self {
             max_line_length: default_norm_max_line_length(),
             formatters: Vec::new(),
+            batch_formatter_timeout_secs: default_batch_formatter_timeout_secs(),
+            per_file_formatter_timeout_secs: default_per_file_formatter_timeout_secs(),
         }
     }
 }
