@@ -19,6 +19,7 @@
 	let expanded = false;
 	let children: DirEntry[] = [];
 	let loaded = false;
+	let loading = false;
 	let loadError = false;
 	let rowEl: HTMLElement | null = null;
 	// Tracks the activePath value that last triggered auto-expand, so that a
@@ -73,6 +74,7 @@
 
 	async function expandDir() {
 		if (!loaded) {
+			loading = true;
 			try {
 				// The cache key for archive roots uses a trailing "::" (the prefix
 				// used by list_dir / expandTreePath for archive root listings).
@@ -98,6 +100,8 @@
 				loaded = true;
 			} catch {
 				loadError = true;
+			} finally {
+				loading = false;
 			}
 		}
 		expanded = true;
@@ -147,6 +151,7 @@
 	{#if isExpandable}
 		<div class="row row--dir"
 			class:active={$keyboardCursorPath !== null ? $keyboardCursorPath === entry.path : entry.kind === 'archive' && entry.path === activePath}
+			class:loading
 			style="padding-left: {8 + depth * 16}px"
 			bind:this={rowEl}
 		>
@@ -236,6 +241,12 @@
 
 	.row--dir {
 		position: relative;
+	}
+
+	.row--dir.loading,
+	.row--dir.loading .expand-arrow,
+	.row--dir.loading .dir-name {
+		cursor: wait;
 	}
 
 	.row--dir:hover,

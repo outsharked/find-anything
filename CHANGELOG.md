@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **No loading cursor while expanding tree directories** — expanding a directory node in the file tree showed no feedback while the server request was in flight; the row, arrow, and name now show `cursor: wait` during the load
+
 ---
 
 ## [0.7.2] - 2026-04-01
