@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS duplicates (
     PRIMARY KEY (file_hash, file_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_duplicates_hash ON duplicates(file_hash);
+CREATE INDEX IF NOT EXISTS idx_duplicates_hash   ON duplicates(file_hash);
+CREATE INDEX IF NOT EXISTS idx_duplicates_file_id ON duplicates(file_id);
 
 -- Contentless FTS5 index.
 -- rowid = file_id * MAX_LINES_PER_FILE + line_number
