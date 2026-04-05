@@ -105,17 +105,16 @@ async fn main() -> Result<()> {
                 )
                 .await?;
 
-            for (i, content) in ctx.lines.iter().enumerate() {
-                let line_num = ctx.start + i;
+            for (i, line) in ctx.lines.iter().enumerate() {
                 if Some(i) == ctx.match_index {
                     // Matching line: highlighted
                     let marker = ">".yellow().bold().to_string();
-                    let num = format!("{:>5}", line_num).green().to_string();
-                    println!("{} {}  {}", marker, num, content);
+                    let num = format!("{:>5}", line.line_number).green().to_string();
+                    println!("{} {}  {}", marker, num, line.content);
                 } else {
                     // Context line: dimmed
-                    let num = format!("{:>5}", line_num).dimmed().to_string();
-                    println!("  {}  {}", num, content.dimmed());
+                    let num = format!("{:>5}", line.line_number).dimmed().to_string();
+                    println!("  {}  {}", num, line.content.dimmed());
                 }
             }
         }

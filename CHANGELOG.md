@@ -9,8 +9,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable formatter timeouts** — `batch_formatter_timeout_secs` (default 60) and `per_file_formatter_timeout_secs` (default 10) added to `[normalization]` in `server.toml`; previously hardcoded constants with `#[cfg(test)]` overrides
+
 ### Fixed
 
+- **Server crash (OOM) on large archive batches** — `process_request_phase1` serialised the entire normalised `BulkRequest` to a `Vec<u8>` before writing it to the `.gz` inbox file, holding the full content in memory twice simultaneously. For a large 7z batch this could double peak memory (e.g. 800 MB of extracted content → ~1.6 GB peak). Fixed by streaming directly into the `GzEncoder` via `serde_json::to_writer`.
+- **Batch formatter could hang indefinitely** — `apply_batch_formatter` called `std::process::Command::status()` with no timeout. A hung or slow prettier/biome run (e.g. a large YAML file) would block the inbox worker forever. Fixed with a 60-second timeout matching the per-file formatter pattern.
+- **Search result line numbers off-by-one near chunk boundaries** — `chunk_blob` used `current.is_empty()` to decide whether to prepend a `\n` separator. When an empty line fell exactly at a chunk boundary, `push_str("")` left `current` empty even though the line's position had been recorded as `chunk_start`. The following non-empty line then also skipped its separator, causing all subsequent blob positions to be shifted -1 relative to their FTS `line_number`s, producing wrong context lines and incorrect line number display in search results.
+- **Potential write-lock contention on startup** — idempotent `CREATE INDEX IF NOT EXISTS` statements were run inside the per-request `open()` path; under concurrent startup they could contend on SQLite's WAL mutex. Moved to `check_all_sources()` which runs once at startup under no concurrency. `idx_duplicates_file_id` also added to the v4 schema so fresh installs get it without migration.
+- **Context lines carried server-internal line numbers** — `ContextResponse.lines` was `Vec<String>` so the client had to reconstruct line numbers as `start + index`, which is incorrect for sparse files (e.g. PDFs with gaps). Each line now carries its own `line_number` in `Vec<ContextLine>`; `find-query` and the web UI both updated to use `line.line_number` directly
+- **`content_line_start` compat shim removed** — the `content_line_start` field in `/api/v1/settings` and the `contentLineStart` Svelte store were added to support old servers that used `line_number = 1` for the first content line; the current scheme (`LINE_CONTENT_START = 2`) is now assumed unconditionally
 - **Directory renames not watched after rename** — when `find-watch` detected a directory rename pair, the new directory path was removed from the batch (correct) but `register_dir` was never called for it, so the new location had no inotify watch. Changes inside the renamed directory were silently missed until the next full rescan.
 
 ---

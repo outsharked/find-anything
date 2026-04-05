@@ -291,14 +291,14 @@ pub struct ContextLine {
 /// GET /api/v1/context response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextResponse {
-    /// Line number of the first element in `lines`. Client computes each
-    /// line's number as `start + index` (approximate — gaps exist in sparse
-    /// files like PDFs where empty lines are not stored).
+    /// Line number of the first element in `lines` (server-space FTS line number).
     pub start: usize,
     /// Index within `lines` of the matched line, or null if the center line
     /// was not found in the returned window (e.g. it fell in a gap).
     pub match_index: Option<usize>,
-    pub lines: Vec<String>,
+    /// Each line carries its own FTS line number — use `line.line_number` rather
+    /// than reconstructing positions via `start + index`.
+    pub lines: Vec<ContextLine>,
     pub kind: FileKind,
 }
 
@@ -415,7 +415,9 @@ pub struct ContextBatchResult {
     pub line: usize,
     pub start: usize,
     pub match_index: Option<usize>,
-    pub lines: Vec<String>,
+    /// Each line carries its own FTS line number — use `line.line_number` rather
+    /// than reconstructing positions via `start + index`.
+    pub lines: Vec<ContextLine>,
     pub kind: FileKind,
 }
 
@@ -452,12 +454,6 @@ pub struct AppSettingsResponse {
     /// 0 = no limit (older servers). Default: 2000.
     #[serde(default)]
     pub file_view_page_size: usize,
-    /// The line_number of the first content line.
-    /// 2 for servers that use the reserved-slot scheme (line 0 = path, line 1 = metadata).
-    /// Clients compute display line as `line_number - (content_line_start - 1)`.
-    /// Defaults to 1 for backwards compatibility with older servers.
-    #[serde(default = "default_content_line_start")]
-    pub content_line_start: usize,
     /// Number of spaces a tab character occupies in the file viewer.
     /// Defaults to 4. Can be overridden per-user in the browser.
     #[serde(default = "default_tab_width")]
@@ -470,7 +466,6 @@ pub struct AppSettingsResponse {
 }
 
 fn default_max_markdown_render_kb() -> usize { 512 }
-fn default_content_line_start() -> usize { 1 }
 fn default_tab_width() -> usize { 4 }
 
 // ── Stats types ───────────────────────────────────────────────────────────────

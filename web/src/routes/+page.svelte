@@ -11,7 +11,7 @@
 	import type { SearchResult, SourceInfo } from '$lib/api';
 	import { getToken, setToken } from '$lib/token';
 	import { startLiveUpdates, liveEvent } from '$lib/liveUpdates';
-	import { contextWindow, maxMarkdownRenderKb, fileViewPageSize, contentLineStart, tabWidth, publicUrl } from '$lib/settingsStore';
+	import { contextWindow, maxMarkdownRenderKb, fileViewPageSize, tabWidth, publicUrl } from '$lib/settingsStore';
 	import { formatHash } from '$lib/lineSelection';
 	import type { LineSelection } from '$lib/lineSelection';
 	import { FilePath } from '$lib/filePath';
@@ -134,7 +134,6 @@
 			contextWindow.set(p.contextWindow ?? s.context_window);
 			maxMarkdownRenderKb.set(s.max_markdown_render_kb ?? 512);
 			fileViewPageSize.set(s.file_view_page_size ?? 2000);
-			contentLineStart.set(s.content_line_start ?? 1);
 			tabWidth.set(p.tabWidth ?? s.tab_width ?? 4);
 			publicUrl.set(s.public_url);
 		} catch { /* silent */ }
@@ -463,12 +462,16 @@
 	function openFile(e: CustomEvent<SearchResult>) {
 		const r = e.detail;
 		const file = FilePath.fromParts(r.path, r.archive_path ?? null);
-		const cls = get(contentLineStart);
+		// Server line_number: 0=path, 1=metadata, 2+=content (LINE_CONTENT_START=2).
+		// Display line number = server line_number - 1 (1-based content index).
+		const toDisplay = (n: number) => n > 1 ? n - 1 : n;
 		const extraLines = (r.extra_matches ?? [])
 			.map((m) => m.line_number)
-			.filter((n) => n >= cls && n !== r.line_number);
-		const selection: LineSelection = r.line_number
-			? [r.line_number, ...extraLines]
+			.filter((n) => n >= 2 && n !== r.line_number)
+			.map(toDisplay);
+		const displayLine = r.line_number >= 2 ? toDisplay(r.line_number) : 0;
+		const selection: LineSelection = displayLine
+			? [displayLine, ...extraLines]
 			: extraLines.length ? extraLines : [];
 		savedScrollTop = mainContent?.scrollTop ?? 0;
 		prefetchTreePath(r.source, file.full);

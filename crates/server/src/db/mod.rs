@@ -72,7 +72,9 @@ pub fn open(db_path: &Path) -> Result<Connection> {
              ALTER TABLE files RENAME COLUMN content_hash TO file_hash;
              DROP INDEX IF EXISTS files_content_hash;
              CREATE INDEX IF NOT EXISTS files_file_hash ON files(file_hash) WHERE file_hash IS NOT NULL;
-             ALTER TABLE duplicates RENAME COLUMN content_hash TO file_hash;",
+             ALTER TABLE duplicates RENAME COLUMN content_hash TO file_hash;
+             CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+             CREATE INDEX IF NOT EXISTS idx_duplicates_file_id ON duplicates(file_id);",
         ).context("migrating schema v13 → v14")?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .context("stamping schema version")?;
@@ -83,12 +85,6 @@ pub fn open(db_path: &Path) -> Result<Connection> {
             db_path.display()
         );
     }
-
-    // Idempotent index additions — safe to run on existing databases at any version.
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
-         CREATE INDEX IF NOT EXISTS idx_duplicates_file_id ON duplicates(file_id);"
-    ).context("creating indexes")?;
 
     Ok(conn)
 }
@@ -143,7 +139,15 @@ pub fn check_all_sources(sources_dir: &Path) -> Result<()> {
             continue;
         }
         // open() applies any pending migrations and errors on truly incompatible versions.
-        open(&path).with_context(|| format!("migrating {}", path.display()))?;
+        let conn = open(&path).with_context(|| format!("migrating {}", path.display()))?;
+        // Idempotent index additions for existing databases.  These run once at
+        // startup under no concurrency pressure.  Keeping DDL out of the per-request
+        // open() path avoids write-lock contention when many threads open the same DB
+        // simultaneously, which could otherwise deadlock via SQLite's WAL mutex.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+             CREATE INDEX IF NOT EXISTS idx_duplicates_file_id ON duplicates(file_id);"
+        ).with_context(|| format!("ensuring indexes on {}", path.display()))?;
     }
     Ok(())
 }

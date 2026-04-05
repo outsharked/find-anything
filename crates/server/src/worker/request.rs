@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use rusqlite::ErrorCode;
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -417,15 +417,17 @@ fn process_request_phase1(
             indexing_failures: request.indexing_failures.clone(),
             rename_paths: request.rename_paths.clone(),
         };
-        let json = serde_json::to_vec(&normalized_request)
-            .context("serializing normalized request")?;
         let file_name = request_path.file_name()
             .context("request path has no filename")?;
         let to_archive_path = to_archive_dir.join(file_name);
         let out = std::fs::File::create(&to_archive_path)
             .context("creating to-archive file")?;
         let mut encoder = GzEncoder::new(out, flate2::Compression::default());
-        encoder.write_all(&json).context("writing normalized gz")?;
+        // Stream directly into the encoder to avoid a separate Vec<u8> allocation.
+        // For large batches (e.g. a big archive), materialising the JSON separately
+        // would double peak memory: normalized_request + json Vec each at full size.
+        serde_json::to_writer(&mut encoder, &normalized_request)
+            .context("serializing normalized request")?;
         encoder.finish().context("finalizing normalized gz")?
     });
 
@@ -439,6 +441,7 @@ mod tests {
     use super::*;
     use find_common::api::{BulkRequest, FileKind, IndexFile, IndexLine, PathRename, LINE_CONTENT_START};
     use find_content_store::SqliteContentStore;
+    use std::io::Write as _;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
@@ -883,6 +886,7 @@ mod tests {
             normalization: find_common::config::NormalizationSettings {
                 max_line_length: 120,
                 formatters: vec![],
+                ..Default::default()
             },
             ..make_worker_config()
         };
@@ -955,6 +959,7 @@ mod tests {
             normalization: find_common::config::NormalizationSettings {
                 max_line_length: 120,
                 formatters: vec![],
+                ..Default::default()
             },
             ..make_worker_config()
         };

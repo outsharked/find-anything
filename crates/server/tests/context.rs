@@ -32,7 +32,7 @@ async fn test_get_context_returns_surrounding_lines() {
     assert!(resp.match_index.is_some(), "match_index should point to center line");
     // The center line must contain "charlie".
     let match_idx = resp.match_index.unwrap();
-    assert!(resp.lines[match_idx].contains("charlie"),
+    assert!(resp.lines[match_idx].content.contains("charlie"),
         "center line should be 'line charlie', got {:?}", resp.lines[match_idx]);
 }
 
@@ -136,9 +136,9 @@ async fn test_context_batch_multiple_items() {
 
     assert_eq!(resp.results.len(), 3, "batch should return one result per request");
     // Each result should contain its expected content.
-    let has_alpha   = resp.results.iter().any(|r| r.path == "a.txt" && r.lines.iter().any(|l| l.contains("alpha")));
-    let has_bravo   = resp.results.iter().any(|r| r.path == "b.txt" && r.lines.iter().any(|l| l.contains("bravo")));
-    let has_charlie = resp.results.iter().any(|r| r.path == "c.txt" && r.lines.iter().any(|l| l.contains("charlie")));
+    let has_alpha   = resp.results.iter().any(|r| r.path == "a.txt" && r.lines.iter().any(|l| l.content.contains("alpha")));
+    let has_bravo   = resp.results.iter().any(|r| r.path == "b.txt" && r.lines.iter().any(|l| l.content.contains("bravo")));
+    let has_charlie = resp.results.iter().any(|r| r.path == "c.txt" && r.lines.iter().any(|l| l.content.contains("charlie")));
     assert!(has_alpha,   "result for a.txt should contain 'alpha'");
     assert!(has_bravo,   "result for b.txt should contain 'bravo'");
     assert!(has_charlie, "result for c.txt should contain 'charlie'");

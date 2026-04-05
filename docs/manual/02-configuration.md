@@ -209,7 +209,9 @@ The server applies normalization to text and PDF content before writing it to th
 
 ```toml
 [normalization]
-max_line_length = 120   # wrap lines longer than this (0 = disabled)
+max_line_length = 120              # wrap lines longer than this (0 = disabled)
+batch_formatter_timeout_secs = 60  # kill batch formatter after this many seconds; falls back to per-file
+per_file_formatter_timeout_secs = 10  # kill per-file formatter after this many seconds; file is skipped
 
 # External formatters — recommended: use mode = "batch" (one process per batch,
 # much faster than the default stdin mode which spawns once per file).
@@ -245,6 +247,18 @@ For each indexed text file the server attempts the following steps in order, sto
 |---|---|
 | `120` (default) | Lines longer than 120 characters are word-wrapped |
 | `0` | Normalization disabled entirely — content is stored as-is |
+
+### `batch_formatter_timeout_secs`
+
+How long (in seconds) the server waits for a batch-mode formatter process to finish before killing it. Default: **60**.
+
+When the timeout is exceeded the server falls back to per-file mode: each file is re-submitted individually with its own `per_file_formatter_timeout_secs` limit. This ensures that one slow or hung formatter does not block an entire batch.
+
+### `per_file_formatter_timeout_secs`
+
+How long (in seconds) the server waits for each individual formatter invocation in per-file fallback mode. Default: **10**.
+
+Files whose formatter exceeds this limit are skipped (kept with their original content). Other files in the same batch are still processed normally.
 
 ### External formatter configuration
 

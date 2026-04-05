@@ -57,7 +57,8 @@ export interface ContextResponse {
 	start: number;
 	/** Index within lines[] of the matched line; null if center fell in a gap. */
 	match_index: number | null;
-	lines: string[];
+	/** Each line carries its own line_number — use line.line_number, not start + index. */
+	lines: ContextLine[];
 	kind: string;
 }
 
@@ -247,7 +248,8 @@ export interface ContextBatchResult {
 	line: number;
 	start: number;
 	match_index: number | null;
-	lines: string[];
+	/** Each line carries its own line_number — use line.line_number, not start + index. */
+	lines: ContextLine[];
 	kind: string;
 }
 
@@ -292,11 +294,6 @@ export interface AppSettings {
 	max_markdown_render_kb: number;
 	/** Maximum content lines per /api/v1/file request. 0 = no limit. */
 	file_view_page_size: number;
-	/**
-	 * The line_number of the first content line (2 for new servers, defaults to 1 for old servers).
-	 * Clients compute display line as: line_number - (content_line_start - 1).
-	 */
-	content_line_start?: number;
 	/** Number of spaces a tab character occupies in the file viewer. Defaults to 4. */
 	tab_width?: number;
 	/** Public base URL of the server (e.g. `https://find.example.com`). Used as the origin for share links. */

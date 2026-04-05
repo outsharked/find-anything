@@ -91,11 +91,14 @@ pub fn normalize_batch_indexed(
 
     let mut handled = vec![false; files.len()];
 
+    let batch_timeout = std::time::Duration::from_secs(cfg.batch_formatter_timeout_secs);
+    let per_file_timeout = std::time::Duration::from_secs(cfg.per_file_formatter_timeout_secs);
+
     for fmt in &cfg.formatters {
         if fmt.mode != FormatterMode::Batch {
             continue;
         }
-        apply_batch_formatter(files, &mut handled, fmt);
+        apply_batch_formatter(files, &mut handled, fmt, batch_timeout, per_file_timeout);
     }
 
     // Per-file path for unhandled files (stdin formatters + built-in pretty-printers + word-wrap).
@@ -273,14 +276,62 @@ fn wait_with_timeout(
     rx.recv_timeout(timeout).ok()?.ok()
 }
 
+/// Run `child.wait()` on a background thread with a timeout.
+/// Returns `None` if the timeout expires; the child process is left to run
+/// to completion on the background thread.
+fn wait_status_with_timeout(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    rx.recv_timeout(timeout).ok()?.ok()
+}
+
 // ── Batch formatter ───────────────────────────────────────────────────────────
+
+/// Join the content lines of a file entry into a single string for formatting.
+fn content_text(lines: &[IndexLine]) -> String {
+    let mut sorted: Vec<&IndexLine> = lines.iter().filter(|l| l.line_number >= LINE_CONTENT_START).collect();
+    sorted.sort_by_key(|l| l.line_number);
+    sorted.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join("\n")
+}
+
+/// Apply a formatted text result back to a file entry, rebuilding its lines
+/// and marking it as handled. No-ops if `formatted_text` is blank.
+fn apply_formatted_text(
+    batch_idx: usize,
+    formatted_text: &str,
+    files: &mut [(usize, String, Vec<IndexLine>)],
+    handled: &mut [bool],
+    fmt: &FormatterConfig,
+) {
+    if formatted_text.trim().is_empty() {
+        return;
+    }
+    let (_, file_name, lines) = &mut files[batch_idx];
+    let mut result: Vec<IndexLine> = lines.iter().filter(|l| l.line_number < LINE_CONTENT_START).cloned().collect();
+    for (j, content) in formatted_text.lines().enumerate() {
+        result.push(IndexLine { archive_path: None, line_number: j + LINE_CONTENT_START, content: content.to_string() });
+    }
+    *lines = result;
+    handled[batch_idx] = true;
+    tracing::debug!(formatter = %fmt.path, file = %file_name, "normalize: batch formatter succeeded");
+}
 
 /// Run a single `Batch`-mode formatter on all matching, unhandled files in
 /// the batch. Updates `lines` in-place and marks handled entries in `handled`.
+///
+/// If the batch times out, falls back to per-file mode so that only the
+/// problematic file is skipped rather than the entire batch.
 fn apply_batch_formatter(
     files: &mut [(usize, String, Vec<IndexLine>)],
     handled: &mut [bool],
     fmt: &FormatterConfig,
+    batch_timeout: std::time::Duration,
+    per_file_timeout: std::time::Duration,
 ) {
     // Collect (batch_index, extension) for matching unhandled files.
     let matching: Vec<(usize, String)> = files.iter().enumerate()
@@ -309,10 +360,7 @@ fn apply_batch_formatter(
     let mut temp_entries: Vec<(usize, std::path::PathBuf)> = Vec::new();
     for (seq, (batch_idx, ext)) in matching.iter().enumerate() {
         let temp_path = tmp.path().join(format!("{seq:05}.{ext}"));
-        let (_, _, lines) = &files[*batch_idx];
-        let mut sorted: Vec<&IndexLine> = lines.iter().filter(|l| l.line_number >= LINE_CONTENT_START).collect();
-        sorted.sort_by_key(|l| l.line_number);
-        let text = sorted.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join("\n");
+        let text = content_text(&files[*batch_idx].2);
         if let Err(e) = std::fs::write(&temp_path, &text) {
             tracing::warn!(formatter = %fmt.path, error = %e, "normalize: failed to write temp file {seq:05}.{ext}");
             continue;
@@ -333,12 +381,31 @@ fn apply_batch_formatter(
         "normalize: running batch formatter"
     );
 
-    match std::process::Command::new(&fmt.path).args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status() {
+    let child = match std::process::Command::new(&fmt.path).args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
         Err(e) => {
             tracing::warn!(formatter = %fmt.path, error = %e, "normalize: failed to spawn batch formatter");
             return;
         }
-        Ok(s) if !s.success() => {
+        Ok(c) => c,
+    };
+
+    match wait_status_with_timeout(child, batch_timeout) {
+        None => {
+            tracing::warn!(
+                formatter = %fmt.path,
+                files = temp_entries.len(),
+                timeout_secs = batch_timeout.as_secs(),
+                "normalize: batch formatter timed out, retrying per-file"
+            );
+            apply_batch_formatter_per_file(&temp_entries, files, handled, fmt, per_file_timeout);
+            return;
+        }
+        Some(s) if !s.success() => {
             // Non-zero exit is expected when the formatter encounters files it
             // cannot parse (e.g. malformed HTML, syntax errors). The formatter
             // typically still processes all other files successfully, so we
@@ -349,7 +416,7 @@ fn apply_batch_formatter(
                 "normalize: batch formatter exited with errors — reading per-file results"
             );
         }
-        Ok(_) => {}
+        Some(_) => {}
     }
 
     // Read back each file and use whatever is there. If the formatter failed
@@ -357,33 +424,79 @@ fn apply_batch_formatter(
     // that back is identical to using the original, so no comparison needed.
     // The only guard is against an empty file (formatter wiped it).
     for (batch_idx, temp_path) in &temp_entries {
-        let formatted_text = match std::fs::read_to_string(temp_path) {
+        match std::fs::read_to_string(temp_path) {
+            Ok(text) => apply_formatted_text(*batch_idx, &text, files, handled, fmt),
+            Err(e) => tracing::warn!(
+                formatter = %fmt.path,
+                file = %files[*batch_idx].1,
+                error = %e,
+                "normalize: failed to read back formatted temp file"
+            ),
+        }
+    }
+}
+
+/// Per-file fallback used when the batch formatter times out.
+///
+/// Each file gets its own temp dir and a 10-second individual timeout. Files
+/// that time out individually are skipped (kept with their original content);
+/// all others are formatted normally.
+fn apply_batch_formatter_per_file(
+    temp_entries: &[(usize, std::path::PathBuf)],
+    files: &mut [(usize, String, Vec<IndexLine>)],
+    handled: &mut [bool],
+    fmt: &FormatterConfig,
+    per_file_timeout: std::time::Duration,
+) {
+    for (batch_idx, _) in temp_entries {
+        let batch_idx = *batch_idx;
+        let ext = extension_of(&files[batch_idx].1);
+        let text = content_text(&files[batch_idx].2);
+
+        let per_tmp = match tempfile::TempDir::new() {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!(
-                    formatter = %fmt.path,
-                    file = %files[*batch_idx].1,
-                    error = %e,
-                    "normalize: failed to read back formatted temp file"
-                );
+                tracing::warn!(formatter = %fmt.path, error = %e, "normalize: failed to create per-file tempdir");
                 continue;
             }
         };
 
-        if formatted_text.trim().is_empty() {
+        let per_path = per_tmp.path().join(format!("file.{ext}"));
+        if let Err(e) = std::fs::write(&per_path, &text) {
+            tracing::warn!(formatter = %fmt.path, file = %files[batch_idx].1, error = %e, "normalize: failed to write per-file temp");
             continue;
         }
 
-        let (_, file_name, lines) = &mut files[*batch_idx];
-        let non_content_lines: Vec<IndexLine> = lines.iter().filter(|l| l.line_number < LINE_CONTENT_START).cloned().collect();
-        let mut result = non_content_lines;
-        for (j, content) in formatted_text.lines().enumerate() {
-            result.push(IndexLine { archive_path: None, line_number: j + LINE_CONTENT_START, content: content.to_string() });
-        }
-        *lines = result;
-        handled[*batch_idx] = true;
+        let dir_str = per_tmp.path().to_string_lossy().into_owned();
+        let args: Vec<String> = fmt.args.iter().map(|a| a.replace("{dir}", &dir_str)).collect();
 
-        tracing::debug!(formatter = %fmt.path, file = %file_name, "normalize: batch formatter succeeded");
+        let child = match std::process::Command::new(&fmt.path)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Err(e) => {
+                tracing::warn!(formatter = %fmt.path, file = %files[batch_idx].1, error = %e, "normalize: failed to spawn per-file formatter");
+                continue;
+            }
+            Ok(c) => c,
+        };
+
+        if wait_status_with_timeout(child, per_file_timeout).is_none() {
+            tracing::warn!(
+                formatter = %fmt.path,
+                file = %files[batch_idx].1,
+                timeout_secs = per_file_timeout.as_secs(),
+                "normalize: per-file formatter timed out, skipping"
+            );
+            continue;
+        }
+
+        if let Ok(formatted_text) = std::fs::read_to_string(&per_path) {
+            apply_formatted_text(batch_idx, &formatted_text, files, handled, fmt);
+        }
     }
 }
 
@@ -629,6 +742,7 @@ mod tests {
                 extensions: vec![ext.to_string()],
                 mode: find_common::config::FormatterMode::Stdin,
             }],
+            ..Default::default()
         }
     }
 
@@ -720,6 +834,7 @@ mod tests {
                 extensions: vec!["js".to_string()],
                 mode: find_common::config::FormatterMode::Batch,
             }],
+            ..Default::default()
         };
 
         let mut files = vec![
@@ -765,6 +880,7 @@ mod tests {
                 extensions: vec!["js".to_string()],
                 mode: find_common::config::FormatterMode::Batch,
             }],
+            ..Default::default()
         };
 
         let mut files = vec![make_batch_entry(0, "a.js", &[&long_line])];
@@ -791,6 +907,7 @@ mod tests {
                 extensions: vec!["txt".to_string()],
                 mode: find_common::config::FormatterMode::Stdin,
             }],
+            ..Default::default()
         };
 
         let mut files = vec![make_batch_entry(0, "file.txt", &["hello", "world"])];
@@ -841,15 +958,19 @@ mod tests {
                 extensions: vec![ext.to_string()],
                 mode: find_common::config::FormatterMode::Stdin,
             }],
+            ..Default::default()
         }
     }
 
     /// Build a NormalizationSettings with a single batch-mode formatter.
+    /// Uses short timeouts (2s) so tests exercise the fallback path quickly.
     #[cfg(unix)]
     fn batch_cfg(script_path: &str, ext: &str, args: Vec<&str>) -> NormalizationSettings {
         use find_common::config::FormatterConfig;
         NormalizationSettings {
             max_line_length: 10_000,
+            batch_formatter_timeout_secs: 2,
+            per_file_formatter_timeout_secs: 2,
             formatters: vec![FormatterConfig {
                 path: script_path.to_string(),
                 args: args.into_iter().map(str::to_string).collect(),
@@ -974,6 +1095,48 @@ exit $rc
 
         assert!(content_lines(&files[0].2).is_empty(), "empty file should have no content lines");
         assert_eq!(content_lines(&files[1].2), vec!["hello"], "normal.js should be stripped");
+    }
+
+    /// Script body: hangs for 5s when the dir has more than one matching file,
+    /// formats immediately (appends "// fallback") when there is exactly one.
+    /// Used to exercise the per-file fallback path triggered by BATCH_FORMATTER_TIMEOUT.
+    #[cfg(unix)]
+    const HANG_MULTI_BATCH: &str = r#"
+count=$(ls "$1"/*.js 2>/dev/null | wc -l | tr -d ' ')
+if [ "$count" -gt 1 ]; then
+    sleep 5
+else
+    for f in "$1"/*.js; do
+        printf '\n// fallback' >> "$f"
+    done
+fi
+"#;
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_timeout_falls_back_to_per_file() {
+        // The script hangs when given multiple files → triggers the batch timeout
+        // (2s in test builds).  The per-file fallback then re-runs the formatter
+        // on each file individually, where it finds exactly one file and succeeds.
+        let (_dir, script) = make_script("hang_multi.sh", HANG_MULTI_BATCH);
+        let cfg = batch_cfg(script.to_str().unwrap(), "js", vec!["{dir}"]);
+
+        let mut files = vec![
+            make_batch_entry(0, "a.js", &["console.log('a')"]),
+            make_batch_entry(1, "b.js", &["console.log('b')"]),
+            make_batch_entry(2, "readme.txt", &["not js"]),
+        ];
+        normalize_batch_indexed(&mut files, &cfg);
+
+        // Both JS files should have been formatted by the per-file fallback.
+        let a = content_lines(&files[0].2).join("\n");
+        let b = content_lines(&files[1].2).join("\n");
+        assert!(a.contains("// fallback"), "a.js should be formatted by per-file fallback, got: {a}");
+        assert!(b.contains("// fallback"), "b.js should be formatted by per-file fallback, got: {b}");
+
+        // Non-JS file should be unaffected.
+        let txt = content_lines(&files[2].2).join("\n");
+        assert!(txt.contains("not js"), "readme.txt should be unchanged, got: {txt}");
     }
 
     #[cfg(unix)]

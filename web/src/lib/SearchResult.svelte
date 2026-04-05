@@ -2,10 +2,10 @@
 	import { createEventDispatcher, onMount } from 'svelte';
 	import IconChevronLeft from '$lib/icons/IconChevronLeft.svelte';
 	import IconChevronRight from '$lib/icons/IconChevronRight.svelte';
-	import type { SearchResult } from '$lib/api';
+	import type { SearchResult, ContextLine } from '$lib/api';
 	import { getContext as fetchContext } from '$lib/api';
 	import { highlightLine } from '$lib/highlight';
-	import { contextWindow, contentLineStart } from '$lib/settingsStore';
+	import { contextWindow } from '$lib/settingsStore';
 
 	/** All hits for this file, ordered by relevance (first hit is primary). */
 	export let hits: SearchResult[];
@@ -19,7 +19,7 @@
 	let activeHitIndex = 0;
 	let contextStart = 0;
 	let contextMatchIndex: number | null = null;
-	let contextLines: string[] = [];
+	let contextLines: ContextLine[] = [];
 	let contextLoaded = false;
 	let el: HTMLElement;
 
@@ -51,8 +51,9 @@
 
 	async function loadContext() {
 		const hit = hits[activeHitIndex] ?? hits[0];
-		// Skip context loading for path matches (line 0) and metadata matches (line 1 in new scheme).
-		if (hit.line_number < $contentLineStart) {
+		// Skip context loading for path matches (line 0) and metadata matches (line 1).
+		// LINE_CONTENT_START = 2: line 0 = file path, line 1 = metadata, line 2+ = content.
+		if (hit.line_number < 2) {
 			contextLoaded = true;
 			return;
 		}
@@ -68,7 +69,7 @@
 			contextMatchIndex = resp.match_index;
 			const lines = resp.lines;
 			if (lines.length > 0) {
-				const highlighted = await Promise.all(lines.map(l => highlightLine(l, hit.path)));
+				const highlighted = await Promise.all(lines.map(l => highlightLine(l.content, hit.path)));
 				contextLines = lines;
 				highlightedContextLines = highlighted;
 			} else {
@@ -138,26 +139,23 @@
 
 	/** Convert raw line_number to user-visible display number. */
 	function displayLine(n: number): number {
-		return n >= $contentLineStart ? n - ($contentLineStart - 1) : n;
+		// LINE_CONTENT_START = 2: display line = server line - 1 (1-based content index).
+		return n >= 2 ? n - 1 : n;
 	}
 
-	/** True if this is a metadata match (line 1 in the new scheme, or line 0 with '[' prefix in the old). */
+	/** True if this is a metadata match (line 1: path=0, metadata=1, content=2+). */
 	function isMetadataMatch(r: SearchResult): boolean {
-		if ($contentLineStart >= 2) {
-			return r.line_number === 1;
-		}
-		// Old server: metadata was at line 0 with '[' prefix.
-		return r.line_number === 0 && r.snippet.startsWith('[');
+		return r.line_number === 1;
 	}
 
 	/** True if this is a path/filename match. */
 	function isPathMatch(r: SearchResult): boolean {
-		return r.line_number === 0 && !isMetadataMatch(r);
+		return r.line_number === 0;
 	}
 
 	/** True if this is a content match (has a navigable line number). */
 	function isContentMatch(r: SearchResult): boolean {
-		return r.line_number >= $contentLineStart;
+		return r.line_number >= 2;
 	}
 
 	function escapeHtml(s: string): string {
@@ -277,13 +275,12 @@
 		{:else if isPathMatch(result)}
 			<!-- Path/filename match — path is already shown in the header, skip snippet -->
 		{:else if contextLines.length > 0}
-			{#each contextLines as content, i}
-				{@const lineNum = contextStart + i}
+			{#each contextLines as line, i}
 				{@const isMatch = i === contextMatchIndex}
 				<div class="line" class:match={isMatch}>
-					<span class="ln">{displayLine(lineNum)}</span>
+					<span class="ln">{displayLine(line.line_number)}</span>
 					<span class="arrow">{isMatch ? '▶' : ' '}</span>
-					<code class="lc">{@html highlightedContextLines[i] ?? escapeHtml(content)}</code>
+					<code class="lc">{@html highlightedContextLines[i] ?? escapeHtml(line.content)}</code>
 				</div>
 			{/each}
 		{:else if contextLoaded}
