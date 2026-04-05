@@ -182,13 +182,20 @@ fn chunk_blob(blob: &str, chunk_size: usize) -> Vec<Chunk> {
     let mut chunk_num = 0usize;
     let mut chunk_start: Option<usize> = None;
     let mut chunk_last: usize = 0;
+    // Track whether this is the first line added to the current chunk.
+    // Using `current.is_empty()` is incorrect: an empty line (`""`) pushed
+    // via `push_str("")` leaves `current` empty even though the line was
+    // "processed", causing the next non-empty line to also skip its `\n`
+    // separator.  This shifts all subsequent blob positions by -1 relative to
+    // their FTS line_numbers, producing incorrect context and search results.
+    let mut first_in_chunk = true;
 
     // Use `lines()` so an empty blob produces zero iterations and no trailing
     // phantom line.  Lines are stored joined by '\n' with no trailing newline,
     // so `split('\n')` in `get_lines` reconstructs them exactly.
     for (pos, line) in blob.lines().enumerate() {
-        // Adding a separator '\n' before every non-first line.
-        let add_size = if current.is_empty() { line.len() } else { 1 + line.len() };
+        // Adding a separator '\n' before every non-first line in the chunk.
+        let add_size = if first_in_chunk { line.len() } else { 1 + line.len() };
 
         if current.len() + add_size > chunk_size && !current.is_empty() {
             chunks.push(Chunk {
@@ -199,15 +206,17 @@ fn chunk_blob(blob: &str, chunk_size: usize) -> Vec<Chunk> {
             });
             chunk_num += 1;
             chunk_start = None;
+            first_in_chunk = true;
         }
 
         if chunk_start.is_none() {
             chunk_start = Some(pos);
         }
         chunk_last = pos;
-        if !current.is_empty() {
+        if !first_in_chunk {
             current.push('\n');
         }
+        first_in_chunk = false;
         current.push_str(line);
     }
 
@@ -378,5 +387,36 @@ mod tests {
         for p in 5..=10 {
             assert!(positions.contains(&p), "missing position {p}");
         }
+    }
+
+    /// Regression test: an empty line that falls exactly at a chunk boundary
+    /// must not be silently dropped.  Previously, `push_str("")` left `current`
+    /// empty after the flush, so the next non-empty line also skipped its `\n`
+    /// separator, shifting all subsequent blob positions by -1 relative to their
+    /// FTS line_numbers.
+    #[test]
+    fn empty_line_at_chunk_boundary_preserved() {
+        let dir = TempDir::new().unwrap();
+        // Use a chunk_size that causes a flush right before the empty line.
+        // Build content so that after N non-empty lines the chunk is full,
+        // then add an empty line, then more content.
+        // chunk_size_kb = 0 means 0 bytes → every line starts a new chunk.
+        // With chunk_size=0: after pushing "A" (1 byte), size(1) > 0 would
+        // trigger a flush on the NEXT line.  Let's instead use a known size.
+
+        // 10-byte chunk: "AAAAAAAAAA" fills exactly one chunk, then "" is next.
+        let store = SqliteContentStore::open(dir.path(), Some(0), None, None).unwrap();
+        let k = ContentKey::new("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+
+        // Build: line0="AAAAAAAAAA" (10 chars), line1="" (empty), line2="BBBBBBBBBB"
+        let blob = "AAAAAAAAAA\n\nBBBBBBBBBB";
+        store.put(&k, blob).unwrap();
+
+        // All three positions must be retrievable with correct content.
+        let result = store.get_lines(&k, 0, 2).unwrap().unwrap();
+        let map: std::collections::HashMap<usize, String> = result.into_iter().collect();
+        assert_eq!(map.get(&0).map(|s| s.as_str()), Some("AAAAAAAAAA"), "pos 0 wrong");
+        assert_eq!(map.get(&1).map(|s| s.as_str()), Some(""), "pos 1 (empty line) wrong");
+        assert_eq!(map.get(&2).map(|s| s.as_str()), Some("BBBBBBBBBB"), "pos 2 wrong");
     }
 }

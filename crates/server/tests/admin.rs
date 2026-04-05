@@ -267,6 +267,9 @@ async fn test_inbox_clear_all() {
 async fn test_inbox_retry_moves_failed_to_pending() {
     let srv = TestServer::spawn().await;
 
+    // Pause the worker so it doesn't pick up and re-fail the fake file.
+    srv.client.post(srv.url("/api/v1/admin/inbox/pause")).send().await.unwrap();
+
     // Write a .gz directly into the failed dir.
     let failed_dir = srv.data_dir_path().join("inbox/failed");
     std::fs::create_dir_all(&failed_dir).unwrap();
@@ -282,10 +285,12 @@ async fn test_inbox_retry_moves_failed_to_pending() {
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(retry.retried, 1, "should retry exactly one file");
 
+    // With worker paused, the file stays in pending (not re-failed).
     let after: InboxStatusResponse = srv.client
         .get(srv.url("/api/v1/admin/inbox"))
         .send().await.unwrap().json().await.unwrap();
     assert!(after.failed.is_empty(), "failed should be empty after retry");
+    assert!(!after.pending.is_empty(), "item should be in pending after retry");
 }
 
 // ── inbox pause stops processing ──────────────────────────────────────────
