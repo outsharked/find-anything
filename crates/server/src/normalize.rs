@@ -963,20 +963,31 @@ mod tests {
     }
 
     /// Build a NormalizationSettings with a single batch-mode formatter.
-    /// Uses short timeouts (2s) so tests exercise the fallback path quickly.
+    /// Uses generous timeouts (30s) so correctness tests don't flake on loaded CI.
     #[cfg(unix)]
     fn batch_cfg(script_path: &str, ext: &str, args: Vec<&str>) -> NormalizationSettings {
         use find_common::config::FormatterConfig;
         NormalizationSettings {
             max_line_length: 10_000,
-            batch_formatter_timeout_secs: 2,
-            per_file_formatter_timeout_secs: 2,
+            batch_formatter_timeout_secs: 30,
+            per_file_formatter_timeout_secs: 30,
             formatters: vec![FormatterConfig {
                 path: script_path.to_string(),
                 args: args.into_iter().map(str::to_string).collect(),
                 extensions: vec![ext.to_string()],
                 mode: find_common::config::FormatterMode::Batch,
             }],
+        }
+    }
+
+    /// Like `batch_cfg` but with a 2-second timeout so `batch_timeout_falls_back_to_per_file`
+    /// exercises the timeout path quickly without waiting 30 seconds.
+    #[cfg(unix)]
+    fn batch_cfg_tight_timeout(script_path: &str, ext: &str, args: Vec<&str>) -> NormalizationSettings {
+        NormalizationSettings {
+            batch_formatter_timeout_secs: 2,
+            per_file_formatter_timeout_secs: 2,
+            ..batch_cfg(script_path, ext, args)
         }
     }
 
@@ -1116,10 +1127,10 @@ fi
     #[test]
     fn batch_timeout_falls_back_to_per_file() {
         // The script hangs when given multiple files → triggers the batch timeout
-        // (2s in test builds).  The per-file fallback then re-runs the formatter
-        // on each file individually, where it finds exactly one file and succeeds.
+        // (2s).  The per-file fallback then re-runs the formatter on each file
+        // individually, where it finds exactly one file and succeeds.
         let (_dir, script) = make_script("hang_multi.sh", HANG_MULTI_BATCH);
-        let cfg = batch_cfg(script.to_str().unwrap(), "js", vec!["{dir}"]);
+        let cfg = batch_cfg_tight_timeout(script.to_str().unwrap(), "js", vec!["{dir}"]);
 
         let mut files = vec![
             make_batch_entry(0, "a.js", &["console.log('a')"]),
