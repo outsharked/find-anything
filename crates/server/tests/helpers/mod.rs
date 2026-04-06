@@ -74,9 +74,13 @@ impl TestServer {
     }
 
     /// Poll GET /api/v1/stats until both inbox_pending and archive_queue are 0.
-    /// Panics after 10 seconds.
+    /// Requires two consecutive idle readings 100 ms apart to guard against the
+    /// transient window between the worker finishing one file and picking up the
+    /// next (during which counts are briefly 0 even though more work is pending).
+    /// Panics after 30 seconds.
     pub async fn wait_for_idle(&self) {
         let deadline = Instant::now() + Duration::from_secs(30);
+        let mut consecutive_idle = 0u32;
         loop {
             let resp: StatsResponse = self
                 .client
@@ -89,7 +93,12 @@ impl TestServer {
                 .expect("stats json");
 
             if resp.inbox_pending == 0 && resp.archive_queue == 0 {
-                return;
+                consecutive_idle += 1;
+                if consecutive_idle >= 2 {
+                    return;
+                }
+            } else {
+                consecutive_idle = 0;
             }
             if Instant::now() >= deadline {
                 panic!("worker did not become idle within 30s (inbox_pending={}, archive_queue={})",
