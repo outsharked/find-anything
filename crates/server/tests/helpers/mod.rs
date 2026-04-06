@@ -57,6 +57,7 @@ impl TestServer {
         );
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client");
 
