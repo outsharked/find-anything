@@ -107,7 +107,7 @@ pub fn install_service(config_path: &Path, service_name: &str) -> Result<()> {
     }
 
     let service = manager
-        .create_service(&service_info, ServiceAccess::CHANGE_CONFIG)
+        .create_service(&service_info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
         .context("creating Windows service")?;
 
     service
@@ -151,12 +151,13 @@ pub fn install_service(config_path: &Path, service_name: &str) -> Result<()> {
         .set_value(REGISTRY_VALUE_NAME, &run_value)
         .context("writing tray app to Run registry")?;
 
-    println!("Service '{service_name}' installed successfully.");
+    // Start the service immediately so the user doesn't have to reboot.
+    service
+        .start(&[] as &[&std::ffi::OsStr])
+        .context("starting service after install")?;
+
+    println!("Service '{service_name}' installed and started.");
     println!("Tray app registered to start at login: {run_value}");
-    println!();
-    println!("Start the service now with:");
-    println!("  sc start {service_name}");
-    println!("Or reboot for auto-start.");
 
     Ok(())
 }

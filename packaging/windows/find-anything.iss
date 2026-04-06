@@ -42,7 +42,8 @@ UninstallDisplayIcon={app}\find-tray.exe
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-; (no optional tasks — scan-and-start is a [Run] entry)
+Name: "startservice"; Description: "Start file watcher service (recommended)"
+Name: "runscan";     Description: "Run full scan now (indexes all files — takes a few minutes)"
 
 [Files]
 Source: "{#BinDir}\find-anything.exe";       DestDir: "{app}"; Flags: ignoreversion
@@ -84,15 +85,8 @@ Root: HKCR; Subkey: "findanything";                       ValueType: string; Val
 Root: HKCR; Subkey: "findanything\shell\open\command";    ValueType: string; ValueName: "";           ValueData: """{app}\find-handler.exe"" ""%1"""
 
 [Run]
-; find-watch install and find-tray launch are triggered from CurStepChanged
-; (ssPostInstall) below so they run automatically after client.toml is written
-; without appearing as checkboxes on the Finish page.
-
-; Optional: run an initial full scan (the only checkbox on the Finish page).
-Filename: "{app}\find-scan.exe"; \
-  Parameters: "--config ""{%USERPROFILE}\.config\FindAnything\client.toml"""; \
-  Description: "Run full scan now (indexes all files — takes a few minutes)"; \
-  Flags: postinstall skipifsilent
+; Both tasks (service start, full scan) are handled in CurStepChanged(ssPostInstall)
+; via [Tasks] checkboxes so they run in the same elevated context.
 
 [UninstallRun]
 Filename: "{app}\find-watch.exe"; Parameters: "uninstall"; Flags: runhidden; \
@@ -102,13 +96,14 @@ Filename: "{app}\find-watch.exe"; Parameters: "uninstall"; Flags: runhidden; \
 
 var
   // ── Existing-config detection ─────────────────────────────────────────────
-  ExistingConfigPage: TWizardPage;
-  UseExistingCheck:   TCheckBox;
   ExistingConfigPath: string;   // full path, evaluated once in InitializeWizard
   ExistingConfigExists: Boolean;
 
   // ── Server connection page ────────────────────────────────────────────────
   ServerPage: TWizardPage;
+  ServerUpgradeLabel1: TLabel;
+  ServerUpgradePathEdit: TEdit;
+  ServerUpgradeLabel2: TLabel;
   ServerUrlEdit: TEdit;
   TokenEdit: TEdit;
   SourceNameEdit: TEdit;
@@ -182,6 +177,55 @@ begin
       S := S + UserProfile[I];
   end;
   Result := S;
+end;
+
+// ── Helper: extract a quoted string value from a TOML line ────────────────────
+// e.g. 'url   = "http://..."'  →  'http://...'
+
+function ParseTomlString(Line: string): string;
+var
+  I, J: Integer;
+begin
+  Result := '';
+  I := Pos('"', Line);
+  if I = 0 then Exit;
+  J := Length(Line);
+  while (J > I) and (Line[J] <> '"') do Dec(J);
+  if J > I then
+    Result := Copy(Line, I + 1, J - I - 1);
+end;
+
+// ── Helper: read URL, token, and source name from an existing client.toml ─────
+
+procedure ReadExistingConfig(var Url, Token, SourceName: string);
+var
+  Lines: TStringList;
+  I: Integer;
+  Line: string;
+begin
+  Url := '';
+  Token := '';
+  SourceName := '';
+  if not FileExists(ExistingConfigPath) then Exit;
+
+  Lines := TStringList.Create;
+  try
+    Lines.LoadFromFile(ExistingConfigPath);
+    for I := 0 to Lines.Count - 1 do
+    begin
+      Line := Trim(Lines[I]);
+      if (Line = '') or (Line[1] = '#') then Continue;
+      // Match key at start of line (handles extra spaces around =)
+      if (Url = '') and (Pos('url', Line) = 1) and (Pos('=', Line) > 0) then
+        Url := ParseTomlString(Line)
+      else if (Token = '') and (Pos('token', Line) = 1) and (Pos('=', Line) > 0) then
+        Token := ParseTomlString(Line)
+      else if (SourceName = '') and (Pos('name', Line) = 1) and (Pos('=', Line) > 0) then
+        SourceName := ParseTomlString(Line);
+    end;
+  finally
+    Lines.Free;
+  end;
 end;
 
 // ── Helper: build client.toml content from current page inputs ────────────────
@@ -264,97 +308,101 @@ end;
 
 procedure InitializeWizard;
 var
-  LabelFound, LabelPath, LabelUrl, LabelToken, LabelSourceName,
-  LabelConfig: TLabel;
+  LabelUrl, LabelToken, LabelSourceName, LabelConfig: TLabel;
+  ExistingUrl, ExistingToken, ExistingSourceName: string;
 begin
   ExistingConfigPath := ExpandConstant('{%USERPROFILE}') +
                         '\.config\FindAnything\client.toml';
   ExistingConfigExists := FileExists(ExistingConfigPath);
 
-  // ── Page 0: Existing configuration (shown only on upgrades) ───────────────
-  // Created first so it appears before the Server page in the wizard flow.
-  // ShouldSkipPage hides it on fresh installs.
-  ExistingConfigPage := CreateCustomPage(wpSelectDir,
-    'Existing Configuration Found',
-    'A configuration file from a previous installation was detected.');
-
-  LabelFound := TLabel.Create(ExistingConfigPage);
-  LabelFound.Caption :=
-    'Find Anything is already configured on this machine. You can keep ' +
-    'your existing settings or reconfigure from scratch.';
-  LabelFound.Parent := ExistingConfigPage.Surface;
-  LabelFound.Top := 8;
-  LabelFound.Left := 0;
-  LabelFound.Width := ExistingConfigPage.SurfaceWidth;
-  LabelFound.AutoSize := False;
-  LabelFound.Height := 64;
-  LabelFound.WordWrap := True;
-
-  LabelPath := TLabel.Create(ExistingConfigPage);
-  LabelPath.Caption := 'Existing config file: ' + ExistingConfigPath;
-  LabelPath.Parent := ExistingConfigPage.Surface;
-  LabelPath.Top := 80;
-  LabelPath.Left := 0;
-  LabelPath.Width := ExistingConfigPage.SurfaceWidth;
-  LabelPath.AutoSize := False;
-  LabelPath.Height := 40;
-  LabelPath.WordWrap := True;
-
-  UseExistingCheck := TCheckBox.Create(ExistingConfigPage);
-  UseExistingCheck.Caption :=
-    'Keep existing configuration (skip server setup)';
-  UseExistingCheck.Parent := ExistingConfigPage.Surface;
-  UseExistingCheck.Top := 132;
-  UseExistingCheck.Left := 0;
-  UseExistingCheck.Width := ExistingConfigPage.SurfaceWidth;
-  UseExistingCheck.Height := 24;
-  UseExistingCheck.Checked := True; // safe default: don't overwrite
-
   // ── Page 1: Server connection ──────────────────────────────────────────────
-  ServerPage := CreateCustomPage(ExistingConfigPage.ID, 'Server Connection',
-    'Enter the URL and bearer token for your find-anything server.');
+  ServerPage := CreateCustomPage(wpSelectDir, 'Client Configuration',
+    'Enter the URL and token for your find-anything server.');
+
+  // All Top values passed through ScaleY() so the layout is DPI-aware.
+  // Base positions assume 96 DPI / default font; ScaleY adjusts for larger fonts.
+
+  // Upgrade notice — three rows, hidden on fresh installs.
+  ServerUpgradeLabel1 := TLabel.Create(ServerPage);
+  ServerUpgradeLabel1.Caption := 'An existing configuration was found:';
+  ServerUpgradeLabel1.Parent := ServerPage.Surface;
+  ServerUpgradeLabel1.Top := ScaleY(0);
+  ServerUpgradeLabel1.Left := 0;
+  ServerUpgradeLabel1.AutoSize := True;
+  ServerUpgradeLabel1.Visible := ExistingConfigExists;
+
+  ServerUpgradePathEdit := TEdit.Create(ServerPage);
+  ServerUpgradePathEdit.Parent := ServerPage.Surface;
+  ServerUpgradePathEdit.Top := ScaleY(16);
+  ServerUpgradePathEdit.Left := 0;
+  ServerUpgradePathEdit.Width := ServerPage.SurfaceWidth;
+  ServerUpgradePathEdit.Text := ExistingConfigPath;
+  ServerUpgradePathEdit.ReadOnly := True;
+  ServerUpgradePathEdit.TabStop := False;
+  ServerUpgradePathEdit.Visible := ExistingConfigExists;
+
+  ServerUpgradeLabel2 := TLabel.Create(ServerPage);
+  ServerUpgradeLabel2.Caption := 'The fields below have been pre-populated — update as needed.';
+  ServerUpgradeLabel2.Parent := ServerPage.Surface;
+  ServerUpgradeLabel2.Top := ScaleY(40);
+  ServerUpgradeLabel2.Left := 0;
+  ServerUpgradeLabel2.AutoSize := True;
+  ServerUpgradeLabel2.Visible := ExistingConfigExists;
 
   LabelUrl := TLabel.Create(ServerPage);
   LabelUrl.Caption := 'Server URL:';
   LabelUrl.Parent := ServerPage.Surface;
-  LabelUrl.Top := 8;
+  LabelUrl.Top := ScaleY(64);
   LabelUrl.Left := 0;
   LabelUrl.AutoSize := True;
 
   ServerUrlEdit := TEdit.Create(ServerPage);
   ServerUrlEdit.Parent := ServerPage.Surface;
-  ServerUrlEdit.Top := 28;
+  ServerUrlEdit.Top := ScaleY(80);
   ServerUrlEdit.Left := 0;
   ServerUrlEdit.Width := ServerPage.SurfaceWidth;
-  ServerUrlEdit.Text := 'http://localhost:8765';
 
   LabelToken := TLabel.Create(ServerPage);
   LabelToken.Caption := 'Bearer Token:';
   LabelToken.Parent := ServerPage.Surface;
-  LabelToken.Top := 72;
+  LabelToken.Top := ScaleY(116);
   LabelToken.Left := 0;
   LabelToken.AutoSize := True;
 
   TokenEdit := TEdit.Create(ServerPage);
   TokenEdit.Parent := ServerPage.Surface;
-  TokenEdit.Top := 92;
+  TokenEdit.Top := ScaleY(132);
   TokenEdit.Left := 0;
   TokenEdit.Width := ServerPage.SurfaceWidth;
-  TokenEdit.PasswordChar := '*';
 
   LabelSourceName := TLabel.Create(ServerPage);
   LabelSourceName.Caption := 'Source Name (label for this machine''s files on the server):';
   LabelSourceName.Parent := ServerPage.Surface;
-  LabelSourceName.Top := 136;
+  LabelSourceName.Top := ScaleY(168);
   LabelSourceName.Left := 0;
   LabelSourceName.AutoSize := True;
 
   SourceNameEdit := TEdit.Create(ServerPage);
   SourceNameEdit.Parent := ServerPage.Surface;
-  SourceNameEdit.Top := 156;
+  SourceNameEdit.Top := ScaleY(184);
   SourceNameEdit.Left := 0;
   SourceNameEdit.Width := ServerPage.SurfaceWidth;
-  SourceNameEdit.Text := GetEnv('COMPUTERNAME');
+
+  // Pre-populate from existing config on upgrade; use defaults on fresh install.
+  if ExistingConfigExists then
+  begin
+    ReadExistingConfig(ExistingUrl, ExistingToken, ExistingSourceName);
+    if ExistingUrl <> '' then ServerUrlEdit.Text := ExistingUrl
+    else ServerUrlEdit.Text := 'http://localhost:8765';
+    TokenEdit.Text := ExistingToken;
+    if ExistingSourceName <> '' then SourceNameEdit.Text := ExistingSourceName
+    else SourceNameEdit.Text := GetEnv('COMPUTERNAME');
+  end
+  else
+  begin
+    ServerUrlEdit.Text := 'http://localhost:8765';
+    SourceNameEdit.Text := GetEnv('COMPUTERNAME');
+  end;
 
   // ── Page 2: Review / edit generated config ────────────────────────────────
   ConfigPage := CreateCustomPage(ServerPage.ID, 'Review Configuration',
@@ -363,16 +411,16 @@ begin
   LabelConfig := TLabel.Create(ConfigPage);
   LabelConfig.Caption := 'Configuration file (client.toml) — edit if needed:';
   LabelConfig.Parent := ConfigPage.Surface;
-  LabelConfig.Top := 8;
+  LabelConfig.Top := ScaleY(0);
   LabelConfig.Left := 0;
   LabelConfig.AutoSize := True;
 
   ConfigMemo := TMemo.Create(ConfigPage);
   ConfigMemo.Parent := ConfigPage.Surface;
-  ConfigMemo.Top := 28;
+  ConfigMemo.Top := ScaleY(20);
   ConfigMemo.Left := 0;
   ConfigMemo.Width := ConfigPage.SurfaceWidth;
-  ConfigMemo.Height := ConfigPage.SurfaceHeight - 40;
+  ConfigMemo.Height := ConfigPage.SurfaceHeight - ScaleY(20);
   ConfigMemo.ScrollBars := ssVertical;
   ConfigMemo.Font.Name := 'Courier New';
   ConfigMemo.Font.Size := 9;
@@ -383,22 +431,6 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-
-  // On a fresh install, hide the "existing config" page entirely.
-  if (PageID = ExistingConfigPage.ID) and (not ExistingConfigExists) then
-  begin
-    Result := True;
-    Exit;
-  end;
-
-  // If the user chose to keep their existing config, skip the two
-  // setup pages — no need to re-enter server URL, token, or source name.
-  if ExistingConfigExists and UseExistingCheck.Checked then
-  begin
-    if (PageID = ServerPage.ID) or
-       (PageID = ConfigPage.ID) then
-      Result := True;
-  end;
 end;
 
 // ── Validate inputs before leaving pages ─────────────────────────────────────
@@ -450,14 +482,10 @@ begin
 
   if CurStep = ssPostInstall then
   begin
-    // Skip writing the config if the user chose to keep their existing one.
-    if not (ExistingConfigExists and UseExistingCheck.Checked) then
-    begin
-      ConfigDir := ExpandConstant('{%USERPROFILE}\.config\FindAnything');
-      ForceDirectories(ConfigDir);
-      ConfigPath := ConfigDir + '\client.toml';
-      SaveStringToFile(ConfigPath, ConfigMemo.Text, False);
-    end;
+    ConfigDir := ExpandConstant('{%USERPROFILE}\.config\FindAnything');
+    ForceDirectories(ConfigDir);
+    ConfigPath := ConfigDir + '\client.toml';
+    SaveStringToFile(ConfigPath, ConfigMemo.Text, False);
 
     ConfigPath := ExpandConstant('{%USERPROFILE}\.config\FindAnything\client.toml');
 
@@ -470,16 +498,23 @@ begin
     Exec('taskkill.exe', '/F /IM find-tray.exe',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-    // Stop and remove any existing service before registering the new one.
-    // On a fresh install this is a no-op; on upgrade it ensures a clean restart.
+    // Stop and remove any existing service. On a fresh install this is a no-op.
     Exec(ExpandConstant('{app}\find-watch.exe'),
          'uninstall',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-    // Register and start the Windows service automatically (no checkbox).
-    Exec(ExpandConstant('{app}\find-watch.exe'),
-         '--config "' + ConfigPath + '" install',
-         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // Register and start the service if the user left the task checkbox checked.
+    // Must run here (ssPostInstall) rather than as a [Run] postinstall entry
+    // because postinstall entries run de-elevated and SCM requires admin access.
+    if WizardIsTaskSelected('startservice') then
+      Exec(ExpandConstant('{app}\find-watch.exe'),
+           '--config "' + ConfigPath + '" install',
+           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    if WizardIsTaskSelected('runscan') then
+      Exec(ExpandConstant('{app}\find-scan.exe'),
+           '--config "' + ConfigPath + '"',
+           '', SW_HIDE, ewNoWait, ResultCode);
 
     // Launch the tray icon automatically (no checkbox).
     Exec(ExpandConstant('{app}\find-tray.exe'),
@@ -495,8 +530,7 @@ begin
   if CurPageID = wpFinished then
     WizardForm.FinishedLabel.Caption :=
       'Installation complete.' + #13#10 + #13#10 +
-      'The file watcher service has been started and the Find Anything ' +
-      'tray icon is now running.' + #13#10 + #13#10 +
-      'To index your files, right-click the tray icon and choose ' +
-      '"Run Full Scan".';
+      'The file watcher service is running and the tray icon is active.' + #13#10 + #13#10 +
+      'To index your files at any time, right-click the tray icon and ' +
+      'choose "Run Full Scan".';
 end;

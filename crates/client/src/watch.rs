@@ -209,7 +209,12 @@ where
         let fresh_creates = std::mem::take(&mut first_seen_creates);
 
         // Detect rename pairs and process them; removes paired entries from batch.
-        process_renames(&mut batch, source_map, scan, extractor_dir, api, &fresh_creates).await;
+        // Returns new directory paths from dir-rename pairs that need inotify watches.
+        let dirs_needing_watch =
+            process_renames(&mut batch, source_map, scan, extractor_dir, api, &fresh_creates).await;
+        for dir in &dirs_needing_watch {
+            register_dir(dir);
+        }
 
         for (abs_path, kind) in batch {
             // Skip paths that contain '::' — those are archive member paths
@@ -702,6 +707,12 @@ async fn handle_delete(
 /// Detect rename pairs in a debounce-flush batch and send the appropriate
 /// `BulkRequest`s. Removes handled entries from `batch` so the caller's
 /// fallback loop can process remaining events with standard delete/update logic.
+///
+/// Returns the new directory paths that were part of directory rename pairs.
+/// The caller must call `register_dir` on each returned path so that an
+/// inotify watch is registered for the new location — the rename detection
+/// removes `new_dir` from the batch, which would otherwise prevent the main
+/// event loop from calling `register_dir` for it.
 async fn process_renames(
     batch: &mut HashMap<PathBuf, AccumulatedKind>,
     source_map: &SourceMap,
@@ -709,7 +720,7 @@ async fn process_renames(
     extractor_dir: &Option<String>,
     api: &ApiClient,
     first_seen_creates: &HashSet<PathBuf>,
-) {
+) -> Vec<PathBuf> {
     // --- Directory rename detection ---
     // Look for a Delete path paired with an Update path that is a directory,
     // in the same parent directory and the same source (1:1 per parent).
@@ -743,6 +754,8 @@ async fn process_renames(
     }
 
     let mut handled: HashSet<PathBuf> = HashSet::new();
+    // New directory locations from rename pairs that need inotify watches registered.
+    let mut dirs_needing_watch: Vec<PathBuf> = Vec::new();
 
     for (parent, del_paths) in &del_by_parent {
         let Some(upd_dirs) = dir_upd_by_parent.get(parent) else { continue };
@@ -781,6 +794,11 @@ async fn process_renames(
         {
             warn!("dir rename {} → {}: {e:#}", old_dir.display(), new_dir.display());
         }
+
+        // The kernel automatically removes the inotify watch on old_dir when it
+        // is renamed/deleted. new_dir has no watch yet — record it so the caller
+        // can call register_dir on it.
+        dirs_needing_watch.push(new_dir.clone());
 
         // Mark the directory entries and all child events as handled.
         handled.insert(old_dir.clone());
@@ -898,6 +916,8 @@ async fn process_renames(
     for p in &file_handled {
         batch.remove(p);
     }
+
+    dirs_needing_watch
 }
 
 /// Walk `new_dir` on disk, re-evaluate include/exclude rules for each file,
