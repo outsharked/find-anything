@@ -35,8 +35,11 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
-      - name: Test
-        run: cargo test --workspace
+      - name: Test (lib)
+        run: cargo test --workspace --lib -- --test-threads=1
+
+      - name: Test (integration)
+        run: cargo test --workspace --tests
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
