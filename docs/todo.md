@@ -5,11 +5,10 @@ Stream of consciousness for bugfixes and features approaching V1
 ## Bugs/Enhancements
 
 [ ] Find .pages, .mumbers, .key files for integration tests
-[ ] Rotate image buttoins
 [ ] For known keywords, highlight it when the : is type. Do typeahead pick list for valid options where appropriate (type), desktop only
 [ ] Add 'show log' for windows service
 [ ] FEAT: Ask if install as user or root, then choose location to install.
-    - Ask if installing client or server.
+list    - Ask if installing client or server.
 
 [ ] FEAT: Duplicate management view?
 [ ] BUG: App ID is not persisted, each rebuild makes it not show up in pinned taskbar items
@@ -51,6 +50,7 @@ use the content
 
 ### Completed Items
 
+[x] FEAT: Rotate image buttons
 [x] BUG: Adding a new directory doesn't get watched
 [x] CHORE: Optimize "tree" queries- it makes one query per level of the tree view
 [x] BUG don't show "results" button when we deeplinked to something

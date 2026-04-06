@@ -15,10 +15,10 @@ Read the key source files, then produce a **prioritised findings report**. Do no
 Read these files to understand the current structure:
 
 **Server core:**
-- `crates/server/src/worker.rs`
-- `crates/server/src/archive.rs`
-- `crates/server/src/db/mod.rs`
-- `crates/server/src/routes.rs` (or `crates/server/src/routes/` directory)
+- `crates/server/src/worker/` (glob all .rs files — was split from a monolith)
+- `crates/server/src/db/` (glob all .rs files)
+- `crates/server/src/routes/` (glob all .rs files)
+- `crates/server/src/normalize.rs`
 
 **Client core:**
 - `crates/client/src/scan.rs`
@@ -29,6 +29,7 @@ Read these files to understand the current structure:
 - `crates/common/src/api.rs`
 - `crates/common/src/config.rs`
 - `crates/extract-types/src/extractor_config.rs`
+- `crates/extractors/dispatch/src/lib.rs`
 
 **Web UI:**
 - `web/src/routes/+page.svelte`
@@ -43,56 +44,73 @@ Also run `find crates -name "*.rs" | xargs wc -l | sort -rn | head -20` to ident
 For each finding, record: **location** (file:line if possible), **category**, **severity** (High / Medium / Low), and a **concrete recommendation**.
 
 ### 1. Function/method argument bloat (> 4 parameters)
-Long argument lists are a symptom of missing config structs or missing abstraction. Look especially in:
-- Worker processing functions (phase1, phase2 callsites)
-- Extractor lib.rs extract functions
-- DB helper functions
+Long argument lists are a symptom of missing config structs or missing abstraction.
 
-**Flag:** any function with ≥ 5 parameters that could instead receive a struct.
+**Flag:** any function with ≥ 5 parameters that could instead receive a struct. Pay special attention to:
+- Boolean parameters — `fn foo(skip: bool)` makes call sites unreadable. Flag any `bool` param that could be an enum variant or a separate method.
+- Parameters that always travel together — two or more params that appear at every call site together belong in a struct.
 
 ### 2. Deep dependency chains / tight coupling
 - Does any single file import from 10+ modules?
 - Do route handlers reach directly into `db::` bypassing the worker? (Invariant: only worker writes to SQLite.)
 - Do extractors import anything beyond `find-extract-types`?
-- Does `worker.rs` directly instantiate archive logic, or go through a clean interface?
+- Is dispatch order in `crates/extractors/dispatch/src/lib.rs` a load-bearing invariant with no type enforcement?
 
-### 3. Complex logic without tests
+### 3. Panic risk in production code
+- Bare `unwrap()` or `expect()` calls **outside** `#[test]` or `#[cfg(test)]` blocks. Each is a latent panic.
+- `unwrap_or_default()` on non-trivial types where the default silently masks an error.
+- Index operations (`slice[i]`) without bounds checks in hot paths.
+
+### 4. Complex logic without tests
 Focus on non-trivial logic that has no corresponding `#[test]` block or integration test:
-- Archive chunk routing and ZIP rewrite logic in `archive.rs`
-- Inbox worker batch processing (phase 1 and phase 2)
+- Worker phase 1 and phase 2 processing
 - `scan.rs` subdirectory-rescan and archive sentinel logic
 - `watch.rs` accumulator collapse rules (`Create+Modify`, `Delete+Create`, directory rename detection)
-- `db.rs` functions for pruning, deduplication, FTS5 population
+- `db/` functions for pruning, deduplication, FTS5 population
 
 **For each:** describe what could go wrong with no test coverage and what a useful test would exercise.
 
-### 4. Duplication of complex logic
+### 5. Duplication of complex logic
 Look for logic implemented more than once across the codebase that could drift:
-- Chunk read paths: does `routes/search.rs`, `routes/context.rs`, and `routes/file.rs` each open ZIPs independently? Is the cache logic duplicated?
-- Inline-content fallback (SQLite vs ZIP): is the branch duplicated across routes?
+- Content read paths across multiple routes — do they share a helper or duplicate open/seek/decode logic?
 - Archive member path parsing (`::` separator): is it split/joined in multiple places?
-- Batch submission logic: is there any duplication between `scan.rs` and `watch.rs` batch assembly?
+- Batch submission logic: is there duplication between `scan.rs` and `watch.rs`?
+- Magic constants (numeric literals, string sentinels) that appear in multiple files instead of being imported from a single definition.
 
-### 5. SOLID violations
-- **Single Responsibility:** Is `worker.rs` doing too many things? (SQLite writes, activity logging, rename handling, archive queuing, logging, error handling all in one file)
+### 6. Implicit ordering dependencies not enforced by types
+Look for sequencing logic that is maintained only by convention or comments, not enforced by the type system:
+- "Must do X before Y" relationships where doing them in the wrong order compiles fine but corrupts state.
+- Multi-phase pipelines where phase identity is tracked by convention (e.g. naming) rather than typestate or separate types.
+- Shared mutable state that is valid only within a certain window.
+
+### 7. SOLID violations
+- **Single Responsibility:** Does any module handle I/O, business logic, and error reporting all at once?
 - **Open/Closed:** If a new file kind needs special handling, how many files need to change?
-- **Dependency Inversion:** Do high-level modules (worker, routes) depend on concrete implementations rather than traits/interfaces?
+- **Dependency Inversion:** Do high-level modules depend on concrete implementations rather than traits/interfaces?
 - **Interface Segregation:** Are any structs/enums used as catch-alls that force callers to handle fields they don't care about?
 
-### 6. Error handling quality
-- Functions that swallow errors with `unwrap_or_default()` or `let _ =` in non-trivial paths
+### 8. Error handling quality
+- Functions that swallow errors with `let _ =` in non-trivial paths
 - Large `match` blocks on `Result`/`Option` that obscure the happy path
 - Errors logged but not propagated where propagation would enable retry or caller decision
 
-### 7. State management complexity (web UI)
-In `+page.svelte`:
-- How many reactive variables (`$state`, `let`, writable stores) track "the same conceptual thing"?
-- Is there a clear state machine or is control flow spread across reactive blocks?
-- Are any derived values recomputed in multiple places?
+### 9. Concurrency and blocking
+- `spawn_blocking` closures that clone large data structures or `Arc<dyn Trait>` by value instead of passing a reference — signals a design issue and wastes memory.
+- Blocking I/O (file reads, DB queries) called directly in async context without `spawn_blocking`.
+- Shared state protected by `Mutex` where the critical section is larger than necessary.
 
-### 8. Oversized files
+### 10. State management complexity (web UI)
+In `+page.svelte`:
+- How many reactive variables track "the same conceptual thing"? Group them and flag redundancy.
+- Is there a clear state machine or is control flow spread across reactive blocks?
+- Are derived values recomputed in multiple places rather than declared once?
+
+### 11. Oversized files
 Any `.rs` file > 600 lines is a candidate for splitting. Any `.svelte` file > 400 lines similarly.
-Identify what logical units could be extracted.
+Identify what logical units could be extracted and where they would live.
+
+### 12. Evidence verification gate
+Before recording any finding, verify it with direct evidence from the code you read. Do not report a problem you did not actually observe. If you are uncertain whether something is an issue, say so explicitly and describe what you saw.
 
 ---
 
@@ -104,8 +122,8 @@ Present findings as a **prioritised list**, grouped by severity. Use this struct
 ## High Priority
 
 ### [H1] Title — file.rs:line
-**Category:** (Argument Bloat / Duplication / Missing Tests / Coupling / SOLID / Error Handling / UI Complexity)
-**Problem:** Concrete description of the issue.
+**Category:** (Argument Bloat / Boolean Param / Panic Risk / Duplication / Missing Tests / Coupling / Implicit Ordering / SOLID / Error Handling / Concurrency / UI Complexity / Oversized File)
+**Problem:** Concrete description of the issue, with the actual code or pattern observed.
 **Risk:** What could go wrong or is already painful.
 **Recommendation:** Specific, actionable fix.
 
