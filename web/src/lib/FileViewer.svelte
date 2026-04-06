@@ -11,7 +11,7 @@
 	import IconWrapOn from '$lib/icons/IconWrapOn.svelte';
 	import IconWrapOff from '$lib/icons/IconWrapOff.svelte';
 	import { getFile, createLink } from '$lib/api';
-	import { fileViewPageSize, contentLineStart, tabWidth as serverTabWidth } from '$lib/settingsStore';
+	import { fileViewPageSize, tabWidth as serverTabWidth } from '$lib/settingsStore';
 	import { highlightFile } from '$lib/highlight';
 	import DirListing from './DirListing.svelte';
 	import AudioViewer from './AudioViewer.svelte';
@@ -386,10 +386,9 @@
 		if (!loadingBackward && !noMoreBackward && isNearTop()) loadBackward();
 	}
 
-	/** Adjust raw line_offsets from server to display line numbers. */
+	/** Adjust raw line_offsets from server (LINE_CONTENT_START=2) to display line numbers (1-based). */
 	function adjustOffsets(raw: number[]): number[] {
-		const adj = $contentLineStart - 1;
-		return adj > 0 ? raw.map(n => n - adj) : raw;
+		return raw.map(n => n - 1);
 	}
 
 	/** Rebuild rawContent / highlightedCode / lineOffsets from accumulated lines. */

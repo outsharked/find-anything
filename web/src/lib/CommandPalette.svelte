@@ -23,6 +23,7 @@
 	let inputEl: HTMLInputElement;
 	let results: SourcedFile[] = [];
 	let loading = false;
+	let stale = false;
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	$: isAll = totalSourceCount > 1 && sources.length >= totalSourceCount;
@@ -51,6 +52,7 @@
 
 	function scheduleSearch(q: string) {
 		if (debounceTimer) clearTimeout(debounceTimer);
+		stale = true;
 		debounceTimer = setTimeout(() => fetchResults(q), 500);
 	}
 
@@ -70,6 +72,7 @@
 			// partial failures silently yield no items for that source
 		} finally {
 			loading = false;
+			stale = false;
 		}
 	}
 
@@ -136,7 +139,7 @@
 					on:keydown={onKeydown}
 				/>
 			</div>
-			<div class="cp-results">
+			<div class="cp-results" class:stale>
 				{#if results.length === 0 && loading}
 					<div class="cp-status">Loading…</div>
 				{:else if results.length === 0}
@@ -238,6 +241,10 @@
 		max-height: 360px;
 		overflow-y: auto;
 		overflow-x: hidden;
+	}
+
+	.cp-results.stale {
+		opacity: 0.4;
 	}
 
 	.cp-status {

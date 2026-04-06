@@ -128,13 +128,18 @@ impl TestServer {
     }
 
     pub async fn post_bulk(&self, req: &BulkRequest) {
+        let status = self.post_bulk_status(req).await;
+        assert_eq!(status.as_u16(), 202, "expected 202 from /api/v1/bulk");
+    }
+
+    /// POST to /api/v1/bulk and return the HTTP status code without asserting.
+    pub async fn post_bulk_status(&self, req: &BulkRequest) -> reqwest::StatusCode {
         let json = serde_json::to_vec(req).expect("serialize bulk");
         let mut enc = GzEncoder::new(Vec::new(), Compression::default());
         enc.write_all(&json).expect("gzip write");
         let gz = enc.finish().expect("gzip finish");
 
-        let status = self
-            .client
+        self.client
             .post(self.url("/api/v1/bulk"))
             .header("Content-Encoding", "gzip")
             .header("Content-Type", "application/json")
@@ -142,9 +147,7 @@ impl TestServer {
             .send()
             .await
             .expect("bulk request")
-            .status();
-
-        assert_eq!(status.as_u16(), 202, "expected 202 from /api/v1/bulk");
+            .status()
     }
 }
 

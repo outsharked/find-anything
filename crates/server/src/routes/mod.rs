@@ -216,14 +216,14 @@ pub(super) fn resolve_source_path(
     Ok((canonical_root, canonical_full))
 }
 
-/// Convert a `Vec<ContextLine>` into `(start, match_index, Vec<String>)`.
+/// Convert a `Vec<ContextLine>` into `(start, match_index, Vec<ContextLine>)`.
 pub(super) fn compact_lines(
     lines: Vec<find_common::api::ContextLine>,
     center: usize,
-) -> (usize, Option<usize>, Vec<String>) {
+) -> (usize, Option<usize>, Vec<find_common::api::ContextLine>) {
     let start = lines.first().map_or(0, |l| l.line_number);
     let match_index = lines.iter().position(|l| l.line_number == center);
-    (start, match_index, lines.into_iter().map(|l| l.content).collect())
+    (start, match_index, lines)
 }
 
 // ── GET /api/v1/metrics ────────────────────────────────────────────────────────
