@@ -11,6 +11,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Document mode shows all matching lines** — `doc:` search now returns one result per matching line (any keyword) for each qualifying file, rather than a single representative. Lines are capped at 20 per file; a `+` badge on the hit counter indicates truncation. Hits are sorted by line number and navigable via chevrons.
+
 - **`cross_filesystems` config option** — `[scan] cross_filesystems = false` (default) prevents the walker from descending into directories on a different device than the walk root, avoiding accidental traversal of mounted backup volumes, borg archives, network shares, and bind mounts. Set to `true` to restore the previous behaviour of crossing filesystem boundaries.
 
 - **Windows service starts immediately after install** — `install_service` now calls `service.start()` after creating the service so no reboot or manual `sc start` is needed; output message updated accordingly

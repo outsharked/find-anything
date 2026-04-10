@@ -11,7 +11,7 @@ use tokio::task::spawn_blocking;
 use find_common::api::{ContextLine, FileKind, SearchMode, SearchResponse, SearchResult};
 
 use crate::fuzzy::FuzzyScorer;
-use crate::{db, db::search::{CandidateRow, DocumentGroup}, db::DateFilter, AppState};
+use crate::{db, db::search::CandidateRow, db::DateFilter, AppState};
 
 /// A scored search result paired with its `file_id` for alias lookup.
 struct ScoredResult {
@@ -183,6 +183,7 @@ fn make_result(
         context_lines: vec![],
         duplicate_paths: vec![],
         extra_matches,
+        hits_truncated: false,
     }
 }
 
@@ -286,25 +287,52 @@ pub async fn search(
                 // Document-family modes: one result per file.
                 match mode {
                     SearchMode::Document => {
-                        let (doc_total, candidates) = db::document_candidates(&conn, &query, scoring_limit, date_filter)?;
+                        // Qualify: files containing ALL tokens.
+                        let qualifying_ids = db::document_qualifying_ids(&conn, &query, date_filter)?;
+                        let doc_total = qualifying_ids.len();
+                        if qualifying_ids.is_empty() {
+                            return Ok((0, vec![]));
+                        }
+                        let Some(or_expr) = db::build_doc_or_expr(&query) else {
+                            return Ok((0, vec![]));
+                        };
+
+                        // Fetch all lines matching any token, capped at 20 per file.
+                        const MAX_LINES_PER_FILE: usize = 20;
+                        let (candidates, truncated_ids) = db::document_all_lines(
+                            &conn, &qualifying_ids, &or_expr, MAX_LINES_PER_FILE, scoring_limit,
+                        )?;
+
+                        // Batch-fetch content for all candidate lines.
+                        let pairs: Vec<(i64, i64)> = candidates.iter()
+                            .map(|c| (c.file_id, c.line_number as i64))
+                            .collect();
+                        let content_map = db::read_content_batch(&conn, cs.as_ref(), &pairs);
+
                         let mut scorer = FuzzyScorer::new(&query, case_sensitive);
                         let result_pairs: Vec<ScoredResult> = candidates
                             .into_iter()
-                            .map(|DocumentGroup { representative: rep, members: extras }| {
-                                let file_id = rep.file_id;
-                                let score = scorer.score(&rep.content).unwrap_or(1);
-                                let extra_matches = extras.into_iter()
-                                    .map(|e| ContextLine { line_number: e.line_number, content: e.content })
-                                    .collect();
-                                ScoredResult { result: make_result(&source_name, &rep, score, extra_matches), file_id }
+                            .map(|mut c| {
+                                let file_id = c.file_id;
+                                if let Some(content) = content_map.get(&(file_id, c.line_number as i64)) {
+                                    c.content = content.clone();
+                                }
+                                let score = scorer.score(&c.content).unwrap_or(1);
+                                ScoredResult { result: make_result(&source_name, &c, score, vec![]), file_id }
                             })
                             .collect();
+
                         let file_ids: Vec<i64> = result_pairs.iter().map(|sr| sr.file_id).collect();
                         let dups_map = db::fetch_duplicates_for_file_ids(&conn, &file_ids)?;
                         let results: Vec<SearchResult> = result_pairs
                             .into_iter()
                             .map(|mut sr| {
-                                if let Some(dups) = dups_map.get(&sr.file_id) { sr.result.duplicate_paths = dups.clone(); }
+                                if let Some(dups) = dups_map.get(&sr.file_id) {
+                                    sr.result.duplicate_paths = dups.clone();
+                                }
+                                if truncated_ids.contains(&(sr.file_id)) {
+                                    sr.result.hits_truncated = true;
+                                }
                                 sr.result
                             })
                             .collect();

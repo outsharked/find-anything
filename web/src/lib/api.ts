@@ -26,6 +26,8 @@ export interface SearchResult {
 	duplicate_paths?: string[];
 	/** Additional lines where query terms were found (document mode only). */
 	extra_matches?: ContextLine[];
+	/** True when this file had more matching lines than the display cap (document mode only). */
+	hits_truncated?: boolean;
 }
 
 export interface SearchResponse {
