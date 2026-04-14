@@ -9,32 +9,33 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.7.3] - 2026-04-14
+
 ### Added
 
 - **Inbox circuit breaker** — the inbox worker now tracks consecutive request processing timeouts; after `inbox_timeout_circuit_breaker` (default 5) consecutive timeouts it automatically pauses the inbox and optionally sends an alert email via SMTP (`[alerts]` config block with `smtp_host`, `smtp_port`, `smtp_encryption`, `smtp_username`, `smtp_password`, `smtp_from`, `admin_email`). The counter resets on any successful request or manual `/api/v1/admin/inbox/resume`.
 - **SMTP alert emails** — new `[alerts]` config section supports sending a notification email when the inbox circuit breaker trips; uses `lettre` with STARTTLS (default), TLS, or plaintext; no fallback to sendmail.
-
-
-### Fixed
-
-- **Server crash (OOM) on large archive batches** — `process_request_phase1` serialised the entire normalised `BulkRequest` to a `Vec<u8>` before writing it to the `.gz` inbox file, holding the full content in memory twice simultaneously. For a large 7z batch this could double peak memory (e.g. 800 MB of extracted content → ~1.6 GB peak). Fixed by streaming directly into the `GzEncoder` via `serde_json::to_writer`.
-- **Batch formatter could hang indefinitely** — `apply_batch_formatter` called `std::process::Command::status()` with no timeout. A hung or slow prettier/biome run (e.g. a large YAML file) would block the inbox worker forever. Fixed with a 60-second timeout matching the per-file formatter pattern.
-- **Search result line numbers off-by-one near chunk boundaries** — `chunk_blob` used `current.is_empty()` to decide whether to prepend a `\n` separator. When an empty line fell exactly at a chunk boundary, `push_str("")` left `current` empty even though the line's position had been recorded as `chunk_start`. The following non-empty line then also skipped its separator, causing all subsequent blob positions to be shifted -1 relative to their FTS `line_number`s, producing wrong context lines and incorrect line number display in search results.
-- **Potential write-lock contention on startup** — idempotent `CREATE INDEX IF NOT EXISTS` statements were run inside the per-request `open()` path; under concurrent startup they could contend on SQLite's WAL mutex. Moved to `check_all_sources()` which runs once at startup under no concurrency. `idx_duplicates_file_id` also added to the v4 schema so fresh installs get it without migration.
-- **Context lines carried server-internal line numbers** — `ContextResponse.lines` was `Vec<String>` so the client had to reconstruct line numbers as `start + index`, which is incorrect for sparse files (e.g. PDFs with gaps). Each line now carries its own `line_number` in `Vec<ContextLine>`; `find-query` and the web UI both updated to use `line.line_number` directly
-- **`content_line_start` compat shim removed** — the `content_line_start` field in `/api/v1/settings` and the `contentLineStart` Svelte store were added to support old servers that used `line_number = 1` for the first content line; the current scheme (`LINE_CONTENT_START = 2`) is now assumed unconditionally
-- **Directory renames not watched after rename** — when `find-watch` detected a directory rename pair, the new directory path was removed from the batch (correct) but `register_dir` was never called for it, so the new location had no inotify watch. Changes inside the renamed directory were silently missed until the next full rescan.
-- **No loading cursor while expanding tree directories** — expanding a directory node in the file tree showed no feedback while the server request was in flight; the row, arrow, and name now show `cursor: wait` during the load
-- **Inbox worker could deadlock SQLite under lock contention** — `store.get_lines()` (a read from `blobs.db`) was called inside an open write transaction on the source DB, unnecessarily widening the write lock window. Moved the content-store read to before the transaction opens so the two databases are never locked simultaneously.
-- **Timed-out `spawn_blocking` tasks held SQLite write locks indefinitely** — dropping a `JoinHandle` from a `tokio::task::spawn_blocking` task does not cancel the underlying OS thread; a timed-out Phase 1 worker continued holding its connection (and any write lock) until it finished or was killed. Fixed by passing a `rusqlite::InterruptHandle` back to the async timeout via a oneshot channel; on timeout `handle.interrupt()` is called, causing `SQLITE_INTERRUPT` in the blocked thread so it unblocks immediately.
-- **Default inbox request timeout reduced from 1800 s to 120 s** — Phase 1 does only SQLite writes (no extraction), so 1800 s allowed a single stuck request to block the inbox for 30 minutes before the circuit breaker could trip; 120 s is generous given the 30 s SQLite busy timeout.
-- **Document mode shows all matching lines** — `doc:` search now returns one result per matching line (any keyword) for each qualifying file, rather than a single representative. Lines are capped at 20 per file; a `+` badge on the hit counter indicates truncation. Hits are sorted by line number and navigable via chevrons.
 - **`cross_filesystems` config option** — `[scan] cross_filesystems = false` (default) prevents the walker from descending into directories on a different device than the walk root, avoiding accidental traversal of mounted backup volumes, borg archives, network shares, and bind mounts. Set to `true` to restore the previous behaviour of crossing filesystem boundaries.
 - **No-auth server support** — the web UI now attempts to connect without a token first; `initialLoad()` shows the token dialog only on an `AuthError`, so servers with no authentication configured load immediately without prompting.
 - **Windows service starts immediately after install** — `install_service` now calls `service.start()` after creating the service so no reboot or manual `sc start` is needed; output message updated accordingly
 - **Windows installer task checkboxes** — "Start file watcher service" and "Run full scan now" are now proper Inno Setup `[Tasks]` checkboxes rather than a fixed `[Run]` entry, so they run in the same elevated context as the rest of the install
 - **Configurable formatter timeouts** — `batch_formatter_timeout_secs` (default 60) and `per_file_formatter_timeout_secs` (default 10) added to `[normalization]` in `server.toml`; previously hardcoded constants with `#[cfg(test)]` overrides
 
+### Fixed
+
+- **Inbox worker SQLite deadlock** — `store.get_lines()` (a read from `blobs.db`) was called inside an open write transaction on the source DB, unnecessarily widening the write lock window; moved before the transaction opens so the two databases are never locked simultaneously
+- **Timed-out inbox tasks held SQLite write locks indefinitely** — a timed-out `spawn_blocking` Phase 1 task continued holding its connection and any write lock until it finished; fixed by passing a `rusqlite::InterruptHandle` via oneshot channel so `interrupt()` is called on timeout, causing `SQLITE_INTERRUPT` and immediate unblock
+- **Default inbox request timeout reduced from 1800 s to 120 s** — Phase 1 is pure SQLite writes; 1800 s allowed a single stuck request to block the inbox for 30 minutes before the circuit breaker could trip
+- **Document mode shows all matching lines** — `doc:` search now returns one result per matching line for each qualifying file, rather than a single representative; lines capped at 20 per file with a `+` badge indicating truncation
+- **Server crash (OOM) on large archive batches** — Phase 1 now streams the normalised `BulkRequest` directly into the `GzEncoder` instead of buffering a full `Vec<u8>`, halving peak memory for large 7z batches
+- **Batch formatter could hang indefinitely** — `apply_batch_formatter` now has a 60-second timeout; a hung prettier/biome run no longer blocks the inbox worker forever
+- **Search result line numbers off-by-one near chunk boundaries** — empty lines at chunk boundaries no longer shift subsequent line numbers by -1
+- **Potential write-lock contention on startup** — idempotent index creation moved from `open()` to `check_all_sources()` so it runs once at startup under no concurrency
+- **Context lines carried server-internal line numbers** — each `ContextLine` now carries its own `line_number`; sparse files (e.g. PDFs) no longer show wrong line positions
+- **Directory renames not watched after rename** — `find-watch` now calls `register_dir` for the new directory path so subsequent changes inside it are detected
+- **No loading cursor while expanding tree directories** — the row, arrow, and name now show `cursor: wait` during an in-flight expand request
 
 ---
 
