@@ -268,6 +268,9 @@ pub struct SearchResult {
     /// Each entry is the best matching line for a term not covered by `line_number`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_matches: Vec<ContextLine>,
+    /// True when this file had more matching lines than the display cap (document mode only).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hits_truncated: bool,
 }
 
 /// GET /api/v1/search response.

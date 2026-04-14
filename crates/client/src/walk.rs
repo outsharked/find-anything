@@ -74,6 +74,20 @@ pub(crate) fn walk_source_tree(
     // before we descend into it.
     let mut override_stack: Vec<(usize, HashSet<String>)> = Vec::new();
 
+    // Device ID of the walk root, captured once for filesystem-boundary checks.
+    // None when cross_filesystems = true (check disabled) or on non-Unix.
+    let root_dev: Option<u64> = if !scan.cross_filesystems {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(walk_root).ok().map(|m| m.dev())
+        }
+        #[cfg(not(unix))]
+        { None }
+    } else {
+        None
+    };
+
     for entry in WalkDir::new(walk_root)
         .follow_links(scan.follow_symlinks)
         .into_iter()
@@ -103,6 +117,22 @@ pub(crate) fn walk_source_tree(
                 if e.path().join(&scan.noindex_file).exists() {
                     tracing::debug!("walk: skipping {} (.noindex present)", e.path().display());
                     return false;
+                }
+
+                // Filesystem boundary check: skip directories on a different
+                // device than the walk root (mount points, bind mounts, etc.).
+                #[cfg(unix)]
+                if let Some(dev) = root_dev {
+                    use std::os::unix::fs::MetadataExt;
+                    if let Ok(meta) = e.metadata() {
+                        if meta.dev() != dev {
+                            tracing::debug!(
+                                "walk: skipping filesystem boundary: {}",
+                                e.path().display()
+                            );
+                            return false;
+                        }
+                    }
                 }
 
                 if let Ok(rel) = e.path().strip_prefix(strip_root) {
@@ -177,6 +207,7 @@ pub(crate) fn walk_source_tree(
             Ok(e) => {
                 let abs = e.path().to_path_buf();
                 if e.file_type().is_dir() {
+                    tracing::debug!("walk: entering dir {}", abs.display());
                     callback(WalkItem::Dir(abs));
                 } else if e.file_type().is_file()
                     && e.file_name().to_str().unwrap_or("") != scan.index_file

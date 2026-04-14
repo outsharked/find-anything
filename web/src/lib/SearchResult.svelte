@@ -226,7 +226,7 @@
 			{:else if hits.length > 1}
 				<!-- svelte-ignore a11y-no-static-element-interactions -->
 				<!-- svelte-ignore a11y-click-events-have-key-events -->
-				<span class="hit-nav" title="{activeHitIndex + 1} of {hits.length} hits" on:click|stopPropagation>
+				<span class="hit-nav" title="{activeHitIndex + 1} of {hits.length}{hits[0].hits_truncated ? '+' : ''} hits" on:click|stopPropagation>
 					<button class="hit-nav-btn" class:hit-nav-hidden={activeHitIndex === 0} on:click|stopPropagation={() => switchToHit(activeHitIndex - 1)} title="Previous hit (line {displayLine(hits[activeHitIndex - 1]?.line_number ?? 0)})">
 						<IconChevronLeft />
 					</button>
@@ -234,6 +234,9 @@
 					<button class="hit-nav-btn" class:hit-nav-hidden={activeHitIndex >= hits.length - 1} on:click|stopPropagation={() => switchToHit(activeHitIndex + 1)} title="Next hit (line {displayLine(hits[activeHitIndex + 1]?.line_number ?? 0)})">
 						<IconChevronRight />
 					</button>
+					{#if hits[0].hits_truncated}
+						<span class="truncated-badge" title="More than {hits.length} matches in this file">+</span>
+					{/if}
 				</span>
 			{/if}
 		</div>
@@ -443,6 +446,15 @@
 	.hit-nav-hidden {
 		visibility: hidden;
 		pointer-events: none;
+	}
+
+	.truncated-badge {
+		padding: 0 4px;
+		font-size: 11px;
+		color: var(--text-dim);
+		border-left: 1px solid var(--border);
+		line-height: 20px;
+		cursor: default;
 	}
 
 

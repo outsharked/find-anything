@@ -170,6 +170,13 @@ pub struct ScanConfig {
     #[serde(default)]
     pub follow_symlinks: bool,
 
+    /// When false (default), do not descend into directories that reside on a
+    /// different filesystem than the walk root.  This prevents accidentally
+    /// traversing mounted backup volumes, network shares, bind mounts, etc.
+    /// Set to `true` to allow crossing filesystem boundaries.
+    #[serde(default)]
+    pub cross_filesystems: bool,
+
     #[serde(default)]
     pub include_hidden: bool,
 
@@ -251,6 +258,7 @@ impl Default for ScanConfig {
             exclude_extra: vec![],
             max_content_size_mb: default_max_content_size_mb(),
             follow_symlinks: false,
+            cross_filesystems: false,
             include_hidden: false,
             archives: ArchiveConfig::default(),
             noindex_file: default_noindex_file(),

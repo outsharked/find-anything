@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use rusqlite::{Connection, params};
@@ -317,8 +317,6 @@ pub fn document_candidates(
     limit: usize,
     date: DateFilter,
 ) -> Result<DocumentCandidates> {
-    use std::collections::HashSet;
-
     let tokens: Vec<String> = query
         .split_whitespace()
         .filter(|w| w.len() >= 3)
@@ -391,25 +389,154 @@ pub fn document_candidates(
         return Ok((0, vec![]));
     }
 
+    // Representative per file: the globally best-ranked line (used by DocRegex for pre-filtering).
     let or_expr = tokens
         .iter()
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ");
-
-    let per_file_cap = tokens.len().max(1);
-    let fetch_limit = (limit * 20 * per_file_cap).max(10_000) as i64;
-
-    struct RawRow {
-        file_path: String,
-        file_kind: FileKind,
-        line_number: usize,
-        file_id: i64,
-        mtime: i64,
-        size: Option<i64>,
+    let fetch_limit = (limit * 20).max(10_000) as i64;
+    let mut file_order: Vec<i64> = Vec::new();
+    let mut representative_map: HashMap<i64, CandidateRow> = HashMap::new();
+    {
+        let sql = format!(
+            "SELECT f.path, f.kind, {SQL_FTS_LINE_NUMBER} AS line_number,
+                    f.id, f.mtime, f.size
+             FROM lines_fts
+             JOIN files f ON f.id = {SQL_FTS_FILE_ID}
+             WHERE lines_fts MATCH ?1
+             ORDER BY lines_fts.rank
+             LIMIT ?2",
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(params![or_expr, fetch_limit])?;
+        while let Some(row) = rows.next()? {
+            let file_id: i64 = row.get(3)?;
+            if !qualifying_ids.contains(&file_id) || representative_map.contains_key(&file_id) {
+                continue;
+            }
+            file_order.push(file_id);
+            let file_kind_str: String = row.get(1)?;
+            let (file_path, archive_path) = split_composite_path(&row.get::<_, String>(0)?);
+            representative_map.insert(file_id, CandidateRow {
+                file_path,
+                file_kind:   FileKind::from(file_kind_str.as_str()),
+                archive_path,
+                line_number: row.get::<_, i64>(2)? as usize,
+                content:     String::new(),
+                mtime:       row.get(4)?,
+                size:        row.get(5)?,
+                file_id,
+            });
+            if file_order.len() >= limit { break; }
+        }
     }
 
-    let mut stmt = conn.prepare(&format!(
+    let mut results = Vec::new();
+    for file_id in file_order.into_iter().take(limit) {
+        if let Some(representative) = representative_map.remove(&file_id) {
+            results.push(DocumentGroup { representative, members: vec![] });
+        }
+    }
+
+    Ok((total, results))
+}
+
+/// Build the FTS OR expression for a whitespace-separated query string.
+/// Returns `None` when no token is long enough to query.
+pub fn build_doc_or_expr(query: &str) -> Option<String> {
+    let parts: Vec<String> = query
+        .split_whitespace()
+        .filter(|w| w.len() >= 3)
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    if parts.is_empty() { None } else { Some(parts.join(" OR ")) }
+}
+
+/// Return the set of file IDs that contain ALL whitespace-separated tokens in `query`,
+/// optionally filtered by date/kind/path prefix.
+pub fn document_qualifying_ids(
+    conn: &Connection,
+    query: &str,
+    date: DateFilter,
+) -> Result<HashSet<i64>> {
+    let tokens: Vec<String> = query
+        .split_whitespace()
+        .filter(|w| w.len() >= 3)
+        .map(|w| w.to_string())
+        .collect();
+
+    if tokens.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut per_token_ids: Vec<HashSet<i64>> = Vec::new();
+    for token in &tokens {
+        let fts_expr = format!("\"{}\"", token.replace('"', "\"\""));
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT {SQL_FTS_FILE_ID} AS file_id
+             FROM lines_fts
+             JOIN files f ON f.id = {SQL_FTS_FILE_ID}
+             WHERE lines_fts MATCH ?1
+             LIMIT 100000",
+        ))?;
+        let ids: HashSet<i64> = stmt
+            .query_map(params![fts_expr], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        per_token_ids.push(ids);
+    }
+
+    let mut qualifying_ids: HashSet<i64> = per_token_ids
+        .into_iter()
+        .reduce(|a, b| a.intersection(&b).copied().collect())
+        .unwrap_or_default();
+
+    if date.is_active() && !qualifying_ids.is_empty() {
+        let from = date.from.unwrap_or(i64::MIN);
+        let to   = date.to.unwrap_or(i64::MAX);
+        let mut p = ParamBinder::new();
+        let from_ph = p.push(from);
+        let to_ph   = p.push(to);
+        let id_phs  = qualifying_ids.iter().map(|&id| p.push(id)).collect::<Vec<_>>().join(", ");
+        let kind_clause = if date.kinds.is_empty() {
+            String::new()
+        } else {
+            let phs = date.kinds.iter().map(|k| p.push(k.to_string())).collect::<Vec<_>>().join(", ");
+            format!("AND kind IN ({phs})")
+        };
+        let path_prefix_clause = if let Some(ref prefix) = date.path_prefix {
+            let eq_ph   = p.push(prefix.clone());
+            let like_ph = p.push(format!("{prefix}/%"));
+            format!("AND (path = {eq_ph} OR path LIKE {like_ph})")
+        } else {
+            String::new()
+        };
+        let sql = format!(
+            "SELECT id FROM files WHERE id IN ({id_phs}) AND mtime BETWEEN {from_ph} AND {to_ph} {kind_clause} {path_prefix_clause}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let refs = p.as_refs();
+        qualifying_ids = stmt
+            .query_map(refs.as_slice(), |row| row.get(0))?
+            .collect::<rusqlite::Result<HashSet<i64>>>()?;
+    }
+
+    Ok(qualifying_ids)
+}
+
+/// Fetch all lines from `qualifying_ids` that match `or_expr`, capped at `per_file_limit`
+/// lines per file and `total_limit` rows overall.
+/// Returns `(candidates, truncated_ids)` where `truncated_ids` contains file IDs that
+/// had more matching lines than the cap.
+pub fn document_all_lines(
+    conn: &Connection,
+    qualifying_ids: &HashSet<i64>,
+    or_expr: &str,
+    per_file_limit: usize,
+    total_limit: usize,
+) -> Result<(Vec<CandidateRow>, HashSet<i64>)> {
+    let fetch_limit = (total_limit * per_file_limit * 2).max(50_000) as i64;
+    let sql = format!(
         "SELECT f.path, f.kind, {SQL_FTS_LINE_NUMBER} AS line_number,
                 f.id, f.mtime, f.size
          FROM lines_fts
@@ -417,60 +544,51 @@ pub fn document_candidates(
          WHERE lines_fts MATCH ?1
          ORDER BY lines_fts.rank
          LIMIT ?2",
-    ))?;
-
-    // Collect up to `per_file_cap` raw rows per qualifying file.
-    let mut file_rows: HashMap<i64, Vec<RawRow>> = HashMap::new();
-    let mut file_order: Vec<i64> = Vec::new();
-
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params![or_expr, fetch_limit])?;
+
+    let mut file_hits: HashMap<i64, Vec<CandidateRow>> = HashMap::new();
+    let mut file_order: Vec<i64> = Vec::new();
+    let mut truncated_ids: HashSet<i64> = HashSet::new();
+
     while let Some(row) = rows.next()? {
         let file_id: i64 = row.get(3)?;
-        if !qualifying_ids.contains(&file_id) {
-            continue;
-        }
-        let entry = file_rows.entry(file_id).or_insert_with(|| {
+        if !qualifying_ids.contains(&file_id) { continue; }
+        let entry = file_hits.entry(file_id).or_insert_with(|| {
             file_order.push(file_id);
             Vec::new()
         });
-        if entry.len() < per_file_cap {
-            let file_kind_str: String = row.get(1)?;
-            entry.push(RawRow {
-                file_path:   row.get(0)?,
-                file_kind:   FileKind::from(file_kind_str.as_str()),
-                line_number: row.get::<_, i64>(2)? as usize,
-                file_id,
-                mtime:       row.get(4)?,
-                size:        row.get(5)?,
-            });
+        if entry.len() >= per_file_limit {
+            truncated_ids.insert(file_id);
+            continue;
         }
-        if file_order.len() >= limit && file_rows.get(&file_order[file_order.len()-1]).map_or(0, |v| v.len()) >= per_file_cap {
+        let file_kind_str: String = row.get(1)?;
+        let (file_path, archive_path) = split_composite_path(&row.get::<_, String>(0)?);
+        entry.push(CandidateRow {
+            file_path,
+            file_kind:   FileKind::from(file_kind_str.as_str()),
+            archive_path,
+            line_number: row.get::<_, i64>(2)? as usize,
+            content:     String::new(),
+            mtime:       row.get(4)?,
+            size:        row.get(5)?,
+            file_id,
+        });
+        if file_order.len() >= total_limit
+            && file_hits.get(&file_order[file_order.len() - 1]).map_or(0, |v| v.len()) >= per_file_limit
+        {
             break;
         }
     }
 
-    let mut results = Vec::new();
-    for file_id in file_order.into_iter().take(limit) {
-        let rows = match file_rows.remove(&file_id) {
-            Some(r) => r,
-            None => continue,
-        };
-        let rep_row = &rows[0];
-        let (file_path, archive_path) = split_composite_path(&rep_row.file_path);
-        let representative = CandidateRow {
-            file_path,
-            file_kind:   rep_row.file_kind.clone(),
-            archive_path,
-            line_number: rep_row.line_number,
-            content:     String::new(),
-            mtime:       rep_row.mtime,
-            size:        rep_row.size,
-            file_id,
-        };
-        results.push(DocumentGroup { representative, members: vec![] });
-    }
+    let candidates = file_order
+        .into_iter()
+        .take(total_limit)
+        .flat_map(|fid| file_hits.remove(&fid).unwrap_or_default())
+        .collect();
 
-    Ok((total, results))
+    Ok((candidates, truncated_ids))
 }
 
 /// Fetch duplicate paths grouped by file ID.
@@ -799,11 +917,10 @@ mod tests {
         let refs: Vec<(usize, &str)> = owned.iter().map(|(n, s)| (*n, s.as_str())).collect();
         insert_inline_file(&conn, "dense.txt", 1000, "text", &refs);
 
-        // One-token query → per_file_cap = 1.
+        // One-token query → per_file_cap = 1, so only one row collected per file → no members.
         let (_total, groups) = document_candidates(&conn, "keyword", 100, DateFilter::default()).unwrap();
         assert_eq!(groups.len(), 1, "should return exactly one group for the file");
-        // The group has no members because members is always empty in current impl.
-        assert!(groups[0].members.is_empty());
+        assert!(groups[0].members.is_empty(), "single-token query has per_file_cap=1, so no members");
     }
 
     #[test]

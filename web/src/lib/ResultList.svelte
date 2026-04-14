@@ -24,6 +24,10 @@
 			}
 			map.get(key)!.hits.push(r);
 		}
+		// Sort hits within each file card by line number so navigation is sequential.
+		for (const group of map.values()) {
+			group.hits.sort((a, b) => a.line_number - b.line_number);
+		}
 		return order.map((k) => map.get(k)!);
 	})();
 </script>
