@@ -4,6 +4,7 @@ Stream of consciousness for bugfixes and features approaching V1
 
 ## Bugs/Enhancements
 
+[ ] When searching 'foo bar' if they aren't in the same line, I have to choose 'document' -- shoudl this be default? Can it be more efficient?
 [ ] Find .pages, .mumbers, .key files for integration tests
 [ ] For known keywords, highlight it when the : is type. Do typeahead pick list for valid options where appropriate (type), desktop only
 [ ] Add 'show log' for windows service
@@ -16,6 +17,7 @@ list    - Ask if installing client or server.
 [ ] CHORE: Server install should also be able to chain client install
 [ ] CHORE: Include **/AppData/**, **/bin/**, **/obj/**, **/\*.log by default, "**/pnpm/\*\*", "**/*:Zone.Identifier" vscode-remote-wsl
 [ ] FEAT: admin email for: failed items (daily status); low disk space; overall statistics. "every day" or only warning
+    [x] DONE: inbox circuit breaker — auto-pause after N consecutive timeouts, send alert email via sendmail
 [ ] FEAT: Guard against low disk space
 [ ] FEAT: Allow non-zip archive members to be streamable, if they are below a configrable threshold in size
 [ ] Evaluate scoring algorithm: recent dates score higher; but if we use a better strategy for storing content, then 

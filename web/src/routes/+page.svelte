@@ -190,12 +190,10 @@
 		const stopLive = startLiveUpdates();
 
 		(async () => {
-			checkToken();
-			if (!showTokenSetup) {
-				// Ensure the session cookie is set so browser-native requests work.
-				activateSession();
-				await initialLoad();
-			}
+			// Attempt to connect without a token first; initialLoad() shows the
+			// token dialog on AuthError, so public/no-auth servers just work.
+			activateSession();
+			await initialLoad();
 
 			const params = new URLSearchParams(location.search);
 			if (params.has('q') || params.has('path')) {
