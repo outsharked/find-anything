@@ -23,7 +23,8 @@ pub use constants::{
     MAX_LINES_PER_FILE, SQL_FTS_FILE_ID, SQL_FTS_FILENAME_ONLY, SQL_FTS_LINE_NUMBER,
 };
 pub use search::{
-    document_candidates, fetch_duplicates_for_file_ids, fts_candidates, DateFilter,
+    build_doc_or_expr, document_all_lines, document_candidates, document_qualifying_ids,
+    fetch_duplicates_for_file_ids, fts_candidates, DateFilter,
 };
 pub use stats::{
     do_cleanup_writes, get_files_pending_content, get_fts_row_count, get_indexing_error,

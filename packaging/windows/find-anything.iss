@@ -262,8 +262,9 @@ begin
     '[scan]' + NL +
     '# max_content_size_mb = 10   # Skip files larger than this (MB)' + NL +
     '# max_line_length  = 120  # Wrap long lines at this column (0 = disable)' + NL +
-    '# follow_symlinks  = false' + NL +
-    '# include_hidden   = false  # Index dot-files and dot-directories' + NL +
+    '# follow_symlinks    = false' + NL +
+    '# cross_filesystems  = false  # Set to true to traverse mount points and external volumes' + NL +
+    '# include_hidden     = false  # Index dot-files and dot-directories' + NL +
     '# Extra glob patterns to skip, added to the built-in defaults.' + NL +
     '# Use exclude = [...] instead to replace the defaults entirely.' + NL +
     '# exclude_extra = []' + NL +

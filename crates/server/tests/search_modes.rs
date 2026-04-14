@@ -211,6 +211,33 @@ async fn test_document_mode_groups_by_file() {
 }
 
 #[tokio::test]
+async fn test_document_mode_multi_keyword_all_lines() {
+    let srv = TestServer::spawn().await;
+    // Each keyword is on a separate line so they produce distinct FTS candidate rows.
+    srv.post_bulk(&make_text_bulk("docs", "keywords.txt",
+        "line with alpha here\nsome other content\nline with bravo here")).await;
+    srv.wait_for_idle().await;
+
+    let resp: SearchResponse = srv
+        .client
+        .get(srv.url("/api/v1/search?q=alpha+bravo&mode=document&source=docs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(resp.total >= 1, "document mode should find the file");
+    // Document mode now returns one SearchResult per matching line.
+    let file_results: Vec<_> = resp.results.iter().filter(|r| r.path == "keywords.txt").collect();
+    assert!(file_results.len() >= 2, "should have at least 2 results for keywords.txt (one per keyword line)");
+    let all_snippets: Vec<&str> = file_results.iter().map(|r| r.snippet.as_str()).collect();
+    assert!(all_snippets.iter().any(|s| s.contains("alpha")), "alpha should appear in some result snippet");
+    assert!(all_snippets.iter().any(|s| s.contains("bravo")), "bravo should appear in some result snippet");
+}
+
+#[tokio::test]
 async fn test_doc_exact_mode_matches_phrase() {
     let srv = TestServer::spawn().await;
     srv.post_bulk(&make_text_bulk("docs", "phrase.txt", "the exact phrase to find here")).await;
