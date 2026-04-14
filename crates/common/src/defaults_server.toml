@@ -15,7 +15,7 @@
 bind = "127.0.0.1:8080"
 download_zip_member_levels = 2
 log_batch_detail_limit = 5
-inbox_request_timeout_secs = 1800
+inbox_request_timeout_secs = 120
 archive_batch_size = 200
 activity_log_max_entries = 10000
 

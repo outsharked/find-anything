@@ -1,3 +1,4 @@
+pub(crate) mod alerts;
 pub(crate) mod compaction;
 pub(crate) mod image_util;
 pub(crate) mod db;
@@ -10,7 +11,7 @@ pub(crate) mod worker;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -81,6 +82,11 @@ pub struct AppState {
     pub worker_status: Arc<std::sync::Mutex<WorkerStatus>>,
     pub content_store: Arc<dyn ContentStore>,
     pub inbox_paused: Arc<AtomicBool>,
+    /// Counts consecutive inbox request processing timeouts.  Reset to zero on
+    /// the first successful request or when the inbox is manually resumed.
+    /// When this reaches `config.server.inbox_timeout_circuit_breaker`, the
+    /// worker automatically pauses and an alert email is sent.
+    pub consecutive_timeouts: Arc<AtomicU32>,
     pub compaction_stats: Arc<std::sync::RwLock<Option<compaction::CompactionStats>>>,
     pub source_stats_cache: Arc<std::sync::RwLock<stats_cache::SourceStatsCache>>,
     pub under_systemd: bool,
@@ -134,6 +140,7 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         .unwrap_or_else(|| std::env::var("INVOCATION_ID").is_ok());
     let worker_status = Arc::new(std::sync::Mutex::new(WorkerStatus::Idle));
     let inbox_paused = Arc::new(AtomicBool::new(false));
+    let consecutive_timeouts = Arc::new(AtomicU32::new(0));
     let content_store: Arc<dyn ContentStore> = open_content_store(&config, &data_dir)
         .context("opening content store")?;
     let initial_compaction_stats = compaction::load_cached_stats(&data_dir);
@@ -154,6 +161,7 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         worker_status: Arc::clone(&worker_status),
         content_store: Arc::clone(&content_store),
         inbox_paused: Arc::clone(&inbox_paused),
+        consecutive_timeouts: Arc::clone(&consecutive_timeouts),
         compaction_stats: Arc::clone(&compaction_stats),
         source_stats_cache: Arc::clone(&source_stats_cache),
         under_systemd,
@@ -174,11 +182,14 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         archive_batch_size: state.config.server.archive_batch_size,
         activity_log_max_entries: state.config.server.activity_log_max_entries,
         normalization: state.config.normalization.clone(),
+        consecutive_timeout_limit: state.config.server.inbox_timeout_circuit_breaker,
+        alerts: state.config.alerts.clone(),
     };
     let worker_handles = worker::WorkerHandles {
         status: worker_status,
         content_store: Arc::clone(&content_store),
         inbox_paused,
+        consecutive_timeouts,
         recent_tx: state.recent_tx.clone(),
         source_stats_cache: Arc::clone(&source_stats_cache),
         stats_watch: Arc::clone(&stats_watch),

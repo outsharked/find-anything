@@ -11,13 +11,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
-- **Document mode shows all matching lines** — `doc:` search now returns one result per matching line (any keyword) for each qualifying file, rather than a single representative. Lines are capped at 20 per file; a `+` badge on the hit counter indicates truncation. Hits are sorted by line number and navigable via chevrons.
+- **Inbox circuit breaker** — the inbox worker now tracks consecutive request processing timeouts; after `inbox_timeout_circuit_breaker` (default 5) consecutive timeouts it automatically pauses the inbox and optionally sends an alert email via SMTP (`[alerts]` config block with `smtp_host`, `smtp_port`, `smtp_encryption`, `smtp_username`, `smtp_password`, `smtp_from`, `admin_email`). The counter resets on any successful request or manual `/api/v1/admin/inbox/resume`.
+- **SMTP alert emails** — new `[alerts]` config section supports sending a notification email when the inbox circuit breaker trips; uses `lettre` with STARTTLS (default), TLS, or plaintext; no fallback to sendmail.
 
-- **`cross_filesystems` config option** — `[scan] cross_filesystems = false` (default) prevents the walker from descending into directories on a different device than the walk root, avoiding accidental traversal of mounted backup volumes, borg archives, network shares, and bind mounts. Set to `true` to restore the previous behaviour of crossing filesystem boundaries.
-
-- **Windows service starts immediately after install** — `install_service` now calls `service.start()` after creating the service so no reboot or manual `sc start` is needed; output message updated accordingly
-- **Windows installer task checkboxes** — "Start file watcher service" and "Run full scan now" are now proper Inno Setup `[Tasks]` checkboxes rather than a fixed `[Run]` entry, so they run in the same elevated context as the rest of the install
-- **Configurable formatter timeouts** — `batch_formatter_timeout_secs` (default 60) and `per_file_formatter_timeout_secs` (default 10) added to `[normalization]` in `server.toml`; previously hardcoded constants with `#[cfg(test)]` overrides
 
 ### Fixed
 
@@ -29,6 +25,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **`content_line_start` compat shim removed** — the `content_line_start` field in `/api/v1/settings` and the `contentLineStart` Svelte store were added to support old servers that used `line_number = 1` for the first content line; the current scheme (`LINE_CONTENT_START = 2`) is now assumed unconditionally
 - **Directory renames not watched after rename** — when `find-watch` detected a directory rename pair, the new directory path was removed from the batch (correct) but `register_dir` was never called for it, so the new location had no inotify watch. Changes inside the renamed directory were silently missed until the next full rescan.
 - **No loading cursor while expanding tree directories** — expanding a directory node in the file tree showed no feedback while the server request was in flight; the row, arrow, and name now show `cursor: wait` during the load
+- **Inbox worker could deadlock SQLite under lock contention** — `store.get_lines()` (a read from `blobs.db`) was called inside an open write transaction on the source DB, unnecessarily widening the write lock window. Moved the content-store read to before the transaction opens so the two databases are never locked simultaneously.
+- **Timed-out `spawn_blocking` tasks held SQLite write locks indefinitely** — dropping a `JoinHandle` from a `tokio::task::spawn_blocking` task does not cancel the underlying OS thread; a timed-out Phase 1 worker continued holding its connection (and any write lock) until it finished or was killed. Fixed by passing a `rusqlite::InterruptHandle` back to the async timeout via a oneshot channel; on timeout `handle.interrupt()` is called, causing `SQLITE_INTERRUPT` in the blocked thread so it unblocks immediately.
+- **Default inbox request timeout reduced from 1800 s to 120 s** — Phase 1 does only SQLite writes (no extraction), so 1800 s allowed a single stuck request to block the inbox for 30 minutes before the circuit breaker could trip; 120 s is generous given the 30 s SQLite busy timeout.
+- **Document mode shows all matching lines** — `doc:` search now returns one result per matching line (any keyword) for each qualifying file, rather than a single representative. Lines are capped at 20 per file; a `+` badge on the hit counter indicates truncation. Hits are sorted by line number and navigable via chevrons.
+- **`cross_filesystems` config option** — `[scan] cross_filesystems = false` (default) prevents the walker from descending into directories on a different device than the walk root, avoiding accidental traversal of mounted backup volumes, borg archives, network shares, and bind mounts. Set to `true` to restore the previous behaviour of crossing filesystem boundaries.
+- **Windows service starts immediately after install** — `install_service` now calls `service.start()` after creating the service so no reboot or manual `sc start` is needed; output message updated accordingly
+- **Windows installer task checkboxes** — "Start file watcher service" and "Run full scan now" are now proper Inno Setup `[Tasks]` checkboxes rather than a fixed `[Run]` entry, so they run in the same elevated context as the rest of the install
+- **Configurable formatter timeouts** — `batch_formatter_timeout_secs` (default 60) and `per_file_formatter_timeout_secs` (default 10) added to `[normalization]` in `server.toml`; previously hardcoded constants with `#[cfg(test)]` overrides
 
 
 ---

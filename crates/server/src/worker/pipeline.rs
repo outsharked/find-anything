@@ -84,6 +84,33 @@ pub(super) fn process_file_phase1_fallback(
         }
     }
 
+    // Read old content BEFORE opening the write transaction.
+    //
+    // `get_lines` acquires a connection from the blobs.db read pool.  Doing this
+    // inside the transaction (as was previously the case) held the RESERVED write
+    // lock on the source DB for the entire duration of the I/O — unnecessarily
+    // widening the contention window.  If the blocking task is abandoned by a
+    // timeout while the transaction is open, the detached thread continues holding
+    // that lock until it eventually completes or errors out, which can cascade into
+    // every subsequent write timing out (SQLITE_BUSY for up to busy_timeout seconds
+    // each).  Fetching the content before the transaction starts means the write
+    // lock is only held for the SQLite operations themselves.
+    let old_lines_for_fts_delete: Vec<(usize, String)> =
+        if existing_id.is_some() {
+            match (content_store, old_file_hash.as_deref()) {
+                (Some(store), Some(hash)) => {
+                    let key = ContentKey::new(hash);
+                    store.get_lines(&key, 0, old_line_count as usize)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default()
+                }
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
     // Single transaction for the whole file.
     let t_fts = std::time::Instant::now();
     let tx = conn.transaction()?;
@@ -122,25 +149,18 @@ pub(super) fn process_file_phase1_fallback(
     // cleanup; the stale entries become orphaned but are harmless (search JOIN on
     // file_id still returns correct results once the new entries are inserted, and
     // the old entries for the same rowids are not distinguishable by file).
-    if existing_id.is_some() {
-        if let (Some(store), Some(hash)) = (content_store, old_file_hash.as_deref()) {
-            let key = ContentKey::new(hash);
-            if let Ok(Some(old_lines)) = store.get_lines(&key, 0, old_line_count as usize) {
-                for (pos, content) in old_lines {
-                    // Empty content has no trigrams in the FTS index; issuing
-                    // 'delete' with "" corrupts FTS5 state for that rowid.
-                    if content.is_empty() {
-                        continue;
-                    }
-                    if (pos as i64) < MAX_LINES_PER_FILE {
-                        let old_rowid = encode_fts_rowid(file_id, pos as i64);
-                        tx.execute(
-                            "INSERT INTO lines_fts(lines_fts, rowid, content) VALUES('delete', ?1, ?2)",
-                            rusqlite::params![old_rowid, content],
-                        )?;
-                    }
-                }
-            }
+    for (pos, content) in old_lines_for_fts_delete {
+        // Empty content has no trigrams in the FTS index; issuing
+        // 'delete' with "" corrupts FTS5 state for that rowid.
+        if content.is_empty() {
+            continue;
+        }
+        if (pos as i64) < MAX_LINES_PER_FILE {
+            let old_rowid = encode_fts_rowid(file_id, pos as i64);
+            tx.execute(
+                "INSERT INTO lines_fts(lines_fts, rowid, content) VALUES('delete', ?1, ?2)",
+                rusqlite::params![old_rowid, content],
+            )?;
         }
     }
 

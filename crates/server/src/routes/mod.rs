@@ -108,6 +108,10 @@ where
 }
 
 pub(super) fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    // Empty token = no authentication required (e.g. public demo instances).
+    if state.config.server.token.is_empty() {
+        return Ok(());
+    }
     // 1. Check Authorization: Bearer header (existing API clients).
     if headers
         .get("Authorization")

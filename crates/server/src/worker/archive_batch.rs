@@ -211,6 +211,8 @@ mod tests {
             archive_batch_size: 10,
             activity_log_max_entries: 100,
             normalization: NormalizationSettings::default(),
+            consecutive_timeout_limit: 0, // disabled in tests
+            alerts: find_common::config::AlertsConfig::default(),
         }
     }
 

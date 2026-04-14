@@ -223,6 +223,7 @@ pub async fn inbox_resume(
     }
 
     state.inbox_paused.store(false, Ordering::Relaxed);
+    state.consecutive_timeouts.store(0, Ordering::Relaxed);
     tracing::info!("Inbox processing resumed");
 
     (StatusCode::OK, Json(InboxResumeResponse {})).into_response()

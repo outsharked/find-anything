@@ -5,10 +5,10 @@ mod request;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use find_common::api::{RecentFile, WorkerStatus};
-use find_common::config::NormalizationSettings;
+use find_common::config::{AlertsConfig, NormalizationSettings};
 use find_content_store::ContentStore;
 
 
@@ -23,6 +23,10 @@ pub struct WorkerConfig {
     pub archive_batch_size: usize,
     pub activity_log_max_entries: usize,
     pub normalization: NormalizationSettings,
+    /// Number of consecutive timeouts before auto-pausing. 0 = disabled.
+    pub consecutive_timeout_limit: u32,
+    /// Alert notification configuration.
+    pub alerts: AlertsConfig,
 }
 
 /// Log the start and finish of a labelled step at DEBUG level, including elapsed ms.
@@ -65,6 +69,8 @@ pub struct WorkerHandles {
     pub status: StatusHandle,
     pub content_store: Arc<dyn ContentStore>,
     pub inbox_paused: Arc<AtomicBool>,
+    /// Counts consecutive inbox request processing timeouts for the circuit breaker.
+    pub consecutive_timeouts: Arc<AtomicU32>,
     /// Broadcast channel for live activity events sent to SSE subscribers.
     pub recent_tx: tokio::sync::broadcast::Sender<RecentFile>,
     /// Shared stats cache for incremental updates after each batch.
@@ -119,7 +125,7 @@ pub async fn start_inbox_worker(
     cfg: WorkerConfig,
     handles: WorkerHandles,
 ) -> anyhow::Result<()> {
-    let WorkerHandles { status, content_store, inbox_paused, recent_tx, source_stats_cache, stats_watch } = handles;
+    let WorkerHandles { status, content_store, inbox_paused, consecutive_timeouts, recent_tx, source_stats_cache, stats_watch } = handles;
     let stats_watch_archive = Arc::clone(&stats_watch);
     let source_stats_cache_archive = Arc::clone(&source_stats_cache);
     let inbox_dir = data_dir.join("inbox");
@@ -149,6 +155,8 @@ pub async fn start_inbox_worker(
         let archive_notify = Arc::clone(&archive_notify);
         let cfg_index = cfg.clone();
         let content_store_index = Arc::clone(&content_store);
+        let inbox_paused_index = Arc::clone(&inbox_paused);
+        let consecutive_timeouts_index = Arc::clone(&consecutive_timeouts);
 
         tokio::spawn(async move {
             tracing::debug!("Indexing worker started");
@@ -160,6 +168,8 @@ pub async fn start_inbox_worker(
                 source_stats_cache,
                 content_store: content_store_index,
                 stats_watch,
+                inbox_paused: inbox_paused_index,
+                consecutive_timeouts: consecutive_timeouts_index,
             };
             while let Some(path) = work_rx.recv().await {
                 let ctx = request::RequestContext {

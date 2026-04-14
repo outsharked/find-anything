@@ -13,6 +13,7 @@ use rusqlite::ErrorCode;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::sync::broadcast;
 
 use find_common::api::{BulkRequest, IndexingFailure, RecentAction, RecentFile};
@@ -37,25 +38,46 @@ pub(super) struct RequestContext {
 
 /// Worker-lifetime handles passed by reference to every `process_request_async` call.
 pub(super) struct IndexerHandles {
-    pub status:             StatusHandle,
-    pub cfg:                WorkerConfig,
-    pub archive_notify:     Arc<tokio::sync::Notify>,
-    pub recent_tx:          broadcast::Sender<RecentFile>,
-    pub source_stats_cache: Arc<std::sync::RwLock<crate::stats_cache::SourceStatsCache>>,
-    pub stats_watch:        Arc<tokio::sync::watch::Sender<u64>>,
-    pub content_store:      Arc<dyn ContentStore>,
+    pub status:              StatusHandle,
+    pub cfg:                 WorkerConfig,
+    pub archive_notify:      Arc<tokio::sync::Notify>,
+    pub recent_tx:           broadcast::Sender<RecentFile>,
+    pub source_stats_cache:  Arc<std::sync::RwLock<crate::stats_cache::SourceStatsCache>>,
+    pub stats_watch:         Arc<tokio::sync::watch::Sender<u64>>,
+    pub content_store:       Arc<dyn ContentStore>,
+    /// Shared flag used to pause inbox processing.  Set to `true` by the
+    /// circuit breaker when consecutive timeouts reach the configured limit.
+    pub inbox_paused:        Arc<AtomicBool>,
+    /// Counts consecutive timeouts for the circuit-breaker check.
+    pub consecutive_timeouts: Arc<AtomicU32>,
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────────
 
 /// Async wrapper: runs `process_request_phase1` in a blocking task with a
 /// configurable timeout, then moves the file to `failed/` on error.
+///
+/// When the timeout fires, we call `sqlite3_interrupt` on the connection opened
+/// inside the blocking task (via a oneshot channel that carries the
+/// `InterruptHandle` back to us as soon as the connection is ready).  This
+/// causes any in-progress SQLite call on that connection to return
+/// `SQLITE_INTERRUPT`, which unblocks the thread and allows it to drop the
+/// connection — releasing whatever write lock it was holding.  Without the
+/// interrupt, a detached blocking task holding a SQLite RESERVED lock would
+/// cause every subsequent write to the same source DB to block for the full
+/// `busy_timeout` before failing, cascading into every subsequent request also
+/// timing out.
 pub(super) async fn process_request_async(
     ctx: &RequestContext,
     handles: &IndexerHandles,
 ) {
     let status_reset = handles.status.clone();
     let request_timeout = handles.cfg.request_timeout;
+
+    // The blocking task sends back the interrupt handle as soon as it opens the
+    // SQLite connection, before doing any work that could block.
+    let (interrupt_tx, mut interrupt_rx) =
+        tokio::sync::oneshot::channel::<rusqlite::InterruptHandle>();
 
     let blocking_task = tokio::task::spawn_blocking({
         let data_dir = ctx.data_dir.clone();
@@ -66,7 +88,7 @@ pub(super) async fn process_request_async(
         let recent_tx = handles.recent_tx.clone();
         let stats_watch = Arc::clone(&handles.stats_watch);
         let content_store = Arc::clone(&handles.content_store);
-        move || process_request_phase1(&data_dir, &request_path, &to_archive_dir, &status, cfg, &recent_tx, &stats_watch, &content_store)
+        move || process_request_phase1(interrupt_tx, &data_dir, &request_path, &to_archive_dir, &status, cfg, &recent_tx, &stats_watch, &content_store)
     });
 
     let timed_result = tokio::time::timeout(request_timeout, blocking_task).await;
@@ -77,6 +99,16 @@ pub(super) async fn process_request_async(
 
     match timed_result {
         Err(_timeout) => {
+            // Interrupt the stuck SQLite connection so the detached blocking
+            // thread unblocks, rolls back its transaction, and drops the
+            // connection — releasing any RESERVED lock on the source DB.
+            if let Ok(handle) = interrupt_rx.try_recv() {
+                handle.interrupt();
+                tracing::warn!(
+                    "Interrupted SQLite connection for timed-out request: {}",
+                    ctx.request_path.display(),
+                );
+            }
             tracing::error!(
                 "Request processing timed out after {}s, abandoning: {}",
                 request_timeout.as_secs(),
@@ -88,8 +120,31 @@ pub(super) async fn process_request_async(
                 anyhow::anyhow!("Processing timed out after {}s", request_timeout.as_secs()),
             )
             .await;
+
+            // Circuit breaker: if consecutive timeouts reach the configured
+            // limit, auto-pause the inbox and send an alert email.
+            let limit = handles.cfg.consecutive_timeout_limit;
+            if limit > 0 {
+                let count = handles.consecutive_timeouts.fetch_add(1, Ordering::Relaxed) + 1;
+                if count >= limit {
+                    handles.inbox_paused.store(true, Ordering::Relaxed);
+                    tracing::error!(
+                        "Inbox worker auto-paused after {count} consecutive processing timeouts. \
+                         Manual intervention required. \
+                         Use `find-admin inbox resume` or POST /api/v1/admin/inbox/resume to restart."
+                    );
+                    crate::alerts::send_inbox_paused_alert(
+                        &handles.cfg.alerts,
+                        count,
+                        request_timeout.as_secs(),
+                    );
+                }
+            }
         }
         Ok(Ok(Ok(delta))) => {
+            // Success: reset the consecutive timeout counter.
+            handles.consecutive_timeouts.store(0, Ordering::Relaxed);
+
             // The normalized .gz was already written to to-archive/ by the blocking task.
             // Delete the original from inbox/.
             if let Err(e) = tokio::fs::remove_file(&ctx.request_path).await {
@@ -111,16 +166,22 @@ pub(super) async fn process_request_async(
         Ok(Ok(Err(e))) => {
             if is_db_locked(&e) {
                 // File is still in inbox/ — the router will rediscover and
-                // retry it on the next scan tick.
+                // retry it on the next scan tick.  Do not touch the timeout
+                // counter: a lock error is a transient condition, not a sign
+                // the worker has recovered or is stuck for 1800s.
                 tracing::warn!(
                     "Database locked while processing {}, will retry: {e:#}",
                     ctx.request_path.display(),
                 );
             } else {
+                // Non-lock error resolved quickly — reset the timeout counter.
+                handles.consecutive_timeouts.store(0, Ordering::Relaxed);
                 handle_failure(&ctx.request_path, &ctx.failed_dir, e).await;
             }
         }
         Ok(Err(e)) => {
+            // Blocking task panic or join error — reset the timeout counter.
+            handles.consecutive_timeouts.store(0, Ordering::Relaxed);
             handle_failure(
                 &ctx.request_path,
                 &ctx.failed_dir,
@@ -135,8 +196,14 @@ pub(super) async fn process_request_async(
 
 /// Phase 1: process a single inbox request — SQLite only, no content store I/O.
 /// Writes a normalized `.gz` to `to_archive_dir` for the archive phase.
+///
+/// `interrupt_tx` is a oneshot sender that carries the `InterruptHandle` for
+/// the source-DB connection back to the async side.  It is sent immediately
+/// after the connection is opened and before any SQLite work begins, so that
+/// if the async timeout fires it can call `interrupt()` to unblock this thread.
 #[allow(clippy::too_many_arguments)]
 fn process_request_phase1(
+    interrupt_tx: tokio::sync::oneshot::Sender<rusqlite::InterruptHandle>,
     data_dir: &Path,
     request_path: &Path,
     to_archive_dir: &Path,
@@ -195,6 +262,11 @@ fn process_request_phase1(
 
     let db_path = data_dir.join("sources").join(format!("{}.db", request.source));
     let mut conn = timed!(tag, "open db", { db::open(&db_path)? });
+
+    // Send the interrupt handle to the async side so it can unblock us if the
+    // request timeout fires.  Errors are ignored: if the receiver was dropped
+    // (timeout already fired before we opened the connection), this is a no-op.
+    let _ = interrupt_tx.send(conn.get_interrupt_handle());
 
     // Process deletes (SQLite only — orphaned ZIP chunks cleaned up by compaction).
     if !request.delete_paths.is_empty() {
@@ -461,7 +533,8 @@ mod tests {
         stats_watch: &Arc<tokio::sync::watch::Sender<u64>>,
     ) -> Result<crate::stats_cache::SourceStatsDelta> {
         let cs = make_content_store(data_dir);
-        process_request_phase1(data_dir, request_path, to_archive_dir, status, cfg, recent_tx, stats_watch, &cs)
+        let (interrupt_tx, _interrupt_rx) = tokio::sync::oneshot::channel();
+        process_request_phase1(interrupt_tx, data_dir, request_path, to_archive_dir, status, cfg, recent_tx, stats_watch, &cs)
     }
 
     fn make_worker_config() -> WorkerConfig {
@@ -470,6 +543,8 @@ mod tests {
             archive_batch_size: 100, // used by archive_batch phase
             activity_log_max_entries: 1000,
             normalization: find_common::config::NormalizationSettings::default(),
+            consecutive_timeout_limit: 0, // disabled in tests
+            alerts: find_common::config::AlertsConfig::default(),
         }
     }
 

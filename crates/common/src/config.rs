@@ -637,6 +637,8 @@ pub struct ServerAppConfig {
     pub log: LogConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub alerts: AlertsConfig,
     /// Per-source server configuration (e.g. filesystem root for raw file serving).
     #[serde(default)]
     pub sources: std::collections::HashMap<String, ServerSourceConfig>,
@@ -836,6 +838,12 @@ pub struct ServerAppSettings {
     /// a reverse proxy on a different hostname).
     #[serde(default)]
     pub public_url: Option<String>,
+    /// Number of consecutive request processing timeouts before the inbox
+    /// worker is automatically paused and an alert email is sent (when
+    /// [alerts] is configured).  Set to 0 to disable the circuit breaker.
+    /// Default: 5.
+    #[serde(default = "default_inbox_timeout_circuit_breaker")]
+    pub inbox_timeout_circuit_breaker: u32,
 }
 
 fn default_max_markdown_render_kb() -> usize { 512 }
@@ -848,6 +856,81 @@ fn default_log_batch_detail_limit() -> usize     { server_defaults().server.log_
 fn default_inbox_request_timeout_secs() -> u64   { server_defaults().server.inbox_request_timeout_secs }
 fn default_archive_batch_size() -> usize         { server_defaults().server.archive_batch_size }
 fn default_activity_log_max_entries() -> usize   { server_defaults().server.activity_log_max_entries }
+fn default_inbox_timeout_circuit_breaker() -> u32 { 5 }
+
+// ── Alert notifications ────────────────────────────────────────────────────────
+
+/// SMTP encryption mode for outgoing alert emails.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpEncryption {
+    /// STARTTLS on the submission port (default, recommended). Port 587.
+    #[default]
+    Starttls,
+    /// Implicit TLS / SMTPS. Port 465.
+    Tls,
+    /// Plaintext — no encryption. Use only for testing or on localhost.
+    None,
+}
+
+/// Configuration for outgoing alert email notifications.
+///
+/// All fields are optional.  When `smtp_host` is not set, no emails are sent.
+/// `admin_email` and `smtp_from` are both required for sending.
+///
+/// Example:
+/// ```toml
+/// [alerts]
+/// admin_email     = "ops@example.com"
+/// smtp_host       = "smtp.example.com"
+/// smtp_port       = 587
+/// smtp_encryption = "starttls"
+/// smtp_username   = "alerts@example.com"
+/// smtp_password   = "s3cr3t"
+/// smtp_from       = "find-anything@example.com"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertsConfig {
+    /// Recipient email address for all server alerts.
+    #[serde(default)]
+    pub admin_email: Option<String>,
+    /// SMTP relay hostname (e.g. `"smtp.example.com"`).
+    /// No alerts are sent when this is absent.
+    #[serde(default)]
+    pub smtp_host: Option<String>,
+    /// SMTP port.  Default: 587.
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    /// Encryption mode: `"starttls"` (default), `"tls"`, or `"none"`.
+    #[serde(default)]
+    pub smtp_encryption: SmtpEncryption,
+    /// SMTP authentication username.
+    #[serde(default)]
+    pub smtp_username: Option<String>,
+    /// SMTP authentication password.
+    #[serde(default)]
+    pub smtp_password: Option<String>,
+    /// Sender address used in the `From:` header.
+    /// Required when `smtp_host` is configured.
+    #[serde(default)]
+    pub smtp_from: Option<String>,
+}
+
+impl Default for AlertsConfig {
+    fn default() -> Self {
+        Self {
+            admin_email: None,
+            smtp_host: None,
+            smtp_port: default_smtp_port(),
+            smtp_encryption: SmtpEncryption::Starttls,
+            smtp_username: None,
+            smtp_password: None,
+            smtp_from: None,
+        }
+    }
+}
+
+fn default_smtp_port() -> u16 { 587 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchSettings {
