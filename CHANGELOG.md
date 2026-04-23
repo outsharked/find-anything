@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.7.4] - 2026-04-23
+
 ### Added
 
 - **`[log] dir` config option** — when set, find-watch writes daily rotating log files (`find-watch.log.YYYY-MM-DD`) to the specified directory in addition to stdout; spawned find-scan processes also redirect their stdout/stderr to `find-scan.log.YYYY-MM-DD` in the same directory. Useful when running as a Windows service where stdout is not captured. Directory is created automatically.
