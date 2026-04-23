@@ -1069,6 +1069,12 @@ pub struct NormalizationSettings {
     #[serde(default)]
     pub formatters: Vec<FormatterConfig>,
 
+    /// Extensions exempt from word-wrap (without leading dot, lowercase).
+    /// Extensions that match a configured formatter are always exempt regardless
+    /// of this list.
+    #[serde(default)]
+    pub no_wrap_extensions: Vec<String>,
+
     /// Maximum seconds a batch formatter process may run before it is killed
     /// and the per-file fallback is tried. Default: 60.
     #[serde(default = "default_batch_formatter_timeout_secs")]
@@ -1090,6 +1096,7 @@ impl Default for NormalizationSettings {
         Self {
             max_line_length: default_norm_max_line_length(),
             formatters: Vec::new(),
+            no_wrap_extensions: Vec::new(),
             batch_formatter_timeout_secs: default_batch_formatter_timeout_secs(),
             per_file_formatter_timeout_secs: default_per_file_formatter_timeout_secs(),
         }

@@ -3,7 +3,8 @@
 /// Per-file normalization chain (first success wins for pretty-printing):
 /// 1. Built-in pretty-printers (JSON, TOML)
 /// 2. External stdin-mode formatter subprocess (if configured and exits 0)
-/// 3. Word-wrap at max_line_length (always applied as the final step)
+/// 3. Word-wrap at max_line_length — skipped for extensions in
+///    `no_wrap_extensions` or that match a configured formatter.
 ///
 /// Batch normalization (`normalize_batch_indexed`) additionally runs
 /// `batch`-mode formatters once per batch rather than once per file.
@@ -53,12 +54,17 @@ pub fn normalize_lines(
     // Use reformatted text if available, otherwise keep original.
     let working_text = formatted_text.unwrap_or(full_text);
 
-    // Step 3: word-wrap every line that exceeds max_line_length.
-    let wrapped_lines = apply_word_wrap(&working_text, cfg.max_line_length);
+    // Step 3: word-wrap every line that exceeds max_line_length,
+    // unless this extension is exempt (explicit list or has a configured formatter).
+    let final_lines: Vec<String> = if is_wrap_exempt(&ext, cfg) {
+        working_text.lines().map(str::to_string).collect()
+    } else {
+        apply_word_wrap(&working_text, cfg.max_line_length)
+    };
 
     // Rebuild IndexLine vec with fresh line numbers starting at LINE_CONTENT_START.
     let mut result = zero_lines;
-    for (i, content) in wrapped_lines.into_iter().enumerate() {
+    for (i, content) in final_lines.into_iter().enumerate() {
         result.push(IndexLine {
             archive_path: None,
             line_number: i + LINE_CONTENT_START,
@@ -108,9 +114,10 @@ pub fn normalize_batch_indexed(
         }
     }
 
-    // Word-wrap for batch-handled files (formatter may have produced long lines).
-    for (i, (_, _, lines)) in files.iter_mut().enumerate() {
-        if handled[i] {
+    // Word-wrap for batch-handled files (formatter may have produced long lines),
+    // unless the extension is exempt.
+    for (i, (_, name, lines)) in files.iter_mut().enumerate() {
+        if handled[i] && !is_wrap_exempt(&extension_of(name), cfg) {
             *lines = word_wrap_lines(std::mem::take(lines), cfg.max_line_length);
         }
     }
@@ -595,6 +602,11 @@ fn wrap_at_words(s: &str, max_len: usize) -> Vec<String> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn is_wrap_exempt(ext: &str, cfg: &NormalizationSettings) -> bool {
+    cfg.no_wrap_extensions.iter().any(|e| e == ext)
+        || cfg.formatters.iter().any(|f| f.extensions.iter().any(|e| e == ext))
+}
+
 fn extension_of(name: &str) -> String {
     // Use the last segment after '::' for archive members.
     let leaf = name.rsplit("::").next().unwrap_or(name);
@@ -694,6 +706,70 @@ mod tests {
         for cl in &content_lines {
             assert!(cl.content.chars().count() <= 120, "line too long: {}", cl.content);
         }
+    }
+
+    #[test]
+    fn no_wrap_extensions_skips_word_wrap() {
+        let long = "word ".repeat(50).trim_end().to_string(); // ~249 chars
+        let lines = make_lines(&[&long]);
+        let cfg = NormalizationSettings {
+            max_line_length: 120,
+            no_wrap_extensions: vec!["md".to_string()],
+            ..Default::default()
+        };
+        let result = normalize_lines(lines, "readme.md", &cfg);
+        let content_lines: Vec<_> = result.iter().filter(|l| l.line_number >= LINE_CONTENT_START).collect();
+        // Should be a single line — word-wrap was skipped.
+        assert_eq!(content_lines.len(), 1, "md line should not be word-wrapped");
+        assert_eq!(content_lines[0].content, long);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_formatter_extension_skips_word_wrap() {
+        use find_common::config::FormatterConfig;
+
+        // /bin/cat echoes content unchanged.
+        let long = "word ".repeat(50).trim_end().to_string(); // ~249 chars
+        let cfg = NormalizationSettings {
+            max_line_length: 120,
+            formatters: vec![FormatterConfig {
+                path: "/bin/cat".to_string(),
+                args: vec!["{dir}".to_string()],
+                extensions: vec!["js".to_string()],
+                mode: find_common::config::FormatterMode::Batch,
+            }],
+            ..Default::default()
+        };
+
+        let mut files = vec![make_batch_entry(0, "a.js", &[&long])];
+        normalize_batch_indexed(&mut files, &cfg);
+
+        let content: Vec<_> = files[0].2.iter().filter(|l| l.line_number >= LINE_CONTENT_START).collect();
+        // Batch-handled file has a formatter-matched extension → word-wrap skipped.
+        assert_eq!(content.len(), 1, "batch-handled js line should not be word-wrapped");
+    }
+
+    #[test]
+    fn formatter_extension_auto_exempt_from_word_wrap() {
+        use find_common::config::FormatterConfig;
+        let long = "word ".repeat(50).trim_end().to_string(); // ~249 chars
+        let lines = make_lines(&[&long]);
+        let cfg = NormalizationSettings {
+            max_line_length: 120,
+            formatters: vec![FormatterConfig {
+                path: "/bin/cat".to_string(),
+                args: vec![],
+                extensions: vec!["md".to_string()],
+                mode: find_common::config::FormatterMode::Stdin,
+            }],
+            ..Default::default()
+        };
+        let result = normalize_lines(lines, "readme.md", &cfg);
+        let content_lines: Vec<_> = result.iter().filter(|l| l.line_number >= LINE_CONTENT_START).collect();
+        // /bin/cat echoes content unchanged; word-wrap should be skipped because
+        // the extension matches a configured formatter.
+        assert_eq!(content_lines.len(), 1, "md line should not be word-wrapped when formatter is configured");
     }
 
     #[test]
@@ -886,12 +962,11 @@ mod tests {
         let mut files = vec![make_batch_entry(0, "a.js", &[&long_line])];
         normalize_batch_indexed(&mut files, &cfg);
 
-        // Formatter failed → falls through to per-file normalize_lines → word-wrap applied.
+        // Formatter failed — but .js is a formatter-matched extension, so word-wrap is
+        // still skipped. The long line passes through unchanged.
         let content: Vec<_> = files[0].2.iter().filter(|l| l.line_number >= LINE_CONTENT_START).collect();
-        assert!(content.len() > 1, "long line should be word-wrapped after formatter failure");
-        for l in &content {
-            assert!(l.content.len() <= 120, "line too long after fallback: {}", l.content);
-        }
+        assert_eq!(content.len(), 1, "long line should NOT be word-wrapped: formatter-matched extension is always exempt");
+        assert_eq!(content[0].content, long_line);
     }
 
     #[cfg(unix)]
@@ -977,6 +1052,7 @@ mod tests {
                 extensions: vec![ext.to_string()],
                 mode: find_common::config::FormatterMode::Batch,
             }],
+            ..Default::default()
         }
     }
 

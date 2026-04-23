@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::sync::Arc;
 
 use axum::{
@@ -545,7 +546,7 @@ pub async fn search(
         }
     }
 
-    all_results.sort_by_key(|b| std::cmp::Reverse(b.score));
+    all_results.sort_by_key(|a| Reverse(a.score));
 
     // Deduplicate by (source, path, archive_path, line_number), keeping the
     // highest-scoring occurrence (first after sort). Duplicates arise when FTS5
