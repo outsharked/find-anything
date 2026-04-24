@@ -167,6 +167,15 @@
 	// Detect if file is RTF (check member extension for archive members)
 	$: isRtf = (archivePath ?? path).toLowerCase().endsWith('.rtf');
 
+	// Detect if file is HTML
+	$: isHtml = (archivePath ?? path).toLowerCase().endsWith('.html') || (archivePath ?? path).toLowerCase().endsWith('.htm');
+
+	// Path-based raw URL for HTML iframe: encodes each path segment so the browser
+	// resolves relative asset URLs (images, CSS) as siblings on the same endpoint.
+	$: htmlInlineUrl = isHtml && !isArchiveMember
+		? `/api/v1/raw/${encodeURIComponent(source)}/${rawInlinePath.split('/').map(encodeURIComponent).join('/')}`
+		: rawInlineUrl;
+
 	// Word wrap preference (default: false for code, true for text files)
 	$: wordWrap = $profile.wordWrap ?? false;
 
@@ -195,6 +204,13 @@
 
 	// RTF format preference
 	$: rtfFormat = $profile.rtfFormat ?? false;
+
+	// HTML format preference
+	$: htmlFormat = $profile.htmlFormat ?? false;
+
+	function toggleHtmlFormat() {
+		$profile.htmlFormat = !htmlFormat;
+	}
 
 	// RTF rendered HTML — rendered client-side via rtf.js (dynamically imported).
 	let renderedRtf = '';
@@ -690,6 +706,11 @@
 					{rtfFormat ? 'Plain' : 'Formatted'}
 				</button>
 			{/if}
+			{#if isHtml}
+				<button class="toolbar-btn" on:click={toggleHtmlFormat} title="Toggle HTML rendering">
+					{htmlFormat ? 'Plain' : 'Rendered'}
+				</button>
+			{/if}
 			{#if canOpenInExplorer}
 				<button class="toolbar-btn explorer-btn download-icon-btn" style={explorerLaunching ? 'cursor: progress' : ''} on:click={openInExplorer} title="Open in Explorer">
 					<IconFolder />
@@ -842,7 +863,9 @@
 				{#if markdownTooLarge && markdownFormat}
 					<div class="no-content">File too large to render as markdown ({Math.round(rawContent.length / 1024)} KB &gt; {$maxMarkdownRenderKb} KB limit). Showing plain text.</div>
 				{/if}
-				{#if rtfFormat && isRtf}
+				{#if htmlFormat && isHtml}
+					<iframe src={htmlInlineUrl} title="HTML preview" class="html-iframe"></iframe>
+				{:else if rtfFormat && isRtf}
 					{#if renderedRtf}
 						<MarkdownViewer rendered={renderedRtf} />
 					{:else if rtfError}
@@ -985,6 +1008,15 @@
 		flex: 1;
 		overflow: auto;
 		background: var(--bg);
+	}
+
+	.html-iframe {
+		width: 100%;
+		height: 80vh;
+		min-height: 400px;
+		border: none;
+		display: block;
+		background: white;
 	}
 
 	.dup-badge {

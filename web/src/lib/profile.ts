@@ -5,6 +5,7 @@ export interface UserProfile {
 	wordWrap?: boolean;
 	markdownFormat?: boolean;
 	rtfFormat?: boolean;
+	htmlFormat?: boolean;
 	sourceRoots?: Record<string, string>;
 	handlerInstalled?: boolean;
 	contextWindow?: number;

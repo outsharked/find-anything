@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **HTML viewer** — `.html` and `.htm` files now show a "Rendered" toolbar button that renders the file in an inline iframe. A new path-based raw endpoint (`GET /api/v1/raw/{source}/{*path}`) is used so that relative assets (images, CSS) resolve correctly as sibling requests on the same endpoint.
+
 ---
 
 ## [0.7.4] - 2026-04-23
