@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{Query, State},
+    extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -472,6 +472,53 @@ async fn serve_archive_member(
     })
     .await
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// GET /api/v1/raw/{source}/{*path}
+///
+/// Path-based variant of get_raw. Source and file path are URL path segments
+/// rather than query parameters, so the browser resolves relative URLs in HTML
+/// documents (images, CSS, etc.) to sibling paths on the same endpoint.
+/// Auth: bearer/cookie only (no link_code support).
+pub async fn get_raw_path(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath((source, path)): AxumPath<(String, String)>,
+) -> Response {
+    if let Err(s) = check_auth(&state, &headers) {
+        return s.into_response();
+    }
+
+    let (_, canonical_full) = match super::resolve_source_path(&state, &source, &path) {
+        Ok(p) => p,
+        Err(s) => return s.into_response(),
+    };
+
+    let file_size = match tokio::fs::metadata(&canonical_full).await {
+        Ok(m) => m.len(),
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    let mime = mime_guess::from_path(&canonical_full).first_or_octet_stream();
+    let display_filename = canonical_full
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .replace('"', "");
+
+    let file = match File::open(&canonical_full).await {
+        Ok(f) => f,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime.essence_str())
+        .header(header::CONTENT_LENGTH, file_size.to_string())
+        .header(header::CONTENT_DISPOSITION, format!("inline; filename=\"{display_filename}\""))
+        .body(body)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 #[cfg(test)]

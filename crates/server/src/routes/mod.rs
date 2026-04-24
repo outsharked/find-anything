@@ -20,7 +20,7 @@ pub use context::{context_batch, get_context};
 pub use errors::get_errors;
 pub use file::{get_file, list_files};
 pub use links::{get_link, post_link};
-pub use raw::get_raw;
+pub use raw::{get_raw, get_raw_path};
 pub use recent::{get_recent, stream_recent};
 pub use search::search;
 pub use session::{create_session, delete_session};
