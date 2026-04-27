@@ -3,9 +3,7 @@ import { writable } from 'svelte/store';
 export interface UserProfile {
 	sidebarWidth?: number;
 	wordWrap?: boolean;
-	markdownFormat?: boolean;
-	rtfFormat?: boolean;
-	htmlFormat?: boolean;
+	showFormatted?: boolean;
 	sourceRoots?: Record<string, string>;
 	handlerInstalled?: boolean;
 	contextWindow?: number;

@@ -199,17 +199,11 @@
 	// Tab width: user profile overrides server default.
 	$: tabWidth = $profile.tabWidth ?? $serverTabWidth;
 
-	// Markdown format preference
-	$: markdownFormat = $profile.markdownFormat ?? false;
+	// Show formatted/rendered view — default to formatted when opening without a line selection.
+	$: showFormatted = $profile.showFormatted ?? preferOriginal;
 
-	// RTF format preference
-	$: rtfFormat = $profile.rtfFormat ?? false;
-
-	// HTML format preference
-	$: htmlFormat = $profile.htmlFormat ?? false;
-
-	function toggleHtmlFormat() {
-		$profile.htmlFormat = !htmlFormat;
+	function toggleShowFormatted() {
+		$profile.showFormatted = !showFormatted;
 	}
 
 	// RTF rendered HTML — rendered client-side via rtf.js (dynamically imported).
@@ -217,7 +211,7 @@
 	let rtfFetchedForPath = '';
 	let rtfError = false;
 
-	$: if (rtfFormat && isRtf && rtfFetchedForPath !== rawInlinePath) {
+	$: if (showFormatted && isRtf && rtfFetchedForPath !== rawInlinePath) {
 		fetchRtfHtml(rawInlinePath);
 	}
 
@@ -245,10 +239,6 @@
 		} catch {
 			rtfError = true;
 		}
-	}
-
-	function toggleRtfFormat() {
-		$profile.rtfFormat = !rtfFormat;
 	}
 
 	// "Open in Explorer" — visible when a source root is configured for this source.
@@ -339,16 +329,12 @@
 	$: markdownTooLarge = isMarkdown && rawContent.length > $maxMarkdownRenderKb * 1024;
 
 	// Render markdown to HTML (skipped when file exceeds size cap).
-	$: renderedMarkdown = markdownFormat && isMarkdown && !markdownTooLarge
+	$: renderedMarkdown = showFormatted && isMarkdown && !markdownTooLarge
 		? marked.parse(rawContent, { gfm: true, breaks: true })
 		: '';
 
 	function toggleWordWrap() {
 		$profile.wordWrap = !wordWrap;
-	}
-
-	function toggleMarkdownFormat() {
-		$profile.markdownFormat = !markdownFormat;
 	}
 
 	function formatSize(bytes: number | null): string {
@@ -696,19 +682,9 @@
 					{/if}
 				</button>
 			{/if}
-			{#if isMarkdown && !markdownTooLarge}
-				<button class="toolbar-btn" on:click={toggleMarkdownFormat} title="Toggle markdown formatting">
-					{markdownFormat ? 'Plain' : 'Formatted'}
-				</button>
-			{/if}
-			{#if isRtf}
-				<button class="toolbar-btn" on:click={toggleRtfFormat} title="Toggle RTF formatting">
-					{rtfFormat ? 'Plain' : 'Formatted'}
-				</button>
-			{/if}
-			{#if isHtml}
-				<button class="toolbar-btn" on:click={toggleHtmlFormat} title="Toggle HTML rendering">
-					{htmlFormat ? 'Plain' : 'Rendered'}
+			{#if (isMarkdown && !markdownTooLarge) || isRtf || isHtml}
+				<button class="toolbar-btn" on:click={toggleShowFormatted} title="Toggle formatted view">
+					{showFormatted ? 'Plain' : isHtml ? 'Rendered' : 'Formatted'}
 				</button>
 			{/if}
 			{#if canOpenInExplorer}
@@ -860,12 +836,12 @@
 						{/each}
 					</div>
 				{/if}
-				{#if markdownTooLarge && markdownFormat}
+				{#if markdownTooLarge && showFormatted}
 					<div class="no-content">File too large to render as markdown ({Math.round(rawContent.length / 1024)} KB &gt; {$maxMarkdownRenderKb} KB limit). Showing plain text.</div>
 				{/if}
-				{#if htmlFormat && isHtml}
+				{#if showFormatted && isHtml}
 					<iframe src={htmlInlineUrl} title="HTML preview" class="html-iframe"></iframe>
-				{:else if rtfFormat && isRtf}
+				{:else if showFormatted && isRtf}
 					{#if renderedRtf}
 						<MarkdownViewer rendered={renderedRtf} />
 					{:else if rtfError}
@@ -873,7 +849,7 @@
 					{:else}
 						<div class="no-content">Converting…</div>
 					{/if}
-				{:else if markdownFormat && isMarkdown && !markdownTooLarge}
+				{:else if showFormatted && isMarkdown && !markdownTooLarge}
 					<MarkdownViewer rendered={String(renderedMarkdown)} />
 				{:else if codeLines.length === 0 && metaLines.length === 0 && archivePrefix}
 					<!-- Archive root or ZIP-like archive member: show member listing inline -->
