@@ -536,19 +536,23 @@
 
 	// ── Sidebar resize ───────────────────────────────────────────────────────────
 
-	function onResizeStart(e: MouseEvent) {
+	function onResizeStart(e: PointerEvent) {
+		const handle = e.currentTarget as HTMLElement;
+		handle.setPointerCapture(e.pointerId);
 		const startX = e.clientX;
 		const startWidth = sidebarWidth;
-		function onMove(ev: MouseEvent) {
+		function onMove(ev: PointerEvent) {
 			sidebarWidth = Math.min(600, Math.max(120, startWidth + ev.clientX - startX));
 		}
 		function onUp() {
-			document.removeEventListener('mousemove', onMove);
-			document.removeEventListener('mouseup', onUp);
+			handle.removeEventListener('pointermove', onMove);
+			handle.removeEventListener('pointerup', onUp);
+			handle.removeEventListener('pointercancel', onUp);
 			profile.update((p) => ({ ...p, sidebarWidth }));
 		}
-		document.addEventListener('mousemove', onMove);
-		document.addEventListener('mouseup', onUp);
+		handle.addEventListener('pointermove', onMove);
+		handle.addEventListener('pointerup', onUp);
+		handle.addEventListener('pointercancel', onUp);
 	}
 
 	function onResizeKeydown(e: KeyboardEvent) {
@@ -584,7 +588,7 @@
 			class="resize-handle"
 			type="button"
 			aria-label="Resize sidebar"
-			on:mousedown={onResizeStart}
+			on:pointerdown={onResizeStart}
 			on:keydown={onResizeKeydown}
 		/>
 	{/if}
