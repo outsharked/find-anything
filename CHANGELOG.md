@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.7.6] - 2026-04-27
+
 ### Changed
 
 - **Formatted view default** — markdown, RTF, and HTML files now open in formatted/rendered view by default when navigated to directly (from the tree, command palette, or a direct link with no line selection). The three separate per-format profile flags (`markdownFormat`, `rtfFormat`, `htmlFormat`) have been consolidated into a single `showFormatted` preference.
