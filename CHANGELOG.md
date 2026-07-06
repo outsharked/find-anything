@@ -9,6 +9,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **SQLite security update** — bumped `rusqlite` 0.38 → 0.40, updating the bundled SQLite from 3.51.1 to 3.53.2. This fixes a [16-year-old WAL checkpoint bug](https://ubuntu.com/blog/hunting-a-16-year-old-sqlite-bug-with-tla-is-dqlite-affected) (patched upstream in SQLite 3.51.3) where a checkpoint racing with a concurrent writer resetting the WAL file could silently skip transaction data. No API changes affect this codebase (the only breaking changes between 0.38 and 0.40 are in rusqlite's `vtab` module, which is unused here).
+- **`web/pnpm-workspace.yaml`** — the `allowBuilds` entries contained literal placeholder text instead of real booleans, which silently broke `pnpm install` for anyone running it fresh on `main`.
+
+### Changed
+
+- **Dependency housekeeping** — `cargo update` across the Rust workspace (~100 transitive crates moved forward within existing semver ranges); `chrono-node` and `marked` bumped within range on the web side.
+
 ---
 
 ## [0.7.6] - 2026-04-27
