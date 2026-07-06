@@ -308,8 +308,8 @@
 				activeIndex={taActiveIdx}
 				loading={taLoading}
 				sourcePhase={taSourcePhase}
-				on:select={(e) => selectItem(e.detail.name)}
-				on:hover={(e) => { taActiveIdx = e.detail.index; }}
+				onSelect={(name) => selectItem(name)}
+				onHover={(index) => { taActiveIdx = index; }}
 			/>
 		{/if}
 	</div>

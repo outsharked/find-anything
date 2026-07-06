@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import {
 		type LineSelection,
 		selectionSet,
@@ -7,23 +6,29 @@
 		toggleLine
 	} from '$lib/lineSelection';
 
-	/** Syntax-highlighted HTML lines from highlightFile(). */
-	export let codeLines: string[];
-	/** Maps render index (0-based) → original line_number. */
-	export let lineOffsets: number[];
-	/** Currently selected lines. */
-	export let selection: LineSelection = [];
-	/** Whether to enable soft word-wrap. */
-	export let wordWrap: boolean = false;
-	/** Number of spaces a tab character occupies. */
-	export let tabWidth: number = 4;
+	let {
+		codeLines,
+		lineOffsets,
+		selection = [],
+		wordWrap = false,
+		tabWidth = 4,
+		onLineSelect
+	}: {
+		/** Syntax-highlighted HTML lines from highlightFile(). */
+		codeLines: string[];
+		/** Maps render index (0-based) → original line_number. */
+		lineOffsets: number[];
+		/** Currently selected lines — controlled by the caller, not mutated locally. */
+		selection?: LineSelection;
+		/** Whether to enable soft word-wrap. */
+		wordWrap?: boolean;
+		/** Number of spaces a tab character occupies. */
+		tabWidth?: number;
+		onLineSelect?: (selection: LineSelection) => void;
+	} = $props();
 
-	const dispatch = createEventDispatcher<{
-		lineselect: { selection: LineSelection };
-	}>();
-
-	$: highlightedSet = selectionSet(selection);
-	$: arrowLine = firstLine(selection);
+	let highlightedSet = $derived(selectionSet(selection));
+	let arrowLine = $derived(firstLine(selection));
 
 	function handleLineClick(lineNum: number, e: MouseEvent) {
 		let next: LineSelection;
@@ -35,8 +40,7 @@
 		} else {
 			next = [lineNum];
 		}
-		selection = next;
-		dispatch('lineselect', { selection: next });
+		onLineSelect?.(next);
 	}
 </script>
 
@@ -44,13 +48,13 @@
 	<tbody>
 		{#each codeLines as line, i}
 			{@const lineNum = lineOffsets[i] ?? i + 1}
-			<!-- svelte-ignore a11y-click-events-have-key-events -->
-			<!-- svelte-ignore a11y-no-static-element-interactions -->
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<tr
 				id="line-{lineNum}"
 				class="code-row"
 				class:target={highlightedSet.has(lineNum)}
-				on:click={(e) => handleLineClick(lineNum, e)}
+				onclick={(e) => handleLineClick(lineNum, e)}
 			>
 				<td class="td-ln">{lineNum}</td>
 				<td class="td-arrow" style:visibility={lineNum === arrowLine ? 'visible' : 'hidden'}>▶</td>

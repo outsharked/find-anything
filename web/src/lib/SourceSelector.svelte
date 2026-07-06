@@ -1,28 +1,29 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import { clickOutside } from '$lib/clickOutside';
 
-	/** All available source names. */
-	export let sources: string[] = [];
-	/** Currently active sources (empty = all). */
-	export let selected: string[] = [];
+	let {
+		sources = [],
+		selected = [],
+		onChange
+	}: {
+		/** All available source names. */
+		sources?: string[];
+		/** Currently active sources (empty = all) — controlled by the caller, not mutated locally. */
+		selected?: string[];
+		onChange?: (selected: string[]) => void;
+	} = $props();
 
-	const dispatch = createEventDispatcher<{ change: string[] }>();
-
-	let isOpen = false;
+	let isOpen = $state(false);
 
 	function toggle(source: string) {
-		if (selected.includes(source)) {
-			selected = selected.filter((s) => s !== source);
-		} else {
-			selected = [...selected, source];
-		}
-		dispatch('change', selected);
+		const next = selected.includes(source)
+			? selected.filter((s) => s !== source)
+			: [...selected, source];
+		onChange?.(next);
 	}
 
 	function selectAll() {
-		selected = [];
-		dispatch('change', selected);
+		onChange?.([]);
 		isOpen = false;
 	}
 
@@ -31,21 +32,21 @@
 	}
 
 	// Compute display text for the button
-	$: buttonText = (() => {
+	let buttonText = $derived.by(() => {
 		if (selected.length === 0) return 'All sources';
 		if (selected.length === 1) return selected[0];
 		return `${selected.length} of ${sources.length} sources`;
-	})();
+	});
 
 	// Badge showing number of filtered sources
-	$: hasFilter = selected.length > 0 && selected.length < sources.length;
+	let hasFilter = $derived(selected.length > 0 && selected.length < sources.length);
 </script>
 
 <div class="source-selector" use:clickOutside={handleClickOutside}>
 	<button
 		class="trigger"
 		class:has-filter={hasFilter}
-		on:click={() => (isOpen = !isOpen)}
+		onclick={() => (isOpen = !isOpen)}
 		title="Filter by source"
 	>
 		<span class="icon">📁</span>
@@ -59,7 +60,7 @@
 	{#if isOpen}
 		<div class="dropdown">
 			<div class="dropdown-header">
-				<button class="action-btn" on:click={selectAll}>All sources</button>
+				<button class="action-btn" onclick={selectAll}>All sources</button>
 			</div>
 			<div class="dropdown-list">
 				{#each sources as source}
@@ -67,7 +68,7 @@
 						<input
 							type="checkbox"
 							checked={selected.includes(source)}
-							on:change={() => toggle(source)}
+							onchange={() => toggle(source)}
 						/>
 						<span class="source-name">{source}</span>
 					</label>

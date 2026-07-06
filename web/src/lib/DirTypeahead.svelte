@@ -1,24 +1,30 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
-
-	export let items: string[] = [];
-	export let activeIndex = -1;
-	export let loading = false;
-	/** True when showing source names, false when showing directory names. */
-	export let sourcePhase = false;
-
-	const dispatch = createEventDispatcher<{
-		select: { name: string };
-		hover: { index: number };
-	}>();
+	let {
+		items = [],
+		activeIndex = -1,
+		loading = false,
+		sourcePhase = false,
+		onSelect,
+		onHover
+	}: {
+		items?: string[];
+		activeIndex?: number;
+		loading?: boolean;
+		/** True when showing source names, false when showing directory names. */
+		sourcePhase?: boolean;
+		onSelect?: (name: string) => void;
+		onHover?: (index: number) => void;
+	} = $props();
 
 	let listEl: HTMLDivElement;
 
 	// Scroll the active item into view when it changes via keyboard.
-	$: if (listEl && activeIndex >= 0) {
-		const el = listEl.children[activeIndex] as HTMLElement | undefined;
-		el?.scrollIntoView({ block: 'nearest' });
-	}
+	$effect(() => {
+		if (listEl && activeIndex >= 0) {
+			const el = listEl.children[activeIndex] as HTMLElement | undefined;
+			el?.scrollIntoView({ block: 'nearest' });
+		}
+	});
 </script>
 
 <div class="typeahead" bind:this={listEl} role="listbox">
@@ -33,8 +39,8 @@
 				class:active={i === activeIndex}
 				role="option"
 				aria-selected={i === activeIndex}
-				on:mousedown|preventDefault={() => dispatch('select', { name: item })}
-				on:mouseenter={() => dispatch('hover', { index: i })}
+				onmousedown={(e) => { e.preventDefault(); onSelect?.(item); }}
+				onmouseenter={() => onHover?.(i)}
 			>
 				<span class="typeahead-icon">{sourcePhase ? '◉' : '▸'}</span>
 				<span class="typeahead-name">{item}</span>

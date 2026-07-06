@@ -655,9 +655,9 @@
 			{fileState}
 			{renamedTo}
 			{indexingError}
-			on:navigate={(e) => dispatch('navigate', e.detail)}
-			on:dismiss={() => fileState = 'normal'}
-			on:reload={reload}
+			onNavigate={(path) => dispatch('navigate', { path })}
+			onDismiss={() => fileState = 'normal'}
+			onReload={reload}
 		/>
 		<div class="toolbar">
 			{#if canViewInline && (fileKind === 'pdf' || fileKind === 'video')}
@@ -880,9 +880,9 @@
 						{selection}
 						{wordWrap}
 						{tabWidth}
-						on:lineselect={(e) => {
-							selection = e.detail.selection;
-							dispatch('lineselect', e.detail);
+						onLineSelect={(next) => {
+							selection = next;
+							dispatch('lineselect', { selection: next });
 						}}
 					/>
 				{/if}

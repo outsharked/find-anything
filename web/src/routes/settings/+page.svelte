@@ -31,11 +31,11 @@
 		}
 	}
 
-	function handleErrorNavigate(e: CustomEvent<{ source: string; path: string }>) {
+	function handleErrorNavigate(source: string, path: string) {
 		const p = new URLSearchParams();
 		p.set('view', 'file');
-		p.set('fsource', e.detail.source);
-		p.set('path', e.detail.path);
+		p.set('fsource', source);
+		p.set('path', path);
 		goto(`/?${p.toString()}`);
 	}
 
@@ -86,7 +86,7 @@
 					<StatsPanel />
 				{:else if activeSection === 'errors'}
 					<h2 class="content-title">Indexing Errors</h2>
-					<ErrorsPanel on:navigate={handleErrorNavigate} />
+					<ErrorsPanel onNavigate={handleErrorNavigate} />
 				{:else if activeSection === 'admin'}
 					<h2 class="content-title">Admin</h2>
 					<AdminPanel />
@@ -124,7 +124,7 @@
 							<div class="accordion-body">
 								{#if s.id === 'preferences'}<Preferences />
 								{:else if s.id === 'stats'}<StatsPanel />
-								{:else if s.id === 'errors'}<ErrorsPanel on:navigate={handleErrorNavigate} />
+								{:else if s.id === 'errors'}<ErrorsPanel onNavigate={handleErrorNavigate} />
 								{:else if s.id === 'admin'}<AdminPanel />
 								{:else if s.id === 'about'}<About />
 								{/if}
