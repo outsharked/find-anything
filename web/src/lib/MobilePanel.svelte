@@ -1,7 +1,12 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import IconBack from '$lib/icons/IconBack.svelte';
-	export let open = false;
-	export let title: string;
+
+	let {
+		open = $bindable(false),
+		title,
+		children
+	}: { open?: boolean; title: string; children?: Snippet } = $props();
 
 	// Portal: physically moves the panel DOM node to document.body so it is
 	// never clipped or hidden by any ancestor's overflow/display/transform CSS.
@@ -14,13 +19,13 @@
 {#if open}
 	<div class="mobile-panel" use:portal>
 		<div class="mobile-panel-header">
-			<button class="back-btn" on:click={() => (open = false)} aria-label="Close">
+			<button class="back-btn" onclick={() => (open = false)} aria-label="Close">
 				<IconBack />
 			</button>
 			<span class="mobile-panel-title">{title}</span>
 		</div>
 		<div class="mobile-panel-body">
-			<slot />
+			{@render children?.()}
 		</div>
 	</div>
 {/if}
