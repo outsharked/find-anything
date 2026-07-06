@@ -96,7 +96,7 @@
 			{#if link.kind === 'image'}
 				<DirectImageViewer src={rawUrl()} />
 			{:else if link.kind === 'pdf'}
-				<iframe src={rawUrl()} title={link.filename} class="embed-frame" />
+				<iframe src={rawUrl()} title={link.filename} class="embed-frame"></iframe>
 			{:else if link.kind === 'video'}
 				<!-- svelte-ignore a11y-media-has-caption -->
 				<video controls src={rawUrl()} class="video-player">

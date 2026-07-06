@@ -19,9 +19,13 @@ export default defineConfig({
 		fs: { strict: false }
 	},
 	build: {
+		// rtf.js is intentionally large (~2.2MB) and lazy-loaded on demand. Vite 8's
+		// default Rolldown bundler reports the "chunk larger than 500kB" notice through
+		// its own reporter rather than the rollupOptions.onwarn hook, so raise the limit
+		// instead of trying to suppress that specific warning.
+		chunkSizeWarningLimit: 2500,
 		rollupOptions: {
 			onwarn(warning, warn) {
-				// rtf.js is intentionally large and lazy-loaded on demand — suppress the chunk size warning.
 				if (warning.code === 'CHUNK_TOO_LARGE' && warning.message.includes('rtf.js')) return;
 				warn(warning);
 			}
