@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- **Svelte runes migration (incremental, 1/N)** — `MobilePanel.svelte` converted from legacy syntax (`export let`, `<slot>`) to runes (`$props()`, `$bindable()`, snippet `children`). Purely internal; its one call site (`TopBar.svelte`) needed no changes since `bind:` and slotted-content syntax are unchanged from the caller's perspective. Part of the incremental, file-by-file migration following the Svelte 5 toolchain bump.
+
 ### Added
 
 - **PDF viewer on mobile** — Android Chrome previously triggered a file download instead of displaying PDFs inline. PDF.js is now used on Android to render PDF pages as canvas elements directly in the browser. The existing iframe viewer is unchanged on desktop. PDF.js is loaded lazily via dynamic import, only on first PDF view.
