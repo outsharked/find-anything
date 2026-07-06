@@ -1,14 +1,24 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import IconMetaOpen from '$lib/icons/IconMetaOpen.svelte';
 	import IconMetaClose from '$lib/icons/IconMetaClose.svelte';
-	/** Whether the drawer starts open. */
-	export let initialOpen: boolean = false;
 
-	let open = initialOpen;
+	let {
+		initialOpen = false,
+		children
+	}: {
+		/** Whether the drawer starts open. */
+		initialOpen?: boolean;
+		children?: Snippet;
+	} = $props();
+
+	// Intentionally a one-time snapshot, not synced to the prop afterward — the
+	// drawer's open/closed state is then controlled entirely by the toggle button.
+	let open = $state(initialOpen);
 </script>
 
 <div class="meta-drawer">
-	<button class="drawer-toggle" on:click={() => (open = !open)} title={open ? 'Hide metadata' : 'Show metadata'}>
+	<button class="drawer-toggle" onclick={() => (open = !open)} title={open ? 'Hide metadata' : 'Show metadata'}>
 		{#if open}
 			<IconMetaOpen />
 		{:else}
@@ -17,7 +27,7 @@
 	</button>
 	<div class="drawer-content drawer-always-open" class:drawer-open={open}>
 		<div class="drawer-inner">
-			<slot />
+			{@render children?.()}
 		</div>
 	</div>
 </div>

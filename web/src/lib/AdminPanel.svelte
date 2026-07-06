@@ -3,11 +3,11 @@
 	import { getInboxStatus, retryFailedInbox } from '$lib/api';
 	import type { InboxStatusResponse } from '$lib/api';
 
-	let inbox: InboxStatusResponse | null = null;
-	let loading = true;
-	let error: string | null = null;
-	let retrying = false;
-	let retryMessage: string | null = null;
+	let inbox: InboxStatusResponse | null = $state(null);
+	let loading = $state(true);
+	let error: string | null = $state(null);
+	let retrying = $state(false);
+	let retryMessage: string | null = $state(null);
 
 	onMount(() => {
 		fetchStatus();
@@ -56,7 +56,7 @@
 		</div>
 		{#if inbox.failed.length > 0}
 			<div class="actions">
-				<button class="btn" on:click={handleRetry} disabled={retrying}>
+				<button class="btn" onclick={handleRetry} disabled={retrying}>
 					{retrying ? 'Retrying…' : 'Retry Failed'}
 				</button>
 			</div>

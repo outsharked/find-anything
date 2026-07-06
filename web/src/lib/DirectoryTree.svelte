@@ -6,13 +6,18 @@
 	import { liveEvent } from '$lib/liveUpdates';
 	import { getCachedDir, prefetchTreePath } from '$lib/treeCache';
 
-	export let source: string;
-	/** Currently open file path — highlighted in the tree. */
-	export let activePath: string | null = null;
+	let {
+		source,
+		activePath = null
+	}: {
+		source: string;
+		/** Currently open file path — highlighted in the tree. */
+		activePath?: string | null;
+	} = $props();
 
-	let roots: DirEntry[] = [];
-	let loading = true;
-	let error: string | null = null;
+	let roots: DirEntry[] = $state([]);
+	let loading = $state(true);
+	let error: string | null = $state(null);
 
 	onMount(async () => {
 		try {
@@ -35,14 +40,16 @@
 	});
 
 	// Refresh roots when a file at the root level is added, removed, or renamed.
-	$: if ($liveEvent && $liveEvent.source === source && !loading) {
-		const ev = $liveEvent;
-		const parentDir = dirOf(ev.path);
-		const newParentDir = ev.new_path ? dirOf(ev.new_path) : null;
-		if (parentDir === '' || newParentDir === '') {
-			refreshRoots();
+	$effect(() => {
+		if ($liveEvent && $liveEvent.source === source && !loading) {
+			const ev = $liveEvent;
+			const parentDir = dirOf(ev.path);
+			const newParentDir = ev.new_path ? dirOf(ev.new_path) : null;
+			if (parentDir === '' || newParentDir === '') {
+				refreshRoots();
+			}
 		}
-	}
+	});
 
 	async function refreshRoots() {
 		try {

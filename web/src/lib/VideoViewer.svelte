@@ -2,23 +2,28 @@
 	import { parseMetaTags } from '$lib/metaTags';
 	import MetaDrawer from '$lib/MetaDrawer.svelte';
 
-	export let src: string;
-	/** Extracted metadata lines (line_number === 1, starting with '['). */
-	export let metaLines: { content: string }[] = [];
+	let {
+		src,
+		metaLines = []
+	}: {
+		src: string;
+		/** Extracted metadata lines (line_number === 1, starting with '['). */
+		metaLines?: { content: string }[];
+	} = $props();
 
-	$: hasMeta = metaLines.length > 0;
+	let hasMeta = $derived(metaLines.length > 0);
 
-	let noVideoTrack = false;
-	let mediaError: string | null = null;
+	let noVideoTrack = $state(false);
+	let mediaError: string | null = $state(null);
 
 	// Extract container format from metadata (e.g. "[VIDEO:format] mkv" → "MKV").
-	$: videoFormat = (() => {
+	let videoFormat = $derived.by(() => {
 		for (const m of metaLines) {
 			const match = m.content.match(/\[VIDEO:format\]\s*(\S+)/i);
 			if (match) return match[1].toUpperCase();
 		}
 		return null;
-	})();
+	});
 
 	function onLoadedMetadata(e: Event) {
 		const video = e.target as HTMLVideoElement;
@@ -50,8 +55,8 @@
 		{#if mediaError}
 			<div class="codec-warning">{mediaError}</div>
 		{/if}
-		<!-- svelte-ignore a11y-media-has-caption -->
-		<video controls {src} class="video-player" on:loadedmetadata={onLoadedMetadata} on:error={onError}>
+		<!-- svelte-ignore a11y_media_has_caption -->
+		<video controls {src} class="video-player" onloadedmetadata={onLoadedMetadata} onerror={onError}>
 			Your browser does not support the video tag.
 		</video>
 	</div>

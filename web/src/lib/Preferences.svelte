@@ -6,7 +6,7 @@
 
 	const HANDLER_INSTALL_CMD =
 		'irm https://github.com/jamietre/find-anything/releases/latest/download/install-handler.ps1 | iex';
-	let handlerCopied = false;
+	let handlerCopied = $state(false);
 	function copyHandlerCmd() {
 		navigator.clipboard.writeText(HANDLER_INSTALL_CMD).then(() => {
 			handlerCopied = true;
@@ -18,7 +18,7 @@
 		profile.update((p) => ({ ...p, handlerInstalled: value || undefined }));
 	}
 
-	let sourceNames: string[] = [];
+	let sourceNames: string[] = $state([]);
 
 	onMount(async () => {
 		try {
@@ -57,7 +57,7 @@
 			id="theme"
 			class="select"
 			value={$profile.theme ?? 'dark'}
-			on:change={(e) => setTheme(e.currentTarget.value)}
+			onchange={(e) => setTheme(e.currentTarget.value)}
 		>
 			<option value="dark">Dark</option>
 			<option value="light">Light</option>
@@ -74,7 +74,7 @@
 			id="tab-width"
 			class="select"
 			value={$profile.tabWidth ?? $tabWidth}
-			on:change={(e) => setTabWidth(Number(e.currentTarget.value))}
+			onchange={(e) => setTabWidth(Number(e.currentTarget.value))}
 		>
 			<option value={1}>1</option>
 			<option value={2}>2</option>
@@ -82,7 +82,7 @@
 			<option value={8}>8</option>
 		</select>
 		{#if $profile.tabWidth !== undefined}
-			<button class="clear-btn" on:click={() => { profile.update(p => { const {tabWidth: _, ...rest} = p; return rest; }); tabWidth.set(4); }}>Reset</button>
+			<button class="clear-btn" onclick={() => { profile.update(p => { const {tabWidth: _, ...rest} = p; return rest; }); tabWidth.set(4); }}>Reset</button>
 		{/if}
 	</div>
 </div>
@@ -95,7 +95,7 @@
 			id="ctx-window"
 			class="select"
 			value={$profile.contextWindow ?? $contextWindow}
-			on:change={(e) => setContextWindow(Number(e.currentTarget.value))}
+			onchange={(e) => setContextWindow(Number(e.currentTarget.value))}
 		>
 			<option value={0}>0 (match only)</option>
 			<option value={1}>1 (±1 line)</option>
@@ -104,7 +104,7 @@
 			<option value={5}>5 (±5 lines)</option>
 		</select>
 		{#if $profile.contextWindow !== undefined}
-			<button class="clear-btn" on:click={() => { profile.update(p => { const {contextWindow: _, ...rest} = p; return rest; }); contextWindow.set(1); }}>Reset</button>
+			<button class="clear-btn" onclick={() => { profile.update(p => { const {contextWindow: _, ...rest} = p; return rest; }); contextWindow.set(1); }}>Reset</button>
 		{/if}
 	</div>
 </div>
@@ -118,7 +118,7 @@
 </div>
 <div class="handler-row">
 	<code class="handler-cmd">{HANDLER_INSTALL_CMD}</code>
-	<button class="copy-btn" on:click={copyHandlerCmd}>
+	<button class="copy-btn" onclick={copyHandlerCmd}>
 		{handlerCopied ? 'Copied!' : 'Copy'}
 	</button>
 </div>
@@ -130,7 +130,7 @@
 			id="handler-installed"
 			type="checkbox"
 			checked={!!$profile.handlerInstalled}
-			on:change={(e) => setHandlerInstalled(e.currentTarget.checked)}
+			onchange={(e) => setHandlerInstalled(e.currentTarget.checked)}
 		/>
 		{#if !$profile.handlerInstalled}
 			<span class="handler-hint">Check this after installing to enable the "Open in Explorer" button</span>
@@ -151,7 +151,7 @@
 			class="path-input"
 			placeholder="C:\Share or /mnt/nas"
 			value={$profile.sourceRoots?.[name] ?? ''}
-			on:change={(e) => setSourceRoot(name, e.currentTarget.value)}
+			onchange={(e) => setSourceRoot(name, e.currentTarget.value)}
 		/>
 	</div>
 </div>
