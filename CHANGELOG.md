@@ -21,7 +21,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
-- **Web toolchain upgrade (Phase 1)** — bumped `svelte` 4 → 5, `vite` 5 → 8, `@sveltejs/vite-plugin-svelte` 3 → 7, `svelte-check` 3 → 4, `vitest` 4.0 → 4.1. Existing components are untouched (Svelte 5 runs legacy-syntax components unmodified); this is purely a toolchain bump. TypeScript stays at 5.x for now as a separate follow-up. Fixed three new Svelte 5 compiler warnings (a11y `tabindex` on a dialog role, two self-closing non-void elements) and restored the rtf.js chunk-size-warning suppression, which Vite 8's new default Rolldown bundler reports through a different path than the old `rollupOptions.onwarn` hook.
+- **Web toolchain upgrade (Phase 1)** — bumped `svelte` 4 → 5, `vite` 5 → 8, `@sveltejs/vite-plugin-svelte` 3 → 7, `svelte-check` 3 → 4, `vitest` 4.0 → 4.1. Existing components are untouched (Svelte 5 runs legacy-syntax components unmodified); this is purely a toolchain bump. Fixed three new Svelte 5 compiler warnings (a11y `tabindex` on a dialog role, two self-closing non-void elements) and restored the rtf.js chunk-size-warning suppression, which Vite 8's new default Rolldown bundler reports through a different path than the old `rollupOptions.onwarn` hook.
+- **TypeScript 6** — bumped `typescript` 5.9 → 6.0 as a follow-up to the toolchain upgrade above. No code changes needed: the project's `tsconfig.json` already set `strict`, `module`/`target`, `moduleResolution`, and `esModuleInterop` explicitly to values matching TS 6's new defaults.
 - **Dependency housekeeping** — `cargo update` across the Rust workspace (~100 transitive crates moved forward within existing semver ranges); `chrono-node` and `marked` bumped within range on the web side.
 
 ### Fixed
