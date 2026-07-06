@@ -140,7 +140,7 @@
 				searching={isSearchActive}
 				{deletedPaths}
 				{query}
-				on:open={(e) => dispatch('open', e.detail)}
+				onOpen={(result) => dispatch('open', result)}
 			/>
 		{/key}
 	{/if}

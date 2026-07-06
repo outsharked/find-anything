@@ -1,19 +1,25 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import type { SearchResult } from '$lib/api';
 	import SearchResultItem from '$lib/SearchResult.svelte';
 
-	export let results: SearchResult[] = [];
-	export let searching = false;
-	export let deletedPaths: Set<string> = new Set();
-	export let query = '';
-
-	const dispatch = createEventDispatcher<{ open: SearchResult }>();
+	let {
+		results = [],
+		searching = false,
+		deletedPaths = new Set(),
+		query = '',
+		onOpen
+	}: {
+		results?: SearchResult[];
+		searching?: boolean;
+		deletedPaths?: Set<string>;
+		query?: string;
+		onOpen?: (result: SearchResult) => void;
+	} = $props();
 
 	// Group results by file so multiple hits in the same file appear as one card.
 	type ResultGroup = { key: string; hits: SearchResult[] };
 
-	$: groups = (() => {
+	let groups = $derived.by(() => {
 		const map = new Map<string, ResultGroup>();
 		const order: string[] = [];
 		for (const r of results) {
@@ -29,7 +35,7 @@
 			group.hits.sort((a, b) => a.line_number - b.line_number);
 		}
 		return order.map((k) => map.get(k)!);
-	})();
+	});
 </script>
 
 <div class="result-list" class:searching>
@@ -39,7 +45,7 @@
 		{#each groups as group (group.key)}
 			{@const isDeleted = deletedPaths.has(`${group.hits[0].source}:${group.hits[0].path}`)}
 			<div class="result-pad" class:deleted={isDeleted}>
-				<SearchResultItem hits={group.hits} {query} on:open={(e) => dispatch('open', e.detail)} />
+				<SearchResultItem hits={group.hits} {query} on:open={(e) => onOpen?.(e.detail)} />
 			</div>
 		{/each}
 	{/if}

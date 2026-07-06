@@ -594,7 +594,7 @@
 				sources={sourceNames}
 				activeSource={fileView?.source ?? null}
 				activePath={fileView?.file.full ?? null}
-				on:open={handleOpenFileFromTree}
+				onOpen={(detail) => handleOpenFileFromTree(new CustomEvent('open', { detail }))}
 			/>
 		</aside>
 		<button

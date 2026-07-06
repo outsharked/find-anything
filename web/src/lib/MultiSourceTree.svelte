@@ -1,18 +1,25 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import DirectoryTree from './DirectoryTree.svelte';
 	import { keyboardCursorPath } from '$lib/treeStore';
 
-	export let sources: string[];
-	export let activeSource: string | null;
-	export let activePath: string | null;
+	let {
+		sources,
+		activeSource,
+		activePath,
+		onOpen
+	}: {
+		sources: string[];
+		activeSource: string | null;
+		activePath: string | null;
+		onOpen?: (detail: { source: string; path: string; kind: string; archivePath?: string }) => void;
+	} = $props();
 
-	const dispatch = createEventDispatcher();
-
-	let expanded: Record<string, boolean> = {};
+	let expanded: Record<string, boolean> = $state({});
 
 	// Auto-expand the source that contains the active file.
-	$: if (activeSource) expanded[activeSource] = true;
+	$effect(() => {
+		if (activeSource) expanded[activeSource] = true;
+	});
 
 	// Track the last button that received focus inside the tree.
 	// This is more reliable than document.activeElement, which can be stale
@@ -44,14 +51,14 @@
 	}
 </script>
 
-<div class="multi-tree" role="tree" tabindex="-1" on:focusin={handleFocusin} on:keydown={handleKeydown}>
+<div class="multi-tree" role="tree" tabindex="-1" onfocusin={handleFocusin} onkeydown={handleKeydown}>
 	{#each sources as source (source)}
 		<div class="source-root">
 			<button
 				class="source-header"
 				class:active={source === activeSource}
 				data-tree-nav="source"
-				on:click={() => (expanded[source] = !expanded[source])}
+				onclick={() => (expanded[source] = !expanded[source])}
 			>
 				{source}
 			</button>
@@ -59,7 +66,7 @@
 				<DirectoryTree
 					{source}
 					activePath={source === activeSource ? activePath : null}
-					on:open={(e) => dispatch('open', e.detail)}
+					on:open={(e) => onOpen?.(e.detail)}
 				/>
 			{/if}
 		</div>

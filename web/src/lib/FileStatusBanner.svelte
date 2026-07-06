@@ -1,15 +1,19 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
-
-	export let fileState: 'normal' | 'deleted' | 'renamed' | 'modified';
-	export let renamedTo: string | null = null;
-	export let indexingError: string | null = null;
-
-	const dispatch = createEventDispatcher<{
-		navigate: { path: string };
-		dismiss: void;
-		reload: void;
-	}>();
+	let {
+		fileState,
+		renamedTo = null,
+		indexingError = null,
+		onNavigate,
+		onDismiss,
+		onReload
+	}: {
+		fileState: 'normal' | 'deleted' | 'renamed' | 'modified';
+		renamedTo?: string | null;
+		indexingError?: string | null;
+		onNavigate?: (path: string) => void;
+		onDismiss?: () => void;
+		onReload?: () => void;
+	} = $props();
 </script>
 
 {#if fileState === 'deleted'}
@@ -19,14 +23,14 @@
 {:else if fileState === 'renamed' && renamedTo}
 	<div class="file-status-banner renamed-banner">
 		Renamed to
-		<button class="banner-btn" on:click={() => dispatch('navigate', { path: renamedTo ?? '' })}>{renamedTo}</button>
-		<button class="banner-dismiss" on:click={() => dispatch('dismiss')} aria-label="Dismiss">✕</button>
+		<button class="banner-btn" onclick={() => onNavigate?.(renamedTo ?? '')}>{renamedTo}</button>
+		<button class="banner-dismiss" onclick={() => onDismiss?.()} aria-label="Dismiss">✕</button>
 	</div>
 {:else if fileState === 'modified'}
 	<div class="file-status-banner modified-banner">
 		<span>Content has changed.</span>
-		<button class="banner-btn" on:click={() => dispatch('reload')}>Reload</button>
-		<button class="banner-dismiss" on:click={() => dispatch('dismiss')} aria-label="Dismiss">✕</button>
+		<button class="banner-btn" onclick={() => onReload?.()}>Reload</button>
+		<button class="banner-dismiss" onclick={() => onDismiss?.()} aria-label="Dismiss">✕</button>
 	</div>
 {/if}
 {#if indexingError}

@@ -2,18 +2,17 @@
 	import { onMount } from 'svelte';
 	import { getErrors, getStats } from '$lib/api';
 	import type { IndexingError } from '$lib/api';
-	import { createEventDispatcher } from 'svelte';
 
-	const dispatch = createEventDispatcher<{ navigate: { source: string; path: string } }>();
+	let { onNavigate }: { onNavigate?: (source: string, path: string) => void } = $props();
 
-	let sources: string[] = [];
-	let selectedSource = '';
-	let errors: IndexingError[] = [];
-	let total = 0;
-	let loading = false;
-	let loadError: string | null = null;
+	let sources: string[] = $state([]);
+	let selectedSource = $state('');
+	let errors: IndexingError[] = $state([]);
+	let total = $state(0);
+	let loading = $state(false);
+	let loadError: string | null = $state(null);
 	/** Track which rows have the error text expanded. */
-	let expanded: Set<string> = new Set();
+	let expanded: Set<string> = $state(new Set());
 
 	onMount(async () => {
 		try {
@@ -55,7 +54,7 @@
 	}
 
 	function handlePathClick(err: IndexingError) {
-		dispatch('navigate', { source: selectedSource, path: err.path });
+		onNavigate?.(selectedSource, err.path);
 	}
 
 	function fmtRelativeTime(epochSecs: number): string {
@@ -76,7 +75,7 @@
 			id="errors-source-select"
 			class="source-select"
 			bind:value={selectedSource}
-			on:change={fetchErrors}
+			onchange={fetchErrors}
 		>
 			{#each sources as src (src)}
 				<option value={src}>{src}</option>
@@ -110,9 +109,9 @@
 				{@const needsTruncate = err.error.length > ERROR_PREVIEW_LEN}
 				<tr class="error-row">
 					<td class="col-path">
-						<!-- svelte-ignore a11y-click-events-have-key-events -->
-						<!-- svelte-ignore a11y-no-static-element-interactions -->
-						<span class="path-link" on:click={() => handlePathClick(err)} title={err.path}>
+						<!-- svelte-ignore a11y_click_events_have_key_events -->
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<span class="path-link" onclick={() => handlePathClick(err)} title={err.path}>
 							{err.path}
 						</span>
 					</td>
@@ -122,11 +121,11 @@
 							{#if needsTruncate && !isExpanded}…{/if}
 						</span>
 						{#if needsTruncate}
-							<!-- svelte-ignore a11y-click-events-have-key-events -->
-							<!-- svelte-ignore a11y-no-static-element-interactions -->
+							<!-- svelte-ignore a11y_click_events_have_key_events -->
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<span
 								class="toggle-btn"
-								on:click={() => toggleExpand(err.path)}
+								onclick={() => toggleExpand(err.path)}
 							>{isExpanded ? 'Show less' : 'Show more'}</span>
 						{/if}
 					</td>

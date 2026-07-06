@@ -1,38 +1,48 @@
 <script lang="ts">
 	import AppLogo from './AppLogo.svelte';
-	export let filename: string;
-	export let mtime: number;
-	export let linkCode: string;
-	export let source: string;
-	export let path: string;
-	export let archivePath: string | null;
 
-	$: dateStr = new Date(mtime * 1000).toLocaleDateString(undefined, {
+	let {
+		filename,
+		mtime,
+		linkCode,
+		source,
+		path,
+		archivePath
+	}: {
+		filename: string;
+		mtime: number;
+		linkCode: string;
+		source: string;
+		path: string;
+		archivePath: string | null;
+	} = $props();
+
+	let dateStr = $derived(new Date(mtime * 1000).toLocaleDateString(undefined, {
 		year: 'numeric',
 		month: '2-digit',
 		day: '2-digit'
-	});
+	}));
 
-	$: compositePath = archivePath ? `${path}::${archivePath}` : path;
+	let compositePath = $derived(archivePath ? `${path}::${archivePath}` : path);
 
-	$: rawUrl = (() => {
+	let rawUrl = $derived.by(() => {
 		const u = new URL('/api/v1/raw', location.origin);
 		u.searchParams.set('link_code', linkCode);
 		u.searchParams.set('source', source);
 		u.searchParams.set('path', compositePath);
 		return u.toString();
-	})();
+	});
 
-	$: downloadUrl = rawUrl + '&download=1';
+	let downloadUrl = $derived(rawUrl + '&download=1');
 
-	$: openInAppUrl = (() => {
+	let openInAppUrl = $derived.by(() => {
 		const u = new URL('/', location.origin);
 		u.searchParams.set('view', 'file');
 		u.searchParams.set('fsource', source);
 		u.searchParams.set('path', path);
 		if (archivePath) u.searchParams.set('apath', archivePath);
 		return u.toString();
-	})();
+	});
 </script>
 
 <header class="direct-header">
