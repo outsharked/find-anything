@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+	import { dev } from '$app/environment';
 	import { pushState as svelteKitPushState, replaceState as svelteKitReplaceState } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { get } from 'svelte/store';
@@ -187,6 +188,18 @@
 	// ── Lifecycle ───────────────────────────────────────────────────────────────
 
 	onMount(() => {
+		// SvelteKit's dev-mode router monkeypatches history.pushState/replaceState and
+		// logs a one-time console.warn the first time either is called directly, which
+		// replaceSearchState() below does deliberately (see its comment). Consume that
+		// one-time warning silently here, before any real call happens, so it never
+		// surfaces for our intentional bypass during search typing.
+		if (dev) {
+			const originalWarn = console.warn;
+			console.warn = () => {};
+			history.replaceState(history.state, '', location.href);
+			console.warn = originalWarn;
+		}
+
 		const stopLive = startLiveUpdates();
 
 		(async () => {
