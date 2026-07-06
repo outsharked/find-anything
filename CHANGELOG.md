@@ -9,6 +9,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **PDF viewer on mobile** — Android Chrome previously triggered a file download instead of displaying PDFs inline. PDF.js is now used on Android to render PDF pages as canvas elements directly in the browser. The existing iframe viewer is unchanged on desktop. PDF.js is loaded lazily via dynamic import, only on first PDF view.
+- **Zoom controls for the mobile PDF viewer** — a translucent +/- control pinned to the top-left of the PDF viewport lets you zoom from 50% to 300% in 25% steps. Zooming resizes the already-rendered pages instantly via CSS, then re-renders at native resolution in the background (debounced) once you stop, so text stays sharp without ever blocking the controls.
+
+### Fixed
+
+- **PDF viewer race condition** — rapidly switching between PDF files (before a previous file finished rendering) could interleave pages from two different documents on screen, or show the wrong document, since nothing tracked which render request was current. A `RenderGuard` now ensures a superseded render bails out instead of writing over a newer one.
+- **PDF page sizing** — canvas resolution was computed from the container's width while it was still hidden (always reading 0), silently falling back to the full window width and over-rendering on devices with narrower visible panels. Sizing now uses the (always-visible) parent panel's width instead.
+
 ### Changed
 
 - **Web toolchain upgrade (Phase 1)** — bumped `svelte` 4 → 5, `vite` 5 → 8, `@sveltejs/vite-plugin-svelte` 3 → 7, `svelte-check` 3 → 4, `vitest` 4.0 → 4.1. Existing components are untouched (Svelte 5 runs legacy-syntax components unmodified); this is purely a toolchain bump. TypeScript stays at 5.x for now as a separate follow-up. Fixed three new Svelte 5 compiler warnings (a11y `tabindex` on a dialog role, two self-closing non-void elements) and restored the rtf.js chunk-size-warning suppression, which Vite 8's new default Rolldown bundler reports through a different path than the old `rollupOptions.onwarn` hook.

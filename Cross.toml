@@ -1,3 +1,13 @@
+[build]
+# Mount sccache binary and cache dir into all cross containers
+volumes = [
+    "/home/jamiet/.local/bin/sccache:/usr/local/bin/sccache",
+    "/home/jamiet/.cache/sccache:/root/.cache/sccache",
+]
+
+[build.env]
+passthrough = ["RUSTC_WRAPPER", "SCCACHE_DIR"]
+
 [target.x86_64-pc-windows-gnu]
 # The default cross image ships mingw-w64 < 7.0, which is missing GetHostNameW
 # (a winsock2 symbol that Rust's libstd for windows-gnu now requires).
