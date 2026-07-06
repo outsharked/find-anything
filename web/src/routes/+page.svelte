@@ -590,7 +590,7 @@
 			aria-label="Resize sidebar"
 			on:pointerdown={onResizeStart}
 			on:keydown={onResizeKeydown}
-		/>
+		></button>
 	{/if}
 
 	<div class="main-content" bind:this={mainContent}>

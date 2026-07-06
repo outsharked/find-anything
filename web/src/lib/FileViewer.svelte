@@ -900,7 +900,7 @@
 
 {#if shareDialogOpen}
 <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-<div class="share-overlay" on:click|self={() => shareDialogOpen = false} on:keydown={(e) => e.key === 'Escape' && (shareDialogOpen = false)} role="dialog" aria-modal="true" aria-label="Share">
+<div class="share-overlay" on:click|self={() => shareDialogOpen = false} on:keydown={(e) => e.key === 'Escape' && (shareDialogOpen = false)} role="dialog" aria-modal="true" aria-label="Share" tabindex="-1">
 	<div class="share-dialog">
 		<div class="share-dialog-header">
 			<span class="share-dialog-title">Share</span>

@@ -9,14 +9,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- **Web toolchain upgrade (Phase 1)** — bumped `svelte` 4 → 5, `vite` 5 → 8, `@sveltejs/vite-plugin-svelte` 3 → 7, `svelte-check` 3 → 4, `vitest` 4.0 → 4.1. Existing components are untouched (Svelte 5 runs legacy-syntax components unmodified); this is purely a toolchain bump. TypeScript stays at 5.x for now as a separate follow-up. Fixed three new Svelte 5 compiler warnings (a11y `tabindex` on a dialog role, two self-closing non-void elements) and restored the rtf.js chunk-size-warning suppression, which Vite 8's new default Rolldown bundler reports through a different path than the old `rollupOptions.onwarn` hook.
+- **Dependency housekeeping** — `cargo update` across the Rust workspace (~100 transitive crates moved forward within existing semver ranges); `chrono-node` and `marked` bumped within range on the web side.
+
 ### Fixed
 
 - **SQLite security update** — bumped `rusqlite` 0.38 → 0.40, updating the bundled SQLite from 3.51.1 to 3.53.2. This fixes a [16-year-old WAL checkpoint bug](https://ubuntu.com/blog/hunting-a-16-year-old-sqlite-bug-with-tla-is-dqlite-affected) (patched upstream in SQLite 3.51.3) where a checkpoint racing with a concurrent writer resetting the WAL file could silently skip transaction data. No API changes affect this codebase (the only breaking changes between 0.38 and 0.40 are in rusqlite's `vtab` module, which is unused here).
 - **`web/pnpm-workspace.yaml`** — the `allowBuilds` entries contained literal placeholder text instead of real booleans, which silently broke `pnpm install` for anyone running it fresh on `main`.
-
-### Changed
-
-- **Dependency housekeeping** — `cargo update` across the Rust workspace (~100 transitive crates moved forward within existing semver ranges); `chrono-node` and `marked` bumped within range on the web side.
 
 ---
 
