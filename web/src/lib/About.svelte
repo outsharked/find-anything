@@ -2,17 +2,17 @@
 	import { getSettings, getUpdateCheck, applyUpdate } from '$lib/api';
 	import { onMount } from 'svelte';
 
-	let serverVersion = '';
-	let buildHash = '';
+	let serverVersion = $state('');
+	let buildHash = $state('');
 
 	type CheckState = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'no-systemd' | 'no-asset' | 'error';
-	let checkState: CheckState = 'idle';
-	let latestVersion = '';
-	let errorMsg = '';
+	let checkState: CheckState = $state('idle');
+	let latestVersion = $state('');
+	let errorMsg = $state('');
 
 	type ApplyState = 'idle' | 'applying' | 'restarting' | 'done' | 'error';
-	let applyState: ApplyState = 'idle';
-	let applyMsg = '';
+	let applyState: ApplyState = $state('idle');
+	let applyMsg = $state('');
 
 	onMount(async () => {
 		try {
@@ -82,7 +82,7 @@
 
 	<div class="update-row">
 		{#if applyState === 'idle' || applyState === 'error'}
-			<button class="check-btn" on:click={checkForUpdates} disabled={checkState === 'checking'}>
+			<button class="check-btn" onclick={checkForUpdates} disabled={checkState === 'checking'}>
 				{checkState === 'checking' ? 'Checking…' : 'Check for updates'}
 			</button>
 		{/if}
@@ -91,7 +91,7 @@
 			<span class="status ok">Up to date (v{latestVersion})</span>
 		{:else if checkState === 'update-available' && applyState === 'idle'}
 			<span class="status update">v{latestVersion} available</span>
-			<button class="apply-btn" on:click={doUpdate}>Update &amp; restart</button>
+			<button class="apply-btn" onclick={doUpdate}>Update &amp; restart</button>
 		{:else if checkState === 'update-available' && applyState === 'applying'}
 			<span class="status update">Downloading v{latestVersion}…</span>
 		{:else if applyState === 'restarting'}

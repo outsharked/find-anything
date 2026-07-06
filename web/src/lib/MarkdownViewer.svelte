@@ -1,6 +1,6 @@
 <script lang="ts">
 	/** Pre-rendered HTML string from marked.parse(). */
-	export let rendered: string;
+	let { rendered }: { rendered: string } = $props();
 </script>
 
 <div class="markdown-content">

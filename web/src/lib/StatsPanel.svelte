@@ -3,15 +3,15 @@
 	import { getStats } from '$lib/api';
 	import type { SourceStats, StatsResponse } from '$lib/api';
 
-	let breakdownMode: 'kind' | 'ext' = 'kind';
-	let showAllExt = false;
+	let breakdownMode: 'kind' | 'ext' = $state('kind');
+	let showAllExt = $state(false);
 
-	let stats: StatsResponse | null = null;
-	let initialLoading = true;
-	let error: string | null = null;
-	let selectedSource = '';
+	let stats = $state<StatsResponse | null>(null);
+	let initialLoading = $state(true);
+	let error: string | null = $state(null);
+	let selectedSource = $state('');
 
-	$: currentSource = stats?.sources.find((s) => s.name === selectedSource) ?? stats?.sources[0] ?? null;
+	let currentSource = $derived(stats?.sources.find((s) => s.name === selectedSource) ?? stats?.sources[0] ?? null);
 
 	let interval: ReturnType<typeof setInterval> | null = null;
 
@@ -217,12 +217,12 @@
 					<button
 						class="mode-btn"
 						class:active={breakdownMode === 'kind'}
-						on:click={() => { breakdownMode = 'kind'; showAllExt = false; }}
+						onclick={() => { breakdownMode = 'kind'; showAllExt = false; }}
 					>Kind</button>
 					<button
 						class="mode-btn"
 						class:active={breakdownMode === 'ext'}
-						on:click={() => { breakdownMode = 'ext'; showAllExt = false; }}
+						onclick={() => { breakdownMode = 'ext'; showAllExt = false; }}
 					>Extension</button>
 				</div>
 			</div>
@@ -260,7 +260,7 @@
 					{/each}
 				</div>
 				{#if exts.length > 20}
-					<button class="show-more" on:click={() => (showAllExt = !showAllExt)}>
+					<button class="show-more" onclick={() => (showAllExt = !showAllExt)}>
 						{showAllExt ? 'Show less' : `Show all ${exts.length} extensions`}
 					</button>
 				{/if}

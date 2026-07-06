@@ -12,6 +12,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Changed
 
 - **Svelte runes migration (incremental, 1/N)** — `MobilePanel.svelte` converted from legacy syntax (`export let`, `<slot>`) to runes (`$props()`, `$bindable()`, snippet `children`). Purely internal; its one call site (`TopBar.svelte`) needed no changes since `bind:` and slotted-content syntax are unchanged from the caller's perspective. Part of the incremental, file-by-file migration following the Svelte 5 toolchain bump.
+- **Svelte runes migration (incremental, 2/N)** — `About`, `AdminPanel`, `AudioViewer`, `DirectoryTree`, `MarkdownViewer`, `MetaDrawer`, `Preferences`, `StatsPanel`, `VideoViewer` converted from legacy syntax to runes (`$state`, `$derived`, `$props()`, `onclick`/`onchange` instead of `on:click`/`on:change`). All 22 icon components and `SearchHelpContent`/`AppLogo` needed no changes — they have no `<script>` block at all. No caller changes needed anywhere in this group.
 
 ### Added
 

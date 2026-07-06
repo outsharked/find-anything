@@ -2,15 +2,20 @@
 	import { parseMetaTags } from '$lib/metaTags';
 	import MetaDrawer from '$lib/MetaDrawer.svelte';
 
-	/** URL to stream the audio file. */
-	export let src: string;
-	/** Extracted metadata lines (line_number === 1, starting with '['). */
-	export let metaLines: { content: string }[] = [];
+	let {
+		src,
+		metaLines = []
+	}: {
+		/** URL to stream the audio file. */
+		src: string;
+		/** Extracted metadata lines (line_number === 1, starting with '['). */
+		metaLines?: { content: string }[];
+	} = $props();
 </script>
 
 <div class="audio-split-panel">
 	<div class="audio-split-left">
-		<!-- svelte-ignore a11y-media-has-caption -->
+		<!-- svelte-ignore a11y_media_has_caption -->
 		<audio controls {src} class="audio-player">
 			Your browser does not support the audio element.
 		</audio>
