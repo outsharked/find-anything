@@ -11,6 +11,7 @@
 	import IconWrapOn from '$lib/icons/IconWrapOn.svelte';
 	import IconWrapOff from '$lib/icons/IconWrapOff.svelte';
 	import { getFile, createLink } from '$lib/api';
+	import { nextForwardOffset } from '$lib/pagination';
 	import { fileViewPageSize, tabWidth as serverTabWidth } from '$lib/settingsStore';
 	import { highlightFile } from '$lib/highlight';
 	import DirListing from './DirListing.svelte';
@@ -419,6 +420,33 @@
 		highlightedCode = await highlightFile(allContentLines, path);
 	}
 
+	/**
+	 * Append a newly-loaded forward page without re-highlighting the whole
+	 * accumulated buffer. Highlighting only the new lines and concatenating
+	 * the HTML keeps each `loadForward` call O(page size) instead of
+	 * O(total lines loaded so far) — re-tokenizing everything on every page
+	 * turns a long scroll session into O(n²) work. A token that spans the
+	 * page boundary (e.g. a multi-line comment) can lose its highlight class
+	 * on the seam line, same as it already does at every line boundary today
+	 * since each line is rendered as its own `{@html}` fragment.
+	 */
+	async function appendCodeState(newLines: string[]) {
+		lineOffsets = allLineOffsets;
+		rawContent = allContentLines.join('\n');
+		if (newLines.length === 0) return;
+		const newHtml = await highlightFile(newLines, path);
+		highlightedCode = highlightedCode ? `${highlightedCode}\n${newHtml}` : newHtml;
+	}
+
+	/** Same as {@link appendCodeState}, but prepends — used by `loadBackward`. */
+	async function prependCodeState(newLines: string[]) {
+		lineOffsets = allLineOffsets;
+		rawContent = allContentLines.join('\n');
+		if (newLines.length === 0) return;
+		const newHtml = await highlightFile(newLines, path);
+		highlightedCode = highlightedCode ? `${newHtml}\n${highlightedCode}` : newHtml;
+	}
+
 	async function applyFileData(data: import('$lib/api').FileResponse, isInitial: boolean) {
 		contentUnavailable = data.content_unavailable ?? false;
 		if (contentUnavailable) return;
@@ -533,7 +561,7 @@
 				allContentLines = [...data.lines];
 				allLineOffsets = pageOffsets;
 				totalLines = data.total_lines;
-				forwardOffset = anchorOffset + data.lines.length;
+				forwardOffset = nextForwardOffset(anchorOffset, pageSize, data.total_lines);
 				backwardOffset = anchorOffset;
 				noMoreForward = forwardOffset >= totalLines;
 				noMoreBackward = anchorOffset === 0;
@@ -568,9 +596,9 @@
 				: data.lines.map((_, i) => forwardOffset + i + 1);
 			allContentLines = [...allContentLines, ...data.lines];
 			allLineOffsets = [...allLineOffsets, ...pageOffsets];
-			forwardOffset += data.lines.length;
+			forwardOffset = nextForwardOffset(forwardOffset, pageSize, totalLines);
 			noMoreForward = forwardOffset >= totalLines;
-			await updateCodeState();
+			await appendCodeState(data.lines);
 			await tick();
 		} catch { /* silent — user can scroll again to retry */ }
 		loadingForward = false;
@@ -597,7 +625,7 @@
 			allLineOffsets = [...pageOffsets, ...allLineOffsets];
 			backwardOffset = prevOffset;
 			noMoreBackward = prevOffset === 0;
-			await updateCodeState();
+			await prependCodeState(data.lines);
 
 			await tick();
 			codeContainer.scrollTop = oldScrollTop + (codeContainer.scrollHeight - oldScrollHeight);

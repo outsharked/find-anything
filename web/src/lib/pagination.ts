@@ -29,3 +29,20 @@ export function mergePage(
 		newOffset: currentOffset + incoming.length
 	};
 }
+
+/**
+ * Compute the next raw-line offset for FileViewer's paged forward scroll.
+ *
+ * Must advance by the raw line range the server actually consumed
+ * (`min(pageSize, totalLines - currentOffset)`), not by the number of lines
+ * returned in the response. The server (`get_file_lines_paged`) silently
+ * skips any raw line whose stored chunk lookup misses — e.g. blank lines
+ * between TOML table entries in a Cargo.lock, which never got their own
+ * content chunk — so a response can contain fewer lines than the raw range
+ * it covered. Advancing by the response length under-counts in that case,
+ * so the next page re-requests part of an already-loaded range and produces
+ * duplicate line-number keys in CodeViewer's keyed `{#each}`.
+ */
+export function nextForwardOffset(currentOffset: number, pageSize: number, totalLines: number): number {
+	return currentOffset + Math.min(pageSize, totalLines - currentOffset);
+}
