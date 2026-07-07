@@ -1,13 +1,10 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
+	import type { Snippet } from 'svelte';
 	import { profile } from '$lib/profile';
 
-	// SvelteKit passes params to every layout/page component. Declare it to avoid
-	// the runtime "unknown prop" warning. Assigned to _params to signal that it
-	// is intentionally unused (access via $page.params if ever needed).
-	export let params: Record<string, string>;
-	const _params = params;
+	let { children }: { children: Snippet } = $props();
 
 	function resolveTheme(theme: string | undefined): 'dark' | 'light' {
 		const t = theme ?? 'dark';
@@ -40,4 +37,4 @@
 	});
 </script>
 
-<slot />
+{@render children()}

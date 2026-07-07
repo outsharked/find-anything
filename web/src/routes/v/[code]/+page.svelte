@@ -6,18 +6,17 @@
 	import DirectHeader from '$lib/DirectHeader.svelte';
 	import DirectImageViewer from '$lib/DirectImageViewer.svelte';
 
-	let code = '';
-	let state: 'loading' | 'found' | 'expired' | 'not-found' | 'error' = 'loading';
-	let link: ResolveLinkResponse | null = null;
-	let textLines: string[] = [];
+	let viewState: 'loading' | 'found' | 'expired' | 'not-found' | 'error' = $state('loading');
+	let link = $state<ResolveLinkResponse | null>(null);
+	let textLines: string[] = $state([]);
 
-	$: code = $page.params.code ?? '';
+	let code = $derived($page.params.code ?? '');
 
-	$: compositePath = link
+	let compositePath = $derived(link
 		? link.archive_path
 			? `${link.path}::${link.archive_path}`
 			: link.path
-		: '';
+		: '');
 
 	function rawUrl(extra = '') {
 		if (!link) return '';
@@ -46,18 +45,18 @@
 		try {
 			const result = await resolveLink(code);
 			if (result === null) {
-				state = 'not-found';
+				viewState = 'not-found';
 			} else if (result === 'expired') {
-				state = 'expired';
+				viewState = 'expired';
 			} else {
 				link = result;
-				state = 'found';
+				viewState = 'found';
 				if (!isMediaKind(link.kind)) {
 					await loadTextContent();
 				}
 			}
 		} catch {
-			state = 'error';
+			viewState = 'error';
 		}
 	});
 
@@ -71,18 +70,18 @@
 </svelte:head>
 
 <div class="page">
-	{#if state === 'loading'}
+	{#if viewState === 'loading'}
 		<div class="center-msg">Loading…</div>
-	{:else if state === 'not-found'}
+	{:else if viewState === 'not-found'}
 		<div class="mini-header"><a href="/">find-anything</a></div>
 		<div class="center-msg">Link not found</div>
-	{:else if state === 'expired'}
+	{:else if viewState === 'expired'}
 		<div class="mini-header"><a href="/">find-anything</a></div>
 		<div class="center-msg">This link has expired</div>
-	{:else if state === 'error'}
+	{:else if viewState === 'error'}
 		<div class="mini-header"><a href="/">find-anything</a></div>
 		<div class="center-msg">Something went wrong</div>
-	{:else if state === 'found' && link}
+	{:else if viewState === 'found' && link}
 		<DirectHeader
 			filename={link.filename}
 			mtime={link.mtime}
@@ -98,7 +97,7 @@
 			{:else if link.kind === 'pdf'}
 				<iframe src={rawUrl()} title={link.filename} class="embed-frame"></iframe>
 			{:else if link.kind === 'video'}
-				<!-- svelte-ignore a11y-media-has-caption -->
+				<!-- svelte-ignore a11y_media_has_caption -->
 				<video controls src={rawUrl()} class="video-player">
 					Your browser does not support the video element.
 				</video>

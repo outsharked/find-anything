@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher, onMount, afterUpdate, onDestroy, tick } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import IconDownload from '$lib/icons/IconDownload.svelte';
 	import IconCopy from '$lib/icons/IconCopy.svelte';
 	import IconCheck from '$lib/icons/IconCheck.svelte';
@@ -35,72 +35,101 @@
 	import { maxMarkdownRenderKb } from '$lib/settingsStore';
 	import { liveEvent } from '$lib/liveUpdates';
 
-	export let source: string;
-	export let path: string;
-	export let archivePath: string | null = null;
-	export let selection: LineSelection = [];
-	/** Whether to default to the original (rendered) view when the file is opened.
-	 * True for tree/dir/palette opens; false for search-result opens with context. */
-	export let preferOriginal: boolean = false;
+	let {
+		source,
+		path,
+		archivePath = null,
+		selection = [],
+		preferOriginal = false,
+		onLineSelect,
+		onOpen,
+		onNavigateDir,
+		onNavigate
+	}: {
+		source: string;
+		path: string;
+		archivePath?: string | null;
+		selection?: LineSelection;
+		/** Whether to default to the original (rendered) view when the file is opened.
+		 * True for tree/dir/palette opens; false for search-result opens with context. */
+		preferOriginal?: boolean;
+		onLineSelect?: (detail: { selection: LineSelection }) => void;
+		onOpen?: (detail: { source: string; path: string; kind: string; archivePath?: string }) => void;
+		onNavigateDir?: (detail: { prefix: string }) => void;
+		onNavigate?: (detail: { path: string }) => void;
+	} = $props();
 
-	const dispatch = createEventDispatcher<{
-		lineselect: { selection: LineSelection };
-		open: { source: string; path: string; kind: string; archivePath?: string };
-		navigateDir: { prefix: string };
-		navigate: { path: string };
-	}>();
-
-	let loading = true;
-	let error: string | null = null;
-	let contentUnavailable = false;
-	let highlightedCode = '';
+	let loading = $state(true);
+	let error: string | null = $state(null);
+	let contentUnavailable = $state(false);
+	let highlightedCode = $state('');
 	/** Maps 0-based render index → line_number */
-	let lineOffsets: number[] = [];
-	let mtime: number | null = null;
-	let size: number | null = null;
-	let fileKind: string | null = null;
-	let rawContent = '';
-	let isEncrypted = false;
-	let indexingError: string | null = null;
+	let lineOffsets: number[] = $state([]);
+	let mtime: number | null = $state(null);
+	let size: number | null = $state(null);
+	let fileKind: string | null = $state(null);
+	let rawContent = $state('');
+	let isEncrypted = $state(false);
+	let indexingError: string | null = $state(null);
 	/** Metadata lines (line_number === 0, excluding the path line itself). */
-	let metaLines: { content: string }[] = [];
+	let metaLines: { content: string }[] = $state([]);
 	/** Paths of duplicate/canonical copies of this file (dedup aliases). */
-	let duplicatePaths: string[] = [];
-	let duplicatesModalOpen = false;
+	let duplicatePaths: string[] = $state([]);
+	let duplicatesModalOpen = $state(false);
 
 	// Original file view
-	let showOriginal = false;
+	let showOriginal = $state(false);
 	// Track previous preferOriginal to detect changes after the component is mounted
 	// (e.g. same file re-opened from a different entry point without remounting).
 	let _prevPreferOriginal = preferOriginal;
-	$: if (preferOriginal !== _prevPreferOriginal) {
-		_prevPreferOriginal = preferOriginal;
-		if (fileKind !== null) {
-			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg || (iworkPreviewName !== null && preferOriginal);
+	$effect(() => {
+		if (preferOriginal !== _prevPreferOriginal) {
+			_prevPreferOriginal = preferOriginal;
+			if (fileKind !== null) {
+				showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg || (iworkPreviewName !== null && preferOriginal);
+			}
 		}
-	}
+	});
 	// Parsed image dimensions for the aspect-ratio loading placeholder.
-	$: imgDims = parseImageDimensions(metaLines);
-	$: placeholderStyle = imgDims
+	let imgDims = $derived(parseImageDimensions(metaLines));
+	let placeholderStyle = $derived(imgDims
 		? `width: min(${imgDims.width}px, 100%); aspect-ratio: ${imgDims.width} / ${imgDims.height}; max-height: min(${imgDims.height}px, 100%); min-height: 0;`
-		: '';
+		: '');
+	// archivePath is set when this file is a member of an archive.
+	// path is always the outer (real) file path — it never contains '::'.
+	let isArchiveMember = $derived(archivePath !== null);
+
+	// Download/stream URL for the outer file (used for download link and PDF iframe).
+	let rawUrl = $derived(`/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`);
+	// For inline image display, use the composite path for archive members so the
+	// server extracts the member from the outer ZIP.
+	let rawInlinePath = $derived(archivePath ? `${path}::${archivePath}` : path);
+	// For archive members, the raw endpoint only supports ZIP archives — RAR/TAR/7z members
+	// cannot be extracted for inline viewing.  All archives in the composite path (outer +
+	// any intermediate) must be ZIPs (or ZIP-based iWork formats) for the server to serve the member.
+	const isZipLike = (ext: string) =>
+		ext === 'zip' || ext === 'pages' || ext === 'numbers' || ext === 'key';
+	// Member download: the server can extract members from ZIP archives up to a configured
+	// nesting depth (window.find_anything_config.download_zip_member_levels).
+	// TAR, 7z, etc. are not supported — fall back to downloading the outer archive.
+	const downloadZipMemberLevels: number =
+		(typeof window !== 'undefined' && window.find_anything_config?.download_zip_member_levels) || 1;
+	let outerExt = $derived((path.split('.').pop() ?? '').toLowerCase());
+
 	// iWork preview: present when the document has an embedded preview image.
 	// The preview name is stored in metadata as "[IWORK_PREVIEW] preview.jpg".
 	// Set by applyFileData / applyFileMeta; cannot use metaLines because [IWORK_PREVIEW]
 	// is deliberately filtered out of metaLines so it doesn't appear in the UI.
-	let iworkPreviewName: string | null = null;
-	$: iworkPreviewUrl = iworkPreviewName
+	let iworkPreviewName: string | null = $state(null);
+	let iworkPreviewUrl = $derived(iworkPreviewName
 		? `/api/v1/view?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath + '::' + iworkPreviewName)}`
-		: null;
-	// archivePath is set when this file is a member of an archive.
-	// path is always the outer (real) file path — it never contains '::'.
-	$: isArchiveMember = archivePath !== null;
+		: null);
 
 	// For inline archive browsing: tracks the current dir prefix within the archive.
 	// Also enabled for ZIP-like archive members (.pages/.numbers/.key/.zip) so the
 	// user can browse into a nested iWork document or zipped archive.
-	let archivePrefix = '';
-	$: {
+	let archivePrefix = $state('');
+	$effect(() => {
 		const leafName = archivePath ? (archivePath.split('/').pop()?.split('::').pop() ?? '') : '';
 		const memberExt = (leafName.split('.').pop() ?? '').toLowerCase();
 		if (fileKind === 'archive' && path && (!archivePath || isZipLike(memberExt))) {
@@ -108,39 +137,23 @@
 		} else {
 			archivePrefix = '';
 		}
-	}
-	// Download/stream URL for the outer file (used for download link and PDF iframe).
-	$: rawUrl = `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`;
-	// For inline image display, use the composite path for archive members so the
-	// server extracts the member from the outer ZIP.
-	$: rawInlinePath = archivePath ? `${path}::${archivePath}` : path;
-	// For archive members, the raw endpoint only supports ZIP archives — RAR/TAR/7z members
-	// cannot be extracted for inline viewing.  All archives in the composite path (outer +
-	// any intermediate) must be ZIPs (or ZIP-based iWork formats) for the server to serve the member.
-	const isZipLike = (ext: string) =>
-		ext === 'zip' || ext === 'pages' || ext === 'numbers' || ext === 'key';
-	$: canServeArchiveMember = !isArchiveMember || (
+	});
+	let canServeArchiveMember = $derived(!isArchiveMember || (
 		isZipLike(outerExt) &&
 		(archivePath ?? '').split('::').slice(0, -1).every(
 			part => isZipLike((part.split('.').pop() ?? '').toLowerCase())
 		)
-	);
+	));
 	// Images, PDFs, videos, and audio can be shown inline when the file is directly accessible
 	// or is a member of a ZIP archive.
-	$: isSvg = /\.svgz?$/i.test(archivePath ?? path);
-	$: canViewInline = (fileKind === 'dicom' && !isArchiveMember) || (canServeArchiveMember && (fileKind === 'image' || (fileKind === 'pdf' && !isEncrypted) || fileKind === 'video' || fileKind === 'audio' || isSvg));
+	let isSvg = $derived(/\.svgz?$/i.test(archivePath ?? path));
+	let canViewInline = $derived((fileKind === 'dicom' && !isArchiveMember) || (canServeArchiveMember && (fileKind === 'image' || (fileKind === 'pdf' && !isEncrypted) || fileKind === 'video' || fileKind === 'audio' || isSvg)));
 	// Unified image/dicom view URL — server determines the representation.
-	$: viewUrl = `/api/v1/view?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}`;
+	let viewUrl = $derived(`/api/v1/view?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}`);
 	// Raw URL for audio/video/PDF/SVG streaming (range requests required for media).
-	$: rawInlineUrl = `/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}`;
-	$: fileName = path.split('/').pop() ?? path;
-	// Member download: the server can extract members from ZIP archives up to a configured
-	// nesting depth (window.find_anything_config.download_zip_member_levels).
-	// TAR, 7z, etc. are not supported — fall back to downloading the outer archive.
-	const downloadZipMemberLevels: number =
-		(typeof window !== 'undefined' && window.find_anything_config?.download_zip_member_levels) || 1;
-	$: outerExt = (path.split('.').pop() ?? '').toLowerCase();
-	$: canDownloadMember = (() => {
+	let rawInlineUrl = $derived(`/api/v1/raw?source=${encodeURIComponent(source)}&path=${encodeURIComponent(rawInlinePath)}`);
+	let fileName = $derived(path.split('/').pop() ?? path);
+	let canDownloadMember = $derived.by(() => {
 		if (!isArchiveMember || outerExt !== 'zip') return false;
 		const parts = (archivePath ?? '').split('::');
 		// Every intermediate segment (all but the last) must also be a ZIP.
@@ -149,8 +162,8 @@
 		}
 		// Total nesting depth = number of '::' in the composite path.
 		return parts.length <= downloadZipMemberLevels;
-	})();
-	$: memberFileName = archivePath ? (archivePath.split('/').pop()?.split('::').pop() ?? archivePath) : '';
+	});
+	let memberFileName = $derived(archivePath ? (archivePath.split('/').pop()?.split('::').pop() ?? archivePath) : '');
 
 	function triggerDownload(url: string, filename: string) {
 		const a = document.createElement('a');
@@ -162,24 +175,24 @@
 	}
 
 	// Detect if file is markdown
-	$: isMarkdown = path.endsWith('.md') || path.endsWith('.markdown');
+	let isMarkdown = $derived(path.endsWith('.md') || path.endsWith('.markdown'));
 
 	// Detect if file is RTF (check member extension for archive members)
-	$: isRtf = (archivePath ?? path).toLowerCase().endsWith('.rtf');
+	let isRtf = $derived((archivePath ?? path).toLowerCase().endsWith('.rtf'));
 
 	// Detect if file is HTML
-	$: isHtml = (archivePath ?? path).toLowerCase().endsWith('.html') || (archivePath ?? path).toLowerCase().endsWith('.htm');
+	let isHtml = $derived((archivePath ?? path).toLowerCase().endsWith('.html') || (archivePath ?? path).toLowerCase().endsWith('.htm'));
 
 	// Path-based raw URL for HTML iframe: encodes each path segment so the browser
 	// resolves relative asset URLs (images, CSS) as siblings on the same endpoint.
-	$: htmlInlineUrl = isHtml && !isArchiveMember
+	let htmlInlineUrl = $derived(isHtml && !isArchiveMember
 		? `/api/v1/raw/${encodeURIComponent(source)}/${rawInlinePath.split('/').map(encodeURIComponent).join('/')}`
-		: rawInlineUrl;
+		: rawInlineUrl);
 
 	// Word wrap preference (default: false for code, true for text files)
-	$: wordWrap = $profile.wordWrap ?? false;
+	let wordWrap = $derived($profile.wordWrap ?? false);
 
-	let hasOverflow = false;
+	let hasOverflow = $state(false);
 	let overflowObserver: ResizeObserver | null = null;
 
 	function checkOverflow() {
@@ -187,7 +200,11 @@
 		hasOverflow = codeContainer.scrollWidth > codeContainer.clientWidth;
 	}
 
-	afterUpdate(() => {
+	// Re-check overflow whenever the rendered content could have changed shape.
+	// (Replaces afterUpdate, which isn't available in runes mode; the explicit
+	// dependency list below stands in for "rerun after every update".)
+	$effect(() => {
+		void [codeLines, wordWrap, showFormatted, metaLines, htmlInlineUrl, renderedMarkdown, renderedRtf, loading, pagedMode];
 		if (!codeContainer) return;
 		checkOverflow();
 		if (!overflowObserver) {
@@ -197,23 +214,25 @@
 	});
 
 	// Tab width: user profile overrides server default.
-	$: tabWidth = $profile.tabWidth ?? $serverTabWidth;
+	let tabWidth = $derived($profile.tabWidth ?? $serverTabWidth);
 
 	// Show formatted/rendered view — default to formatted when opening without a line selection.
-	$: showFormatted = $profile.showFormatted ?? preferOriginal;
+	let showFormatted = $derived($profile.showFormatted ?? preferOriginal);
 
 	function toggleShowFormatted() {
 		$profile.showFormatted = !showFormatted;
 	}
 
 	// RTF rendered HTML — rendered client-side via rtf.js (dynamically imported).
-	let renderedRtf = '';
+	let renderedRtf = $state('');
 	let rtfFetchedForPath = '';
-	let rtfError = false;
+	let rtfError = $state(false);
 
-	$: if (showFormatted && isRtf && rtfFetchedForPath !== rawInlinePath) {
-		fetchRtfHtml(rawInlinePath);
-	}
+	$effect(() => {
+		if (showFormatted && isRtf && rtfFetchedForPath !== rawInlinePath) {
+			fetchRtfHtml(rawInlinePath);
+		}
+	});
 
 	async function fetchRtfHtml(forPath: string) {
 		rtfFetchedForPath = forPath;
@@ -244,9 +263,9 @@
 	// "Open in Explorer" — visible when a source root is configured for this source.
 	// For archive members we use the outer file path (Explorer can select the archive
 	// but cannot navigate into a virtual member path).
-	$: canOpenInExplorer = !!($profile.sourceRoots?.[source]?.trim()) && !!$profile.handlerInstalled;
+	let canOpenInExplorer = $derived(!!($profile.sourceRoots?.[source]?.trim()) && !!$profile.handlerInstalled);
 
-	let explorerLaunching = false;
+	let explorerLaunching = $state(false);
 
 	// ── Share ────────────────────────────────────────────────────────────────────
 	// Detect client OS for icon selection (evaluated once in the browser).
@@ -255,13 +274,13 @@
 		/iPhone|iPad|iPod|Macintosh/i.test(_ua) ? 'apple' :
 		/Windows/i.test(_ua) ? 'windows' : 'android';
 
-	let shareDialogOpen = false;
-	let shareUrl = '';
-	let shareError: string | null = null;
-	let shareLinkBusy = false;
-	let shareLinkCopied = false;
+	let shareDialogOpen = $state(false);
+	let shareUrl = $state('');
+	let shareError: string | null = $state(null);
+	let shareLinkBusy = $state(false);
+	let shareLinkCopied = $state(false);
 	// 86400 = 1 day, 604800 = 1 week, 2592000 = 30 days, 0 = never
-	let shareTtl: number = 604800;
+	let shareTtl: number = $state(604800);
 
 	function openShareDialog() {
 		shareUrl = '';
@@ -326,12 +345,12 @@
 	}
 
 	// True when the markdown content exceeds the server-configured size cap.
-	$: markdownTooLarge = isMarkdown && rawContent.length > $maxMarkdownRenderKb * 1024;
+	let markdownTooLarge = $derived(isMarkdown && rawContent.length > $maxMarkdownRenderKb * 1024);
 
 	// Render markdown to HTML (skipped when file exceeds size cap).
-	$: renderedMarkdown = showFormatted && isMarkdown && !markdownTooLarge
+	let renderedMarkdown = $derived(showFormatted && isMarkdown && !markdownTooLarge
 		? marked.parse(rawContent, { gfm: true, breaks: true })
-		: '';
+		: '');
 
 	function toggleWordWrap() {
 		$profile.wordWrap = !wordWrap;
@@ -353,7 +372,7 @@
 
 	// ── Paged loading state ──────────────────────────────────────────────────────
 
-	let pagedMode = false;
+	let pagedMode = $state(false);
 	/** Accumulated content lines (strings) across all loaded pages. */
 	let allContentLines: string[] = [];
 	/** Accumulated line offsets (1-based actual line_numbers) for allContentLines. */
@@ -364,13 +383,13 @@
 	let forwardOffset = 0;
 	/** Start of the earliest page loaded (for backward loading). */
 	let backwardOffset = 0;
-	let loadingForward = false;
-	let loadingBackward = false;
-	let noMoreForward = false;
-	let noMoreBackward = true;
+	let loadingForward = $state(false);
+	let loadingBackward = $state(false);
+	let noMoreForward = $state(false);
+	let noMoreBackward = $state(true);
 
 	/** Reference to the scrollable .code-container element. */
-	let codeContainer: HTMLElement;
+	let codeContainer: HTMLElement | undefined = $state();
 
 	function isNearBottom(): boolean {
 		if (!codeContainer) return false;
@@ -598,7 +617,7 @@
 		const i = dupPath.indexOf('::');
 		const outerPath = i >= 0 ? dupPath.slice(0, i) : dupPath;
 		const archivePath = i >= 0 ? dupPath.slice(i + 2) : undefined;
-		dispatch('open', { source, path: outerPath, kind: 'unknown', archivePath });
+		onOpen?.({ source, path: outerPath, kind: 'unknown', archivePath });
 	}
 
 	function scrollToLine(ln: number) {
@@ -606,35 +625,37 @@
 		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 	}
 
-	$: codeLines = highlightedCode ? highlightedCode.split('\n') : [];
+	let codeLines = $derived(highlightedCode ? highlightedCode.split('\n') : []);
 
 	// Live update state
 	type FileState = 'normal' | 'deleted' | 'renamed' | 'modified';
-	let fileState: FileState = 'normal';
-	let renamedTo: string | null = null;
+	let fileState: FileState = $state('normal');
+	let renamedTo: string | null = $state(null);
 
 	// The outer path to watch for live events. For archive members, events fire
 	// for the outer archive file, not the inner member.
-	$: watchPath = path;
+	let watchPath = $derived(path);
 
 	// Track the last handled event by reference so that clicking Reload doesn't
 	// immediately re-show the banner: after reload completes loading=false
 	// re-triggers this block, but the event hasn't changed so we skip it.
 	let lastHandledLiveEvent: typeof $liveEvent | null = null;
 
-	$: if ($liveEvent && !loading && $liveEvent !== lastHandledLiveEvent &&
-	       $liveEvent.source === source && $liveEvent.path === watchPath) {
-		lastHandledLiveEvent = $liveEvent;
-		const ev = $liveEvent;
-		if (ev.action === 'deleted') {
-			fileState = 'deleted';
-		} else if (ev.action === 'modified') {
-			if (fileState !== 'deleted') fileState = 'modified';
-		} else if (ev.action === 'renamed') {
-			fileState = 'renamed';
-			renamedTo = ev.new_path ?? null;
+	$effect(() => {
+		if ($liveEvent && !loading && $liveEvent !== lastHandledLiveEvent &&
+		    $liveEvent.source === source && $liveEvent.path === watchPath) {
+			lastHandledLiveEvent = $liveEvent;
+			const ev = $liveEvent;
+			if (ev.action === 'deleted') {
+				fileState = 'deleted';
+			} else if (ev.action === 'modified') {
+				if (fileState !== 'deleted') fileState = 'modified';
+			} else if (ev.action === 'renamed') {
+				fileState = 'renamed';
+				renamedTo = ev.new_path ?? null;
+			}
 		}
-	}
+	});
 
 	async function reload() {
 		fileState = 'normal';
@@ -647,7 +668,7 @@
 	{#if loading}
 		<div class="status">Loading…</div>
 	{:else if contentUnavailable}
-		<div class="status">Content not yet available. <button class="inline-link" on:click={reload}>Reload</button></div>
+		<div class="status">Content not yet available. <button class="inline-link" onclick={reload}>Reload</button></div>
 	{:else if error}
 		<div class="status error">{error}</div>
 	{:else}
@@ -655,26 +676,26 @@
 			{fileState}
 			{renamedTo}
 			{indexingError}
-			onNavigate={(path) => dispatch('navigate', { path })}
+			onNavigate={(path) => onNavigate?.({ path })}
 			onDismiss={() => fileState = 'normal'}
 			onReload={reload}
 		/>
 		<div class="toolbar">
 			{#if canViewInline && (fileKind === 'pdf' || fileKind === 'video')}
-				<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}>
+				<button class="toolbar-btn" onclick={() => showOriginal = !showOriginal}>
 					{showOriginal ? 'View Extracted' : 'View Original'}
 				</button>
 			{:else if isSvg && canViewInline}
-				<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}>
+				<button class="toolbar-btn" onclick={() => showOriginal = !showOriginal}>
 					{showOriginal ? 'View Source' : 'View SVG'}
 				</button>
 			{:else if iworkPreviewUrl}
-				<button class="toolbar-btn" on:click={() => showOriginal = !showOriginal}>
+				<button class="toolbar-btn" onclick={() => showOriginal = !showOriginal}>
 					{showOriginal ? 'View Extracted' : 'View Preview'}
 				</button>
 			{/if}
 			{#if !(showOriginal && (canViewInline || iworkPreviewUrl)) && fileKind !== 'image' && fileKind !== 'video' && fileKind !== 'audio' && fileKind !== 'dicom' && (hasOverflow || wordWrap)}
-				<button class="toolbar-btn toolbar-icon-btn" on:click={toggleWordWrap} title={wordWrap ? 'Disable word wrap' : 'Enable word wrap'}>
+				<button class="toolbar-btn toolbar-icon-btn" onclick={toggleWordWrap} title={wordWrap ? 'Disable word wrap' : 'Enable word wrap'}>
 					{#if wordWrap}
 						<IconWrapOn />
 					{:else}
@@ -683,33 +704,33 @@
 				</button>
 			{/if}
 			{#if (isMarkdown && !markdownTooLarge) || isRtf || isHtml}
-				<button class="toolbar-btn" on:click={toggleShowFormatted} title="Toggle formatted view">
+				<button class="toolbar-btn" onclick={toggleShowFormatted} title="Toggle formatted view">
 					{showFormatted ? 'Plain' : isHtml ? 'Rendered' : 'Formatted'}
 				</button>
 			{/if}
 			{#if canOpenInExplorer}
-				<button class="toolbar-btn explorer-btn download-icon-btn" style={explorerLaunching ? 'cursor: progress' : ''} on:click={openInExplorer} title="Open in Explorer">
+				<button class="toolbar-btn explorer-btn download-icon-btn" style={explorerLaunching ? 'cursor: progress' : ''} onclick={openInExplorer} title="Open in Explorer">
 					<IconFolder />
 				</button>
 			{/if}
 			{#if canDownloadMember}
-				<button class="toolbar-btn download-icon-btn" on:click={() => triggerDownload(rawInlineUrl, memberFileName)} title="Download">
+				<button class="toolbar-btn download-icon-btn" onclick={() => triggerDownload(rawInlineUrl, memberFileName)} title="Download">
 					<IconDownload />
 				</button>
-				<button class="toolbar-btn download-archive-btn" on:click={() => triggerDownload(rawUrl, fileName)} title="Download Archive">
+				<button class="toolbar-btn download-archive-btn" onclick={() => triggerDownload(rawUrl, fileName)} title="Download Archive">
 					<IconDownload />
 					archive
 				</button>
 			{:else}
 				<button
 					class="toolbar-btn {isArchiveMember || fileKind === 'archive' ? 'download-archive-btn' : 'download-icon-btn'}"
-					on:click={() => triggerDownload(rawUrl, fileName)}
+					onclick={() => triggerDownload(rawUrl, fileName)}
 					title={isArchiveMember || fileKind === 'archive' ? 'Download Archive' : 'Download'}>
 					<IconDownload />
 					{#if isArchiveMember || fileKind === 'archive'} archive{/if}
 				</button>
 			{/if}
-			<button class="toolbar-btn share-icon-btn" on:click={openShareDialog} title="Share">
+			<button class="toolbar-btn share-icon-btn" onclick={openShareDialog} title="Share">
 				{#if shareIconOs === 'apple'}
 					<IconShareApple />
 				{:else if shareIconOs === 'windows'}
@@ -720,7 +741,7 @@
 			</button>
 			<div class="metadata">
 				{#if duplicatePaths.length > 0}
-					<button class="meta-item dup-badge" on:click={() => duplicatesModalOpen = true}>
+					<button class="meta-item dup-badge" onclick={() => duplicatesModalOpen = true}>
 						{duplicatePaths.length} {duplicatePaths.length === 1 ? 'duplicate' : 'duplicates'}
 					</button>
 				{/if}
@@ -737,15 +758,15 @@
 		</div>
 
 		{#if duplicatesModalOpen}
-			<button class="dup-modal-backdrop" on:click={() => duplicatesModalOpen = false} aria-label="Close duplicates"></button>
+			<button class="dup-modal-backdrop" onclick={() => duplicatesModalOpen = false} aria-label="Close duplicates"></button>
 			<div class="dup-modal" role="dialog" aria-label="Duplicates">
 				<div class="dup-modal-header">
 					<span class="dup-modal-title">{duplicatePaths.length} {duplicatePaths.length === 1 ? 'Duplicate' : 'Duplicates'}</span>
-					<button class="dup-modal-close" on:click={() => duplicatesModalOpen = false}>✕</button>
+					<button class="dup-modal-close" onclick={() => duplicatesModalOpen = false}>✕</button>
 				</div>
 				<div class="dup-modal-list">
 					{#each duplicatePaths as dup}
-						<button class="dup-modal-link" on:click={() => { duplicatesModalOpen = false; openDuplicate(dup); }}>{dup}</button>
+						<button class="dup-modal-link" onclick={() => { duplicatesModalOpen = false; openDuplicate(dup); }}>{dup}</button>
 					{/each}
 				</div>
 			</div>
@@ -811,13 +832,13 @@
 			{/if}
 		{:else}
 			<!-- Extracted text / code view -->
-			<div class="code-container" bind:this={codeContainer} on:scroll={handleScroll}>
+			<div class="code-container" bind:this={codeContainer} onscroll={handleScroll}>
 				{#if pagedMode && !noMoreBackward}
 					<div class="load-sentinel">
 						{#if loadingBackward}
 							<span class="sentinel-msg">Loading earlier lines…</span>
 						{:else}
-							<button class="sentinel-btn" on:click={loadBackward}>Load earlier lines</button>
+							<button class="sentinel-btn" onclick={loadBackward}>Load earlier lines</button>
 						{/if}
 					</div>
 				{/if}
@@ -861,13 +882,13 @@
 							const i = p.indexOf('::');
 							const outerPath = i >= 0 ? p.slice(0, i) : p;
 							const innerPath = i >= 0 ? p.slice(i + 2) : undefined;
-							dispatch('open', { source, path: outerPath, kind: detail.kind, archivePath: innerPath });
+							onOpen?.({ source, path: outerPath, kind: detail.kind, archivePath: innerPath });
 						}}
 						onOpenDir={(detail) => {
 							if (detail.prefix.startsWith(path + '::')) {
 								archivePrefix = detail.prefix;
 							} else {
-								dispatch('navigateDir', detail);
+								onNavigateDir?.(detail);
 							}
 						}}
 					/>
@@ -881,8 +902,7 @@
 						{wordWrap}
 						{tabWidth}
 						onLineSelect={(next) => {
-							selection = next;
-							dispatch('lineselect', { selection: next });
+							onLineSelect?.({ selection: next });
 						}}
 					/>
 				{/if}
@@ -899,12 +919,12 @@
 </div>
 
 {#if shareDialogOpen}
-<!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-<div class="share-overlay" on:click|self={() => shareDialogOpen = false} on:keydown={(e) => e.key === 'Escape' && (shareDialogOpen = false)} role="dialog" aria-modal="true" aria-label="Share" tabindex="-1">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="share-overlay" onclick={(e) => { if (e.target === e.currentTarget) shareDialogOpen = false; }} onkeydown={(e) => e.key === 'Escape' && (shareDialogOpen = false)} role="dialog" aria-modal="true" aria-label="Share" tabindex="-1">
 	<div class="share-dialog">
 		<div class="share-dialog-header">
 			<span class="share-dialog-title">Share</span>
-			<button class="share-close" on:click={() => shareDialogOpen = false} aria-label="Close">✕</button>
+			<button class="share-close" onclick={() => shareDialogOpen = false} aria-label="Close">✕</button>
 		</div>
 		<div class="share-dialog-body">
 			<p class="share-instructions">Creates a link to this file that anyone with the link can access.</p>
@@ -925,7 +945,7 @@
 			{#if shareUrl}
 				<div class="share-link-row">
 					<span class="share-link-text">{shareUrl}</span>
-					<button class="share-copy-btn" class:copied={shareLinkCopied} on:click={copyShareLink} title="Copy link">
+					<button class="share-copy-btn" class:copied={shareLinkCopied} onclick={copyShareLink} title="Copy link">
 						{#if shareLinkCopied}
 							<IconCheck />
 						{:else}
@@ -941,10 +961,10 @@
 				</div>
 			{:else}
 				<div class="share-actions">
-					<button class="share-create-btn" on:click={createShareLink} disabled={shareLinkBusy}>
+					<button class="share-create-btn" onclick={createShareLink} disabled={shareLinkBusy}>
 						{shareLinkBusy ? 'Creating…' : 'Create link'}
 					</button>
-					<button class="share-cancel-btn" on:click={() => shareDialogOpen = false}>Cancel</button>
+					<button class="share-cancel-btn" onclick={() => shareDialogOpen = false}>Cancel</button>
 				</div>
 			{/if}
 		</div>

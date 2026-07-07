@@ -108,10 +108,10 @@
 				archivePath={fileView.file.inner}
 				selection={fileView.selection}
 				preferOriginal={fileView.selection.length === 0}
-				on:lineselect={(e) => onLineSelect?.(e.detail)}
-				on:open={(e) => onOpenDirFile?.(e.detail)}
-				on:navigateDir={(e) => onOpenDir?.(e.detail)}
-				on:navigate={(e) => onOpenFileFromTree?.({ source: fileView.source, path: e.detail.path, kind: 'unknown' })}
+				onLineSelect={(detail) => onLineSelect?.(detail)}
+				onOpen={(detail) => onOpenDirFile?.(detail)}
+				onNavigateDir={(detail) => onOpenDir?.(detail)}
+				onNavigate={(detail) => onOpenFileFromTree?.({ source: fileView.source, path: detail.path, kind: 'unknown' })}
 			/>
 		{/key}
 	{/if}

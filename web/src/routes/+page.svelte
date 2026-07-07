@@ -28,12 +28,6 @@
 	import { expandKindsForServer } from '$lib/kindOptions';
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 
-	// SvelteKit passes params to every layout/page component. Declare it to avoid
-	// the runtime "unknown prop" warning. Assigned to _params to signal that it
-	// is intentionally unused (access via $page.params if ever needed).
-	export let params: Record<string, string>;
-	const _params = params;
-
 	// ── View state machine ────────────────────────────────────────────────────
 	//
 	// The main panel is a two-state discriminated union:
@@ -48,66 +42,68 @@
 	// push-history step is never forgotten.
 
 	/** Non-null when the file/directory viewer is open. */
-	let fileView: FileViewState | null = null;
-	let searchView: SearchView;
-	let query = '';
-	let scope: SearchScope = 'line';
-	let matchType: SearchMatchType = 'fuzzy';
+	let fileView = $state<FileViewState | null>(null);
+	let searchView: SearchView | undefined = $state();
+	let query = $state('');
+	let scope: SearchScope = $state('line');
+	let matchType: SearchMatchType = $state('fuzzy');
 
-	let sources: SourceInfo[] = [];
-	let selectedSources: string[] = [];
-	let selectedKinds: string[] = [];
-	let caseSensitive = false;
+	let sources: SourceInfo[] = $state([]);
+	let selectedSources: string[] = $state([]);
+	let selectedKinds: string[] = $state([]);
+	let caseSensitive = $state(false);
 	// ISO date strings bound to the AdvancedSearch inputs (propagated back for controlled state).
-	let dateFromStr = '';
-	let dateToStr = '';
+	let dateFromStr = $state('');
+	let dateToStr = $state('');
 	// Unix timestamp equivalents sent to the API (undefined = no filter).
-	let dateFromTs: number | undefined;
-	let dateToTs: number | undefined;
+	let dateFromTs: number | undefined = $state();
+	let dateToTs: number | undefined = $state();
 
 	// NLP-extracted date state.
-	let nlpResult: NlpResult | null = null;
+	let nlpResult: NlpResult | null = $state(null);
 	// Effective dates used in API calls (manual wins over NLP).
-	let effectiveDateFrom: number | undefined;
-	let effectiveDateTo: number | undefined;
+	let effectiveDateFrom: number | undefined = $state();
+	let effectiveDateTo: number | undefined = $state();
 
-	let results: SearchResult[] = [];
-	let totalResults = 0;
-	let resultsCapped = false;
-	let searching = false;
-	let searchError: string | null = null;
-	let searchId = 0;
+	let results: SearchResult[] = $state([]);
+	let totalResults = $state(0);
+	let resultsCapped = $state(false);
+	let searching = $state(false);
+	let searchError: string | null = $state(null);
+	let searchId = $state(0);
 
-	let showTree = true;
-	let showPalette = false;
+	let showTree = $state(true);
+	let showPalette = $state(false);
 
 	// Live index update state
-	let resultsStale = false;
-	let deletedPaths = new Set<string>();
+	let resultsStale = $state(false);
+	let deletedPaths = $state(new Set<string>());
 	// Tracks the last $liveEvent object we acted on. Prevents re-processing the
 	// same event when doSearch resets deletedPaths (which would otherwise
-	// re-trigger this reactive block and immediately re-set resultsStale = true).
+	// re-trigger this effect and immediately re-set resultsStale = true).
 	let lastHandledEvent: typeof $liveEvent = null;
 
-	$: if ($liveEvent && $liveEvent !== lastHandledEvent) {
-		lastHandledEvent = $liveEvent;
-		const ev = $liveEvent;
-		const sourceMatches = selectedSources.length === 0 || selectedSources.includes(ev.source);
-		if (sourceMatches && hasSearchableContent(query)) {
-			if (ev.action === 'deleted') {
-				deletedPaths = new Set([...deletedPaths, `${ev.source}:${ev.path}`]);
-			} else {
-				resultsStale = true;
+	$effect(() => {
+		if ($liveEvent && $liveEvent !== lastHandledEvent) {
+			lastHandledEvent = $liveEvent;
+			const ev = $liveEvent;
+			const sourceMatches = selectedSources.length === 0 || selectedSources.includes(ev.source);
+			if (sourceMatches && hasSearchableContent(query)) {
+				if (ev.action === 'deleted') {
+					deletedPaths = new Set([...deletedPaths, `${ev.source}:${ev.path}`]);
+				} else {
+					resultsStale = true;
+				}
 			}
 		}
-	}
+	});
 
-	let sidebarWidth: number = $profile.sidebarWidth ?? 240;
+	let sidebarWidth: number = $state($profile.sidebarWidth ?? 240);
 
 	// ── Token setup ──────────────────────────────────────────────────────────────
 
-	let showTokenSetup = false;
-	let tokenInput = '';
+	let showTokenSetup = $state(false);
+	let tokenInput = $state('');
 
 	function checkToken() {
 		if (!getToken()) showTokenSetup = true;
@@ -150,7 +146,20 @@
 	let isResettingHistory = false;
 
 	function captureState(): AppState {
-		return { query, mode: toServerMode(scope, matchType), selectedSources, navDepth, ...expandFileView(fileView) };
+		// selection/selectedSources are $state-proxied arrays; structured clone
+		// (used by pushState/replaceState under the hood) can't clone Svelte's
+		// state proxies, so unwrap them with $state.snapshot(). currentFile
+		// (a FilePath instance) is left as-is here — serializeState() already
+		// strips it down to a plain path string before it reaches history.state.
+		const expanded = expandFileView(fileView);
+		return {
+			query,
+			mode: toServerMode(scope, matchType),
+			selectedSources: $state.snapshot(selectedSources),
+			navDepth,
+			...expanded,
+			fileSelection: $state.snapshot(expanded.fileSelection)
+		};
 	}
 
 	function pushState() {
@@ -262,13 +271,13 @@
 
 	let mainContent: HTMLElement;
 	let savedScrollTop = 0;
-	let loadingMore = false;
+	let loadingMore = $state(false);
 	let noMoreResults = false;
 	// Tracks server cursor independently of results.length. Client dedup can
 	// reduce how many items are added per page; using results.length as the
 	// offset would then re-request the same range and stall pagination.
 	let loadOffset = 0;
-	let sentinel: HTMLElement | null = null;
+	let sentinel: HTMLElement | null = $state(null);
 
 	// getBoundingClientRect() forces a synchronous layout reflow and returns
 	// position relative to the viewport — reliable regardless of scroll container
@@ -582,8 +591,8 @@
 
 	// ── Derived ──────────────────────────────────────────────────────────────────
 
-	$: sourceNames = sources.map((s) => s.name);
-	$: paletteSources = selectedSources.length ? selectedSources : fileView?.source ? [fileView.source] : sourceNames;
+	let sourceNames = $derived(sources.map((s) => s.name));
+	let paletteSources = $derived(selectedSources.length ? selectedSources : fileView?.source ? [fileView.source] : sourceNames);
 </script>
 
 <div class="page-layout" class:has-sidebar={showTree} class:file-view={fileView !== null}>
@@ -600,8 +609,8 @@
 			class="resize-handle"
 			type="button"
 			aria-label="Resize sidebar"
-			on:pointerdown={onResizeStart}
-			on:keydown={onResizeKeydown}
+			onpointerdown={onResizeStart}
+			onkeydown={onResizeKeydown}
 		></button>
 	{/if}
 
@@ -688,8 +697,9 @@
 
 
 {#if showTokenSetup}
-	<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-	<div class="token-overlay" on:click|self={() => {}}>
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="token-overlay" onclick={(e) => { if (e.target === e.currentTarget) { /* no-op */ } }}>
 		<div class="token-dialog">
 			<h2>Connect to find-server</h2>
 			<p>Enter the bearer token from your <code>server.toml</code> to connect.</p>
@@ -697,9 +707,9 @@
 				type="password"
 				placeholder="Paste your token here"
 				bind:value={tokenInput}
-				on:keydown={(e) => e.key === 'Enter' && saveToken()}
+				onkeydown={(e) => e.key === 'Enter' && saveToken()}
 			/>
-			<button on:click={saveToken} disabled={!tokenInput.trim()}>Connect</button>
+			<button onclick={saveToken} disabled={!tokenInput.trim()}>Connect</button>
 		</div>
 	</div>
 {/if}
