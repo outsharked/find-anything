@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 
 # Image EXIF
-kamadak-exif = "0.5"
+kamadak-exif = "0.6"
 
 # Audio metadata (tags + technical stream info)
 symphonia = { version = "0.5", default-features = false, features = [

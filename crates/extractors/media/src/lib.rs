@@ -736,6 +736,13 @@ mod tests {
     /// -movflags +faststart tiny.mp4`
     static TINY_MP4: &[u8] = include_bytes!("../testdata/tiny.mp4");
 
+    /// Small JPEG (32x24) with real EXIF tags (Make, Model, Orientation,
+    /// DateTime), exercising the kamadak-exif path in extract_image directly
+    /// (the synthetic make_jpeg_sof0() fixture used elsewhere has no EXIF
+    /// segment, so it only ever hits the hand-rolled fallback header parser).
+    /// Generated with Pillow: `img.save(path, exif=exif)`.
+    static EXIF_JPEG: &[u8] = include_bytes!("../testdata/exif_sample.jpg");
+
     // ── Test helpers ──────────────────────────────────────────────────────────
 
     fn write_fixture(bytes: &[u8], suffix: &str) -> tempfile::NamedTempFile {
@@ -1034,6 +1041,16 @@ mod tests {
         let f = write_fixture(&bytes, ".jpg");
         let lines = extract_image(f.path()).unwrap();
         assert!(lines.iter().any(|l| l.content.contains("Grayscale")), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn jpeg_extracts_real_exif_tags() {
+        let f = write_fixture(EXIF_JPEG, ".jpg");
+        let lines = extract_image(f.path()).unwrap();
+        assert_eq!(lines.len(), 1, "image produces one metadata line, got: {lines:?}");
+        let content = &lines[0].content;
+        assert!(content.contains("Acme Corp"), "content: {content}");
+        assert!(content.contains("Widget Camera X"), "content: {content}");
     }
 
     #[test]
