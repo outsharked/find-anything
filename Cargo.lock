@@ -1646,7 +1646,7 @@ dependencies = [
  "anyhow",
  "find-common",
  "flate2",
- "rand 0.9.4",
+ "rand 0.10.2",
  "rusqlite",
  "tempfile",
  "tracing",
