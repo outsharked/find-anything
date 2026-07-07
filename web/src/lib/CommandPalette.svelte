@@ -1,39 +1,44 @@
 <script lang="ts">
-	import { createEventDispatcher, beforeUpdate, tick } from 'svelte';
+	import { tick } from 'svelte';
 	import { listFiles } from '$lib/api';
 	import type { FileRecord } from '$lib/api';
 	import { splitDisplayPath, archivePathOf } from '$lib/commandPaletteLogic';
 
-	/** Set to true to show the palette. */
-	export let open = false;
-	/** Source(s) to search. Empty = no filter (all sources). */
-	export let sources: string[] = [];
-	/** Total number of sources available — used to decide whether to show "all". */
-	export let totalSourceCount = 0;
-
-	const dispatch = createEventDispatcher<{
-		select: { source: string; path: string; archivePath: string | null; kind: string };
-		close: void;
-	}>();
+	let {
+		open = false,
+		sources = [],
+		totalSourceCount = 0,
+		onSelect,
+		onClose
+	}: {
+		/** Set to true to show the palette. */
+		open?: boolean;
+		/** Source(s) to search. Empty = no filter (all sources). */
+		sources?: string[];
+		/** Total number of sources available — used to decide whether to show "all". */
+		totalSourceCount?: number;
+		onSelect?: (detail: { source: string; path: string; archivePath: string | null; kind: string }) => void;
+		onClose?: () => void;
+	} = $props();
 
 	type SourcedFile = FileRecord & { source: string };
 
-	let query = '';
-	let selected = 0;
-	let inputEl: HTMLInputElement;
-	let results: SourcedFile[] = [];
-	let loading = false;
-	let stale = false;
+	let query = $state('');
+	let selected = $state(0);
+	let inputEl: HTMLInputElement | undefined = $state();
+	let results: SourcedFile[] = $state([]);
+	let loading = $state(false);
+	let stale = $state(false);
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-	$: isAll = totalSourceCount > 1 && sources.length >= totalSourceCount;
+	let isAll = $derived(totalSourceCount > 1 && sources.length >= totalSourceCount);
 
-	// Use beforeUpdate + previous-value guard to react to open transitioning
-	// false→true. A `$: if (open)` reactive block reads `inputEl` (inside its
-	// tick callback), so bind:this re-triggers it every flush — infinite loop.
-	let prevOpen = false;
-	beforeUpdate(() => {
-		if (open && !prevOpen) {
+	// $effect only tracks reads made synchronously during the callback, so
+	// unlike a Svelte 4 `$: if (open)` block, reading `inputEl` inside the
+	// tick().then() callback below does not re-trigger this effect — no
+	// previous-value guard needed to avoid an infinite loop.
+	$effect(() => {
+		if (open) {
 			query = '';
 			results = [];
 			loading = true;
@@ -42,7 +47,6 @@
 				fetchResults('');
 			});
 		}
-		prevOpen = open;
 	});
 
 	function handleInput(e: Event) {
@@ -83,7 +87,7 @@
 	}
 
 	function close() {
-		dispatch('close');
+		onClose?.();
 	}
 
 	function confirm() {
@@ -92,7 +96,7 @@
 			const i = item.path.indexOf('::');
 			const outerPath = i >= 0 ? item.path.slice(0, i) : item.path;
 			const archivePath = i >= 0 ? item.path.slice(i + 2) : null;
-			dispatch('select', { source: item.source, path: outerPath, archivePath, kind: item.kind });
+			onSelect?.({ source: item.source, path: outerPath, archivePath, kind: item.kind });
 			close();
 		}
 	}
@@ -115,10 +119,10 @@
 </script>
 
 {#if open}
-	<!-- svelte-ignore a11y-no-static-element-interactions -->
-	<div class="cp-backdrop" on:click={close} on:keydown={onKeydown}>
-		<!-- svelte-ignore a11y-no-static-element-interactions -->
-		<div class="cp-panel" on:click|stopPropagation on:keydown|stopPropagation>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="cp-backdrop" onclick={close} onkeydown={onKeydown}>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="cp-panel" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
 			<div class="cp-input-wrap">
 				<span class="cp-icon">⌕</span>
 				{#if isAll}
@@ -135,8 +139,8 @@
 					placeholder="Go to file…"
 					autocomplete="off"
 					spellcheck="false"
-					on:input={handleInput}
-					on:keydown={onKeydown}
+					oninput={handleInput}
+					onkeydown={onKeydown}
 				/>
 			</div>
 			<div class="cp-results" class:stale>
@@ -150,8 +154,8 @@
 							type="button"
 							class="cp-item"
 							class:active={i === selected}
-							on:click={confirm}
-							on:mouseenter={() => (selected = i)}
+							onclick={confirm}
+							onmouseenter={() => (selected = i)}
 						>
 							<span class="cp-name">{splitDisplayPath(item.path).name}</span>
 							{#if splitDisplayPath(item.path).dir}

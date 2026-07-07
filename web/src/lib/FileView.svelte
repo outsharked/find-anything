@@ -61,12 +61,12 @@
 		path={pathBarPath}
 		archivePath={fileView.panelMode === 'file' ? fileView.file.inner ?? null : null}
 		{showBack}
-		on:back={() => dispatch('back')}
-		on:navigate={(e) => {
-			if (e.detail.type === 'dir') {
-				dispatch('openDir', { prefix: e.detail.prefix });
+		onBack={() => dispatch('back')}
+		onNavigate={(action) => {
+			if (action.type === 'dir') {
+				dispatch('openDir', { prefix: action.prefix });
 			} else {
-				dispatch('openFileFromTree', { source: fileView.source, path: e.detail.path, kind: e.detail.kind });
+				dispatch('openFileFromTree', { source: fileView.source, path: action.path, kind: action.kind });
 			}
 		}}
 	/>
@@ -74,8 +74,8 @@
 		<DirListing
 			source={fileView.source}
 			prefix={fileView.dirPrefix}
-			on:openFile={(e) => dispatch('openDirFile', e.detail)}
-			on:openDir={(e) => dispatch('openDir', e.detail)}
+			onOpenFile={(detail) => dispatch('openDirFile', detail)}
+			onOpenDir={(detail) => dispatch('openDir', detail)}
 		/>
 	{:else}
 		{#key `${fileView.source}:${fileView.file.full}`}

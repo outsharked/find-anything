@@ -1,24 +1,33 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import IconCopy from '$lib/icons/IconCopy.svelte';
 	import IconCheck from '$lib/icons/IconCheck.svelte';
-	export let source: string;
-	export let path: string;
-	export let archivePath: string | null = null;
-	/** Whether to show the ← results button. False when the user deeplinked directly. */
-	export let showBack = true;
-	const dispatch = createEventDispatcher<{
-		back: void;
-		navigate: { type: 'dir'; prefix: string } | { type: 'file'; path: string; kind: string };
-	}>();
+
+	type NavigateAction = { type: 'dir'; prefix: string } | { type: 'file'; path: string; kind: string };
+
+	let {
+		source,
+		path,
+		archivePath = null,
+		showBack = true,
+		onBack,
+		onNavigate
+	}: {
+		source: string;
+		path: string;
+		archivePath?: string | null;
+		/** Whether to show the ← results button. False when the user deeplinked directly. */
+		showBack?: boolean;
+		onBack?: () => void;
+		onNavigate?: (action: NavigateAction) => void;
+	} = $props();
 
 	type Segment = {
 		label: string;
 		separator: '/' | '::' | null; // separator BEFORE this segment (null for first)
-		action: { type: 'dir'; prefix: string } | { type: 'file'; path: string; kind: string } | { type: 'current' };
+		action: NavigateAction | { type: 'current' };
 	};
 
-	$: segments = computeSegments(path, archivePath);
+	let segments = $derived(computeSegments(path, archivePath));
 
 	function computeSegments(outerPath: string, innerPath: string | null): Segment[] {
 		const outerParts = outerPath.split('/');
@@ -59,12 +68,12 @@
 
 	function handleSegmentClick(seg: Segment) {
 		if (seg.action.type === 'current') return;
-		dispatch('navigate', seg.action);
+		onNavigate?.(seg.action);
 	}
 
-	$: fullPath = archivePath ? `${path}::${archivePath}` : path;
+	let fullPath = $derived(archivePath ? `${path}::${archivePath}` : path);
 
-	let copied = false;
+	let copied = $state(false);
 	function copyPath() {
 		const text = fullPath;
 		if (navigator.clipboard) {
@@ -92,9 +101,9 @@
 <div class="path-bar">
 	<div class="path-controls">
 		{#if showBack}
-		<button class="back-btn" on:click={() => dispatch('back')}>← results</button>
+		<button class="back-btn" onclick={() => onBack?.()}>← results</button>
 		{/if}
-		<button class="badge" on:click={() => dispatch('navigate', { type: 'dir', prefix: '' })}>{source}</button>
+		<button class="badge" onclick={() => onNavigate?.({ type: 'dir', prefix: '' })}>{source}</button>
 	</div>
 	<span class="path-plain">
 		{#each segments as seg}
@@ -102,10 +111,10 @@
 			{#if seg.action.type === 'current'}
 				<span class="seg seg--current">{seg.label}</span>
 			{:else}
-				<button class="seg seg--link" on:click={() => handleSegmentClick(seg)}>{seg.label}</button>
+				<button class="seg seg--link" onclick={() => handleSegmentClick(seg)}>{seg.label}</button>
 			{/if}
 		{/each}
-		<button class="copy-btn" class:copied on:click={copyPath} data-tooltip="Copy path">
+		<button class="copy-btn" class:copied onclick={copyPath} data-tooltip="Copy path">
 			{#if copied}
 				<IconCheck />
 				<span class="copied-label">Copied</span>

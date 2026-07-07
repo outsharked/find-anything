@@ -856,18 +856,18 @@
 					<DirListing
 						source={source}
 						prefix={archivePrefix}
-						on:openFile={(e) => {
-							const p = e.detail.path;
+						onOpenFile={(detail) => {
+							const p = detail.path;
 							const i = p.indexOf('::');
 							const outerPath = i >= 0 ? p.slice(0, i) : p;
 							const innerPath = i >= 0 ? p.slice(i + 2) : undefined;
-							dispatch('open', { source, path: outerPath, kind: e.detail.kind, archivePath: innerPath });
+							dispatch('open', { source, path: outerPath, kind: detail.kind, archivePath: innerPath });
 						}}
-						on:openDir={(e) => {
-							if (e.detail.prefix.startsWith(path + '::')) {
-								archivePrefix = e.detail.prefix;
+						onOpenDir={(detail) => {
+							if (detail.prefix.startsWith(path + '::')) {
+								archivePrefix = detail.prefix;
 							} else {
-								dispatch('navigateDir', e.detail);
+								dispatch('navigateDir', detail);
 							}
 						}}
 					/>

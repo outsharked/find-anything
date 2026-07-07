@@ -3,20 +3,19 @@
 	import IconFitViewport from '$lib/icons/IconFitViewport.svelte';
 	import IconAdjust from '$lib/icons/IconAdjust.svelte';
 
-	export let src: string;
-	export let svgMode = false;
+	let { src, svgMode = false }: { src: string; svgMode?: boolean } = $props();
 
-	let container: HTMLDivElement;
-	let img: HTMLImageElement;
+	let container: HTMLDivElement | undefined = $state();
+	let img: HTMLImageElement | undefined = $state();
 
-	let scale = 1;
-	let offsetX = 0;
-	let offsetY = 0;
-	let fitScale = 1;
+	let scale = $state(1);
+	let offsetX = $state(0);
+	let offsetY = $state(0);
+	let fitScale = $state(1);
 
-	let loaded = false;
-	let loadError = false;
-	let showSpinner = false;
+	let loaded = $state(false);
+	let loadError = $state(false);
+	let showSpinner = $state(false);
 	let spinnerTimer: ReturnType<typeof setTimeout> | null = null;
 	let activeSrc: string | undefined;
 
@@ -26,14 +25,16 @@
 
 	// Reset loading state only when src actually changes value.
 	// Delay the spinner by 1 s so fast/cached images don't flash.
-	$: if (src !== activeSrc) {
-		activeSrc = src;
-		loaded = false;
-		loadError = false;
-		showSpinner = false;
-		clearSpinnerTimer();
-		spinnerTimer = setTimeout(() => { if (!loaded) showSpinner = true; }, 1000);
-	}
+	$effect(() => {
+		if (src !== activeSrc) {
+			activeSrc = src;
+			loaded = false;
+			loadError = false;
+			showSpinner = false;
+			clearSpinnerTimer();
+			spinnerTimer = setTimeout(() => { if (!loaded) showSpinner = true; }, 1000);
+		}
+	});
 
 	function onError() {
 		clearSpinnerTimer();
@@ -42,32 +43,34 @@
 		loaded = true;
 	}
 
-	let dragging = false;
+	let dragging = $state(false);
 	let dragStartX = 0;
 	let dragStartY = 0;
 	let dragOriginX = 0;
 	let dragOriginY = 0;
 
 	// Image adjustments
-	let adjustOpen = false;
-	let invert = false;
-	let flipH = false;
-	let flipV = false;
-	let brightness = 100;
-	let contrast = 100;
-	let rotation = 0; // degrees, multiples of 90
+	let adjustOpen = $state(false);
+	let invert = $state(false);
+	let flipH = $state(false);
+	let flipV = $state(false);
+	let brightness = $state(100);
+	let contrast = $state(100);
+	let rotation = $state(0); // degrees, multiples of 90
 
-	$: adjustActive = invert || flipH || flipV || brightness !== 100 || contrast !== 100 || rotation !== 0;
+	let adjustActive = $derived(invert || flipH || flipV || brightness !== 100 || contrast !== 100 || rotation !== 0);
 
-	$: imgFilter = [
+	let imgFilter = $derived([
 		invert ? 'invert(1)' : '',
 		brightness !== 100 ? `brightness(${brightness / 100})` : '',
 		contrast !== 100 ? `contrast(${contrast / 100})` : '',
 	]
 		.filter(Boolean)
-		.join(' ');
+		.join(' '));
 
-	$: if (img) img.style.filter = imgFilter;
+	$effect(() => {
+		if (img) img.style.filter = imgFilter;
+	});
 
 	function resetAdjust() {
 		invert = false;
@@ -116,6 +119,7 @@
 			applyTransform();
 			return;
 		}
+		if (!container || !img) return;
 		const vw = container.clientWidth;
 		const vh = container.clientHeight;
 		const nw = img.naturalWidth;
@@ -147,7 +151,7 @@
 		dragStartY = e.clientY;
 		dragOriginX = offsetX;
 		dragOriginY = offsetY;
-		container.setPointerCapture(e.pointerId);
+		container?.setPointerCapture(e.pointerId);
 	}
 
 	function onPointerMove(e: PointerEvent) {
@@ -169,14 +173,17 @@
 		applyTransform();
 	}
 
-	// Re-apply transform whenever flip changes.
-	$: if (img) {
-		flipH, flipV;
-		applyTransform();
-	}
+	// Re-apply transform when flip changes. applyTransform() also reads scale/
+	// offset/rotation, which already call it explicitly at their own call sites
+	// for immediate (non-batched) visual feedback during drag/zoom — this effect
+	// re-running for those too is a harmless redundant reapplication of the same
+	// values, not a behavior change.
+	$effect(() => {
+		if (img) applyTransform();
+	});
 
 	// Never zoom out below half of fitScale (or 0.01 before image loads).
-	$: minScale = Math.min(0.01, fitScale * 0.5);
+	let minScale = $derived(Math.min(0.01, fitScale * 0.5));
 
 	function zoomIn() {
 		scale = clamp(scale * 1.25, minScale, MAX_SCALE);
@@ -196,6 +203,7 @@
 	}
 
 	onMount(() => {
+		if (!container || !img) return;
 		container.addEventListener('wheel', onWheel, { passive: false });
 		if (img.complete && img.naturalWidth > 0) onImageLoad();
 		else if (img.complete && img.naturalWidth === 0) onError();
@@ -216,11 +224,11 @@
 		class:dragging
 		class:hidden={loadError}
 		bind:this={container}
-		on:pointerdown={onPointerDown}
-		on:pointermove={onPointerMove}
-		on:pointerup={onPointerUp}
-		on:pointercancel={onPointerUp}
-		on:dblclick={onDblClick}
+		onpointerdown={onPointerDown}
+		onpointermove={onPointerMove}
+		onpointerup={onPointerUp}
+		onpointercancel={onPointerUp}
+		ondblclick={onDblClick}
 		role="img"
 		aria-label="Image viewer"
 	>
@@ -230,20 +238,20 @@
 			{src}
 			alt=""
 			class:svg-fit={svgMode}
-			on:load={onImageLoad}
-			on:error={onError}
+			onload={onImageLoad}
+			onerror={onError}
 			draggable="false"
 		/>
 		<div class="toolbar">
-			<button on:click|stopPropagation={zoomIn} title="Zoom in">+</button>
-			<button on:click|stopPropagation={zoomOut} title="Zoom out">−</button>
-			<button on:click|stopPropagation={reset} title="Fit to viewport">
+			<button onclick={(e) => { e.stopPropagation(); zoomIn(); }} title="Zoom in">+</button>
+			<button onclick={(e) => { e.stopPropagation(); zoomOut(); }} title="Zoom out">−</button>
+			<button onclick={(e) => { e.stopPropagation(); reset(); }} title="Fit to viewport">
 				<IconFitViewport />
 			</button>
-			<button on:click|stopPropagation={rotateLeft} title="Rotate left">↺</button>
-			<button on:click|stopPropagation={rotateRight} title="Rotate right">↻</button>
+			<button onclick={(e) => { e.stopPropagation(); rotateLeft(); }} title="Rotate left">↺</button>
+			<button onclick={(e) => { e.stopPropagation(); rotateRight(); }} title="Rotate right">↻</button>
 			<button
-				on:click|stopPropagation={() => (adjustOpen = !adjustOpen)}
+				onclick={(e) => { e.stopPropagation(); adjustOpen = !adjustOpen; }}
 				title="Adjust image"
 				class:active={adjustActive}
 			>
@@ -255,17 +263,17 @@
 				<div class="adjust-toggles">
 					<button
 						class:on={invert}
-						on:click|stopPropagation={() => (invert = !invert)}
+						onclick={(e) => { e.stopPropagation(); invert = !invert; }}
 						title="Invert colours"
 					>Invert</button>
 					<button
 						class:on={flipH}
-						on:click|stopPropagation={() => (flipH = !flipH)}
+						onclick={(e) => { e.stopPropagation(); flipH = !flipH; }}
 						title="Flip horizontal"
 					>Flip H</button>
 					<button
 						class:on={flipV}
-						on:click|stopPropagation={() => (flipV = !flipV)}
+						onclick={(e) => { e.stopPropagation(); flipV = !flipV; }}
 						title="Flip vertical"
 					>Flip V</button>
 				</div>
@@ -276,7 +284,7 @@
 						min="0"
 						max="200"
 						bind:value={brightness}
-						on:click|stopPropagation
+						onclick={(e) => e.stopPropagation()}
 					/>
 					<span class="adjust-value">{brightness}%</span>
 				</label>
@@ -287,12 +295,12 @@
 						min="0"
 						max="200"
 						bind:value={contrast}
-						on:click|stopPropagation
+						onclick={(e) => e.stopPropagation()}
 					/>
 					<span class="adjust-value">{contrast}%</span>
 				</label>
 				{#if adjustActive}
-					<button class="reset-btn" on:click|stopPropagation={resetAdjust}>Reset</button>
+					<button class="reset-btn" onclick={(e) => { e.stopPropagation(); resetAdjust(); }}>Reset</button>
 				{/if}
 			</div>
 		{/if}

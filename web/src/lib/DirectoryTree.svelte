@@ -8,11 +8,13 @@
 
 	let {
 		source,
-		activePath = null
+		activePath = null,
+		onOpen
 	}: {
 		source: string;
 		/** Currently open file path — highlighted in the tree. */
 		activePath?: string | null;
+		onOpen?: (detail: { source: string; path: string; kind: string; archivePath?: string }) => void;
 	} = $props();
 
 	let roots: DirEntry[] = $state([]);
@@ -76,7 +78,7 @@
 	{:else}
 		<ul class="tree-list">
 			{#each roots as entry (entry.path)}
-				<TreeRow {source} {entry} {activePath} depth={0} on:open />
+				<TreeRow {source} {entry} {activePath} depth={0} {onOpen} />
 			{/each}
 		</ul>
 	{/if}

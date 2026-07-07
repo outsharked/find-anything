@@ -1,17 +1,19 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { createEventDispatcher } from 'svelte';
 	import { listDir } from '$lib/api';
 	import type { DirEntry } from '$lib/api';
 	import { liveEvent } from '$lib/liveUpdates';
 
-	export let source: string;
-	export let prefix: string; // "" for root, "foo/bar/" for subdirectory
-
-	const dispatch = createEventDispatcher<{
-		openFile: { source: string; path: string; kind: string };
-		openDir: { prefix: string };
-	}>();
+	let {
+		source,
+		prefix,
+		onOpenFile,
+		onOpenDir
+	}: {
+		source: string;
+		prefix: string; // "" for root, "foo/bar/" for subdirectory
+		onOpenFile?: (detail: { source: string; path: string; kind: string }) => void;
+		onOpenDir?: (detail: { prefix: string }) => void;
+	} = $props();
 
 	// Compute the parent prefix for the "up" button.
 	// Handles both "/" separators (directories) and "::" separators (archive roots).
@@ -26,24 +28,28 @@
 		return s.slice(0, lastSlash + 1); // keep "/"
 	}
 
-	$: parent = parentPrefix(prefix);
+	let parent = $derived(parentPrefix(prefix));
 
-	let entries: DirEntry[] = [];
-	let loading = true;
-	let error: string | null = null;
+	let entries: DirEntry[] = $state([]);
+	let loading = $state(true);
+	let error: string | null = $state(null);
 
 	// Reload when prefix changes.
-	$: load(source, prefix);
+	$effect(() => {
+		load(source, prefix);
+	});
 
 	// Reload when a live event affects the current directory.
-	$: if ($liveEvent && $liveEvent.source === source) {
-		const ev = $liveEvent;
-		const parentDir = dirOf(ev.path);
-		const newParentDir = ev.new_path ? dirOf(ev.new_path) : null;
-		if (parentDir === prefix || newParentDir === prefix) {
-			load(source, prefix);
+	$effect(() => {
+		if ($liveEvent && $liveEvent.source === source) {
+			const ev = $liveEvent;
+			const parentDir = dirOf(ev.path);
+			const newParentDir = ev.new_path ? dirOf(ev.new_path) : null;
+			if (parentDir === prefix || newParentDir === prefix) {
+				load(source, prefix);
+			}
 		}
-	}
+	});
 
 	function dirOf(p: string): string {
 		const i = p.lastIndexOf('/');
@@ -95,7 +101,7 @@
 			</thead>
 			<tbody>
 				{#if parent !== null}
-					<tr class="row row--up" on:click={() => dispatch('openDir', { prefix: parent ?? '' })}>
+					<tr class="row row--up" onclick={() => onOpenDir?.({ prefix: parent ?? '' })}>
 						<td class="col-name" colspan="4">
 							<span class="icon-up">↑</span>
 							<span class="name">..</span>
@@ -106,10 +112,10 @@
 					<tr
 						class="row"
 						class:row--dir={entry.entry_type === 'dir'}
-						on:click={() =>
+						onclick={() =>
 							entry.entry_type === 'dir'
-								? dispatch('openDir', { prefix: entry.path })
-								: dispatch('openFile', { source, path: entry.path, kind: entry.kind ?? 'text' })}
+								? onOpenDir?.({ prefix: entry.path })
+								: onOpenFile?.({ source, path: entry.path, kind: entry.kind ?? 'text' })}
 					>
 						<td class="col-name">
 							<span class="icon">{entry.entry_type === 'dir' ? '▸' : '·'}</span>
