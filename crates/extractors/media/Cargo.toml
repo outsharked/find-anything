@@ -33,7 +33,7 @@ symphonia = { version = "0.5", default-features = false, features = [
 ] }
 
 # Video metadata
-nom-exif = "2"
+nom-exif = "3"
 
 # For writing archive member bytes to a temp file before extracting
 tempfile = "3"
