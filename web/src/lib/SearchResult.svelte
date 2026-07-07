@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher, onMount } from 'svelte';
+	import { onMount } from 'svelte';
 	import IconChevronLeft from '$lib/icons/IconChevronLeft.svelte';
 	import IconChevronRight from '$lib/icons/IconChevronRight.svelte';
 	import type { SearchResult, ContextLine } from '$lib/api';
@@ -7,20 +7,25 @@
 	import { highlightLine } from '$lib/highlight';
 	import { contextWindow } from '$lib/settingsStore';
 
-	/** All hits for this file, ordered by relevance (first hit is primary). */
-	export let hits: SearchResult[];
-	/** Current search query — used to highlight matches in the filename for path-only results. */
-	export let query = '';
+	let {
+		hits,
+		query = '',
+		onOpen
+	}: {
+		/** All hits for this file, ordered by relevance (first hit is primary). */
+		hits: SearchResult[];
+		/** Current search query — used to highlight matches in the filename for path-only results. */
+		query?: string;
+		onOpen?: (result: SearchResult) => void;
+	} = $props();
 
-	$: result = hits[activeHitIndex] ?? hits[0];
+	let activeHitIndex = $state(0);
+	let result = $derived(hits[activeHitIndex] ?? hits[0]);
 
-	const dispatch = createEventDispatcher<{ open: SearchResult }>();
-
-	let activeHitIndex = 0;
-	let contextStart = 0;
-	let contextMatchIndex: number | null = null;
-	let contextLines: ContextLine[] = [];
-	let contextLoaded = false;
+	let contextStart = $state(0);
+	let contextMatchIndex: number | null = $state(null);
+	let contextLines: ContextLine[] = $state([]);
+	let contextLoaded = $state(false);
 	let el: HTMLElement;
 
 	onMount(() => {
@@ -97,7 +102,7 @@
 	}
 
 	function openFile() {
-		dispatch('open', hits[activeHitIndex] ?? hits[0]);
+		onOpen?.(hits[activeHitIndex] ?? hits[0]);
 	}
 
 	function formatSize(bytes: number | null): string {
@@ -114,7 +119,7 @@
 
 	function openAlias(alias: string) {
 		const i = alias.indexOf('::');
-		dispatch('open', {
+		onOpen?.({
 			...result,
 			path: i >= 0 ? alias.slice(0, i) : alias,
 			archive_path: i >= 0 ? alias.slice(i + 2) : null,
@@ -185,20 +190,20 @@
 		return out;
 	}
 
-	let aliasesExpanded = false;
+	let aliasesExpanded = $state(false);
 
 	/** Highlighted HTML for context lines (set after loadContext resolves). */
-	let highlightedContextLines: string[] = [];
+	let highlightedContextLines: string[] = $state([]);
 	/** Highlighted HTML for the snippet fallback (set after loadContext resolves). */
-	let highlightedSnippet = '';
+	let highlightedSnippet = $state('');
 </script>
 
 <article class="result" bind:this={el}>
-	<!-- svelte-ignore a11y-no-static-element-interactions -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="result-header"
-		on:click={openFile}
-		on:keydown={handleKeydown}
+		onclick={openFile}
+		onkeydown={handleKeydown}
 		role="button"
 		tabindex="0"
 		title={isContentMatch(result) ? `Open file at line ${displayLine(result.line_number)}` : 'Open file'}
@@ -224,14 +229,14 @@
 			{#if hits.length === 1 && isContentMatch(hits[0])}
 				<span class="line-ref">:{displayLine(hits[0].line_number)}</span>
 			{:else if hits.length > 1}
-				<!-- svelte-ignore a11y-no-static-element-interactions -->
-				<!-- svelte-ignore a11y-click-events-have-key-events -->
-				<span class="hit-nav" title="{activeHitIndex + 1} of {hits.length}{hits[0].hits_truncated ? '+' : ''} hits" on:click|stopPropagation>
-					<button class="hit-nav-btn" class:hit-nav-hidden={activeHitIndex === 0} on:click|stopPropagation={() => switchToHit(activeHitIndex - 1)} title="Previous hit (line {displayLine(hits[activeHitIndex - 1]?.line_number ?? 0)})">
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<span class="hit-nav" title="{activeHitIndex + 1} of {hits.length}{hits[0].hits_truncated ? '+' : ''} hits" onclick={(e) => e.stopPropagation()}>
+					<button class="hit-nav-btn" class:hit-nav-hidden={activeHitIndex === 0} onclick={(e) => { e.stopPropagation(); switchToHit(activeHitIndex - 1); }} title="Previous hit (line {displayLine(hits[activeHitIndex - 1]?.line_number ?? 0)})">
 						<IconChevronLeft />
 					</button>
 					<span class="line-ref nav-line-ref">:{displayLine(hits[activeHitIndex].line_number)}</span>
-					<button class="hit-nav-btn" class:hit-nav-hidden={activeHitIndex >= hits.length - 1} on:click|stopPropagation={() => switchToHit(activeHitIndex + 1)} title="Next hit (line {displayLine(hits[activeHitIndex + 1]?.line_number ?? 0)})">
+					<button class="hit-nav-btn" class:hit-nav-hidden={activeHitIndex >= hits.length - 1} onclick={(e) => { e.stopPropagation(); switchToHit(activeHitIndex + 1); }} title="Next hit (line {displayLine(hits[activeHitIndex + 1]?.line_number ?? 0)})">
 						<IconChevronRight />
 					</button>
 					{#if hits[0].hits_truncated}
@@ -242,11 +247,12 @@
 		</div>
 		<div class="result-row2">
 			{#if result.duplicate_paths && result.duplicate_paths.length > 0}
-				<!-- svelte-ignore a11y-click-events-have-key-events -->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<span
 					class="alias-badge"
 					title={aliasesExpanded ? 'Hide duplicate paths' : 'Show duplicate paths'}
-					on:click|stopPropagation={() => (aliasesExpanded = !aliasesExpanded)}
+					onclick={(e) => { e.stopPropagation(); aliasesExpanded = !aliasesExpanded; }}
 				>+{result.duplicate_paths.length} duplicate{result.duplicate_paths.length === 1 ? '' : 's'}</span>
 			{/if}
 			<div class="file-meta">
@@ -263,7 +269,7 @@
 	{#if aliasesExpanded && result.duplicate_paths && result.duplicate_paths.length > 0}
 		<div class="aliases">
 			{#each result.duplicate_paths as alias}
-				<button class="alias-path" on:click|stopPropagation={() => openAlias(alias)}>{alias}</button>
+				<button class="alias-path" onclick={(e) => { e.stopPropagation(); openAlias(alias); }}>{alias}</button>
 			{/each}
 		</div>
 	{/if}

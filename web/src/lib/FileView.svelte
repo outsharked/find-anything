@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import { goto } from '$app/navigation';
 	import PathBar from '$lib/PathBar.svelte';
 	import FileViewer from '$lib/FileViewer.svelte';
@@ -9,33 +8,57 @@
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 	import TopBar from '$lib/TopBar.svelte';
 
-	export let fileView: FileViewState;
-	export let showBack = true;
-	export let showTree: boolean;
-	export let query: string;
-	export let scope: SearchScope = 'line';
-	export let matchType: SearchMatchType = 'fuzzy';
-	export let searching: boolean;
-	export let sources: string[];
-	export let selectedSources: string[];
-	export let selectedKinds: string[] = [];
-	export let dateFrom = '';
-	export let dateTo = '';
-	export let caseSensitive = false;
+	type FilterChangeDetail = { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
+	type OpenFileFromTreeDetail = { source: string; path: string; kind: string; archivePath?: string; showAsDirectory?: boolean };
+	type OpenDirFileDetail = { source: string; path: string; kind: string; archivePath?: string };
 
-	const dispatch = createEventDispatcher<{
-		back: void;
-		search: { query: string };
-		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
-		treeToggle: void;
-		openFileFromTree: { source: string; path: string; kind: string; archivePath?: string; showAsDirectory?: boolean };
-		openDirFile: { source: string; path: string; kind: string; archivePath?: string };
-		openDir: { prefix: string };
-		lineselect: { selection: LineSelection };
-		navigateDir: { prefix: string };
-	}>();
+	let {
+		fileView,
+		showBack = true,
+		showTree,
+		query,
+		scope = 'line',
+		matchType = 'fuzzy',
+		searching,
+		sources,
+		selectedSources,
+		selectedKinds = [],
+		dateFrom = '',
+		dateTo = '',
+		caseSensitive = false,
+		onBack,
+		onSearch,
+		onFilterChange,
+		onTreeToggle,
+		onOpenFileFromTree,
+		onOpenDirFile,
+		onOpenDir,
+		onLineSelect
+	}: {
+		fileView: FileViewState;
+		showBack?: boolean;
+		showTree: boolean;
+		query: string;
+		scope?: SearchScope;
+		matchType?: SearchMatchType;
+		searching: boolean;
+		sources: string[];
+		selectedSources: string[];
+		selectedKinds?: string[];
+		dateFrom?: string;
+		dateTo?: string;
+		caseSensitive?: boolean;
+		onBack?: () => void;
+		onSearch?: (detail: { query: string }) => void;
+		onFilterChange?: (detail: FilterChangeDetail) => void;
+		onTreeToggle?: () => void;
+		onOpenFileFromTree?: (detail: OpenFileFromTreeDetail) => void;
+		onOpenDirFile?: (detail: OpenDirFileDetail) => void;
+		onOpenDir?: (detail: { prefix: string }) => void;
+		onLineSelect?: (detail: { selection: LineSelection }) => void;
+	} = $props();
 
-	$: pathBarPath = fileView.panelMode === 'dir' ? fileView.dirPrefix : fileView.file.outer;
+	let pathBarPath = $derived(fileView.panelMode === 'dir' ? fileView.dirPrefix : fileView.file.outer);
 </script>
 
 <TopBar
@@ -50,9 +73,9 @@
 	{caseSensitive}
 	{scope}
 	{matchType}
-	on:search={(e) => dispatch('search', e.detail)}
-	on:treeToggle={() => dispatch('treeToggle')}
-	on:filterChange={(e) => dispatch('filterChange', e.detail)}
+	{onSearch}
+	{onTreeToggle}
+	{onFilterChange}
 />
 
 <div class="viewer-wrap">
@@ -61,12 +84,12 @@
 		path={pathBarPath}
 		archivePath={fileView.panelMode === 'file' ? fileView.file.inner ?? null : null}
 		{showBack}
-		onBack={() => dispatch('back')}
+		onBack={() => onBack?.()}
 		onNavigate={(action) => {
 			if (action.type === 'dir') {
-				dispatch('openDir', { prefix: action.prefix });
+				onOpenDir?.({ prefix: action.prefix });
 			} else {
-				dispatch('openFileFromTree', { source: fileView.source, path: action.path, kind: action.kind });
+				onOpenFileFromTree?.({ source: fileView.source, path: action.path, kind: action.kind });
 			}
 		}}
 	/>
@@ -74,8 +97,8 @@
 		<DirListing
 			source={fileView.source}
 			prefix={fileView.dirPrefix}
-			onOpenFile={(detail) => dispatch('openDirFile', detail)}
-			onOpenDir={(detail) => dispatch('openDir', detail)}
+			onOpenFile={(detail) => onOpenDirFile?.(detail)}
+			onOpenDir={(detail) => onOpenDir?.(detail)}
 		/>
 	{:else}
 		{#key `${fileView.source}:${fileView.file.full}`}
@@ -85,10 +108,10 @@
 				archivePath={fileView.file.inner}
 				selection={fileView.selection}
 				preferOriginal={fileView.selection.length === 0}
-				on:lineselect={(e) => dispatch('lineselect', e.detail)}
-				on:open={(e) => dispatch('openDirFile', e.detail)}
-				on:navigateDir={(e) => dispatch('openDir', e.detail)}
-				on:navigate={(e) => dispatch('openFileFromTree', { source: fileView.source, path: e.detail.path, kind: 'unknown' })}
+				on:lineselect={(e) => onLineSelect?.(e.detail)}
+				on:open={(e) => onOpenDirFile?.(e.detail)}
+				on:navigateDir={(e) => onOpenDir?.(e.detail)}
+				on:navigate={(e) => onOpenFileFromTree?.({ source: fileView.source, path: e.detail.path, kind: 'unknown' })}
 			/>
 		{/key}
 	{/if}
