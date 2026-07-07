@@ -613,16 +613,15 @@ fn extract_video(path: &Path, label: &str, ffprobe: Option<&str>) -> anyhow::Res
 fn extract_video_nom_exif(path: &Path, ext: &str, label: &str) -> anyhow::Result<Vec<IndexLine>> {
     use nom_exif::{MediaSource, TrackInfo, TrackInfoTag};
 
-    let ms = match MediaSource::file_path(path) {
+    // has_track() was removed in nom-exif 3; parse_track() itself now returns
+    // Err(TrackNotFound) for track-less sources, which the existing Err arm
+    // below already handles the same way (fall back to make_meta_line).
+    let ms = match MediaSource::open(path) {
         Ok(ms) => ms,
         Err(_) => return Ok(vec![make_meta_line(ext)]),
     };
 
-    if !ms.has_track() {
-        return Ok(vec![make_meta_line(ext)]);
-    }
-
-    let parse_result = MEDIA_PARSER.with(|p| p.borrow_mut().parse(ms));
+    let parse_result = MEDIA_PARSER.with(|p| p.borrow_mut().parse_track(ms));
     let info: TrackInfo = match parse_result {
         Ok(info) => info,
         Err(e) => {
@@ -634,8 +633,8 @@ fn extract_video_nom_exif(path: &Path, ext: &str, label: &str) -> anyhow::Result
     let mut parts = vec![video_part("format", ext)];
 
     if let (Some(w), Some(h)) = (
-        info.get(TrackInfoTag::ImageWidth).and_then(|v| v.as_u32()),
-        info.get(TrackInfoTag::ImageHeight).and_then(|v| v.as_u32()),
+        info.get(TrackInfoTag::Width).and_then(|v| v.as_u32()),
+        info.get(TrackInfoTag::Height).and_then(|v| v.as_u32()),
     ) {
         parts.push(video_part("resolution", &format!("{}x{}", w, h)));
     }
@@ -730,6 +729,12 @@ mod tests {
     /// Small FLAC (100 samples of silence) with Vorbis comment tags:
     /// title, artist, album, year.  Generated with `flac` 1.4.3.
     static FLAC_TAGGED: &[u8] = include_bytes!("../testdata/tagged.flac");
+
+    /// Tiny real MP4 (64x48, ~1.88s, h264/yuv420p, 25fps), exercising the
+    /// nom-exif ISOBMFF parsing path (extract_video_nom_exif). Generated with:
+    /// `ffmpeg -f lavfi -i color=c=blue:s=64x48:d=2 -c:v libx264 -pix_fmt yuv420p
+    /// -movflags +faststart tiny.mp4`
+    static TINY_MP4: &[u8] = include_bytes!("../testdata/tiny.mp4");
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -1090,6 +1095,21 @@ mod tests {
         let magic: [u8; 16] = [0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
                                 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C];
         check_video_format(&magic, ".wmv", "wmv");
+    }
+
+    #[test]
+    fn mp4_extracts_resolution_and_duration_via_nom_exif() {
+        // Exercises extract_video_nom_exif directly (no ffprobe configured),
+        // since that's the only test in this file that actually invokes
+        // nom-exif's ISOBMFF parser rather than the magic-byte fallback.
+        let cfg = find_extract_types::ExtractorConfig::default();
+        let f = write_fixture(TINY_MP4, ".mp4");
+        let lines = extract(f.path(), &cfg).unwrap();
+        assert_eq!(lines.len(), 1, "video produces one metadata line, got: {lines:?}");
+        let content = &lines[0].content;
+        assert!(content.contains("[VIDEO:format] mp4"), "content: {content}");
+        assert!(content.contains("[VIDEO:resolution] 64x48"), "content: {content}");
+        assert!(content.contains("[VIDEO:duration]"), "content: {content}");
     }
 
     #[test]
