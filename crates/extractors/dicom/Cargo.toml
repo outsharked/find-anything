@@ -16,5 +16,5 @@ find-extract-types = { path = "../../extract-types" }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 
-dicom-object = "0.9"
-dicom-dictionary-std = "0.9"
+dicom-object = "0.10"
+dicom-dictionary-std = "0.10"

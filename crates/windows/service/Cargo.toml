@@ -10,7 +10,7 @@ path = "src/lib.rs"
 [target.'cfg(windows)'.dependencies]
 find-common = { path = "../../common" }
 windows-service = "0.8"
-winreg = "0.52"
+winreg = "0.56"
 anyhow = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
