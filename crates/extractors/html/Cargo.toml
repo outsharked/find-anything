@@ -16,4 +16,4 @@ find-extract-types = { path = "../../extract-types" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 
-scraper = "0.21"
+scraper = "0.27"
