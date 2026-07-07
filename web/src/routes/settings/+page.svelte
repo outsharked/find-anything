@@ -7,12 +7,9 @@
 	import ErrorsPanel from '$lib/ErrorsPanel.svelte';
 	import AdminPanel from '$lib/AdminPanel.svelte';
 	import About from '$lib/About.svelte';
-	// Declare params prop to silence runtime "unknown prop" warning.
-	export let params: Record<string, string>;
-	const _params = params;
 
-	let activeSection = $page.url.searchParams.get('section') ?? 'preferences';
-	let isMobile = false;
+	let activeSection = $state($page.url.searchParams.get('section') ?? 'preferences');
+	let isMobile = $state(false);
 
 	function setSection(section: string) {
 		activeSection = section;
@@ -59,7 +56,7 @@
 <div class="settings-page">
 	<!-- Header -->
 	<div class="header">
-		<button class="back-btn" on:click={goBack} title="Go back">←</button>
+		<button class="back-btn" onclick={goBack} title="Go back">←</button>
 		<a class="logo" href="/">find-anything</a>
 	</div>
 
@@ -72,7 +69,7 @@
 					<button
 						class="nav-item"
 						class:active={activeSection === s.id}
-						on:click={() => setSection(s.id)}
+						onclick={() => setSection(s.id)}
 					>{s.label}</button>
 				{/each}
 			</nav>
@@ -106,7 +103,7 @@
 						<button
 							class="accordion-header"
 							class:open={activeSection === s.id}
-							on:click={() => toggleSection(s.id)}
+							onclick={() => toggleSection(s.id)}
 						>
 							<span>{s.label}</span>
 							<svg
