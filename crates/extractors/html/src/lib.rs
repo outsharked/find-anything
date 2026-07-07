@@ -198,6 +198,22 @@ mod tests {
     }
 
     #[test]
+    fn test_html_entities_decoded() {
+        let html = r#"<html><body>
+<p>Q&amp;A: 1 &lt; 2 &amp;&amp; 3 &gt; 2, say &quot;hi&quot; &#65;</p>
+</body></html>"#;
+
+        let lines = extract_from_str(html);
+        let content: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.line_number >= LINE_CONTENT_START)
+            .map(|l| l.content.as_str())
+            .collect();
+
+        assert_eq!(content, vec![r#"Q&A: 1 < 2 && 3 > 2, say "hi" A"#]);
+    }
+
+    #[test]
     fn test_table_cells() {
         let html = r#"<html><body>
 <table>
