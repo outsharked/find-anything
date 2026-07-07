@@ -286,10 +286,10 @@
 			searching={isSearchActive}
 			{nlpHighlightSpan}
 			bind:isTyping
-			on:change={(e) => dispatch('search', { query: e.detail.query })}
-			on:rawInput={(e) => {
-				const wasDeletion = e.detail.query.length < liveQuery.length;
-				liveQuery = e.detail.query;
+			onChange={(detail) => dispatch('search', { query: detail.query })}
+			onRawInput={(detail) => {
+				const wasDeletion = detail.query.length < liveQuery.length;
+				liveQuery = detail.query;
 				if (wasDeletion) {
 					// Deletion: close typeahead and freeze activeToken so the
 					// reactive block doesn't re-trigger updateTypeahead.
@@ -299,8 +299,8 @@
 					activeToken = null; // typing forward: let reactive block fire
 				}
 			}}
-			on:focus={() => { searchFocused = true; }}
-			on:blur={() => { searchFocused = false; }}
+			onFocus={() => { searchFocused = true; }}
+			onBlur={() => { searchFocused = false; }}
 		/>
 		{#if taOpen}
 			<DirTypeahead

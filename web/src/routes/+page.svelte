@@ -534,16 +534,16 @@
 
 	// ── Command palette ──────────────────────────────────────────────────────────
 
-	function handlePaletteSelect(e: CustomEvent<{ source: string; path: string; archivePath: string | null; kind: string }>) {
-		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath);
+	function handlePaletteSelect(detail: { source: string; path: string; archivePath: string | null; kind: string }) {
+		const file = FilePath.fromParts(detail.path, detail.archivePath);
 		// Fire-and-forget: pre-fetch all intermediate directory levels in parallel
 		// so TreeRow instances find their data in the cache and can expand
 		// the full path in one pass instead of one serial round-trip per level.
-		prefetchTreePath(e.detail.source, file.full);
-		if (e.detail.kind === 'archive') {
-			openFileView({ source: e.detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' });
+		prefetchTreePath(detail.source, file.full);
+		if (detail.kind === 'archive') {
+			openFileView({ source: detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' });
 		} else {
-			openFileView({ source: e.detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' });
+			openFileView({ source: detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' });
 		}
 	}
 
@@ -682,8 +682,8 @@
 	open={showPalette}
 	sources={paletteSources}
 	totalSourceCount={sourceNames.length}
-	on:select={handlePaletteSelect}
-	on:close={() => (showPalette = false)}
+	onSelect={handlePaletteSelect}
+	onClose={() => (showPalette = false)}
 />
 
 

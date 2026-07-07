@@ -66,7 +66,7 @@
 				<DirectoryTree
 					{source}
 					activePath={source === activeSource ? activePath : null}
-					on:open={(e) => onOpen?.(e.detail)}
+					{onOpen}
 				/>
 			{/if}
 		</div>

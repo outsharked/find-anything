@@ -1,18 +1,36 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import IconSpinner from '$lib/icons/IconSpinner.svelte';
 	import IconClear from '$lib/icons/IconClear.svelte';
 
-	export let query = '';
-	export let searching = false;
-	export let isTyping = false;
-	export let nlpHighlightSpan: [number, number] | undefined = undefined;
-
-	const dispatch = createEventDispatcher<{
-		change: { query: string };
+	let {
+		query: queryProp = '',
+		searching = false,
+		isTyping = $bindable(false),
+		nlpHighlightSpan = undefined,
+		onChange,
+		onRawInput,
+		onFocus,
+		onBlur
+	}: {
+		query?: string;
+		searching?: boolean;
+		isTyping?: boolean;
+		nlpHighlightSpan?: [number, number] | undefined;
+		onChange?: (detail: { query: string }) => void;
 		/** Fires immediately on every keystroke — used by typeahead, no debounce. */
-		rawInput: { query: string };
-	}>();
+		onRawInput?: (detail: { query: string }) => void;
+		onFocus?: () => void;
+		onBlur?: () => void;
+	} = $props();
+
+	// `query` is seeded from the prop but then diverges locally as the user
+	// types (the parent isn't bound to it — it only finds out via onChange/
+	// onRawInput). Re-sync from the prop only when the parent's own value
+	// actually changes (e.g. browser back/forward), not on every render.
+	let query = $state(queryProp);
+	$effect(() => {
+		query = queryProp;
+	});
 
 	let debounceTimer: ReturnType<typeof setTimeout>;
 	let prevLength = 0;
@@ -20,7 +38,7 @@
 	function handleInput() {
 		const isDeletion = query.length < prevLength;
 		prevLength = query.length;
-		dispatch('rawInput', { query });
+		onRawInput?.({ query });
 
 		if (isDeletion) {
 			// Deleting characters: cancel any pending search and don't start a new one.
@@ -34,7 +52,7 @@
 		clearTimeout(debounceTimer);
 		debounceTimer = setTimeout(() => {
 			isTyping = false;
-			dispatch('change', { query });
+			onChange?.({ query });
 		}, 500);
 	}
 
@@ -42,7 +60,7 @@
 		if (e.key === 'Enter') {
 			clearTimeout(debounceTimer);
 			isTyping = false;
-			dispatch('change', { query });
+			onChange?.({ query });
 		}
 	}
 
@@ -50,7 +68,7 @@
 		query = '';
 		isTyping = false;
 		clearTimeout(debounceTimer);
-		dispatch('change', { query: '' });
+		onChange?.({ query: '' });
 		inputEl?.focus();
 	}
 
@@ -58,23 +76,25 @@
 		inputEl?.focus();
 	}
 
-	let inputEl: HTMLInputElement;
-	let backdropEl: HTMLDivElement;
+	let inputEl: HTMLInputElement | undefined = $state();
+	let backdropEl: HTMLDivElement | undefined = $state();
 
-	$: showSpinner = isTyping || searching;
+	let showSpinner = $derived(isTyping || searching);
 
-	$: hlBefore = nlpHighlightSpan ? query.slice(0, nlpHighlightSpan[0]) : '';
-	$: hlMiddle = nlpHighlightSpan ? query.slice(nlpHighlightSpan[0], nlpHighlightSpan[1]) : '';
-	$: hlAfter  = nlpHighlightSpan ? query.slice(nlpHighlightSpan[1]) : '';
+	let hlBefore = $derived(nlpHighlightSpan ? query.slice(0, nlpHighlightSpan[0]) : '');
+	let hlMiddle = $derived(nlpHighlightSpan ? query.slice(nlpHighlightSpan[0], nlpHighlightSpan[1]) : '');
+	let hlAfter  = $derived(nlpHighlightSpan ? query.slice(nlpHighlightSpan[1]) : '');
 
 	function syncScroll() {
-		if (backdropEl) backdropEl.scrollLeft = inputEl.scrollLeft;
+		if (backdropEl && inputEl) backdropEl.scrollLeft = inputEl.scrollLeft;
 	}
 
 	// Sync backdrop scroll whenever the highlight span changes (e.g. after debounce).
-	$: if (nlpHighlightSpan && backdropEl && inputEl) {
-		backdropEl.scrollLeft = inputEl.scrollLeft;
-	}
+	$effect(() => {
+		if (nlpHighlightSpan && backdropEl && inputEl) {
+			backdropEl.scrollLeft = inputEl.scrollLeft;
+		}
+	});
 </script>
 
 <div class="search-box">
@@ -85,11 +105,11 @@
 		<input
 			bind:this={inputEl}
 			bind:value={query}
-			on:input={handleInput}
-			on:keydown={handleKeydown}
-			on:scroll={syncScroll}
-			on:focus
-			on:blur
+			oninput={handleInput}
+			onkeydown={handleKeydown}
+			onscroll={syncScroll}
+			onfocus={() => onFocus?.()}
+			onblur={() => onBlur?.()}
 			type="text"
 			placeholder="Search…"
 			autocomplete="off"
@@ -103,7 +123,7 @@
 			<IconSpinner />
 		</div>
 	{:else if query}
-		<button class="clear-btn" on:click={clearQuery} aria-label="Clear search">
+		<button class="clear-btn" onclick={clearQuery} aria-label="Clear search">
 			<IconClear />
 		</button>
 	{/if}

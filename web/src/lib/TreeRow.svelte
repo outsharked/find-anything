@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { createEventDispatcher, tick } from 'svelte';
+	import { tick } from 'svelte';
+	import TreeRow from './TreeRow.svelte';
 	import { listDir, listArchiveMembers } from '$lib/api';
 	import type { DirEntry } from '$lib/api';
 	import { splitEntryPath, shouldExpandEntry } from '$lib/filePath';
@@ -7,56 +8,67 @@
 	import { keyboardCursorPath } from '$lib/treeStore';
 	import { getCachedDir, setCachedDir, prefetchTreePath } from '$lib/treeCache';
 
-	export let source: string;
-	export let entry: DirEntry;
-	export let activePath: string | null = null;
-	export let depth: number = 0;
+	let {
+		source,
+		entry,
+		activePath = null,
+		depth = 0,
+		onOpen
+	}: {
+		source: string;
+		entry: DirEntry;
+		activePath?: string | null;
+		depth?: number;
+		onOpen?: (detail: { source: string; path: string; kind: string; archivePath?: string }) => void;
+	} = $props();
 
-	const dispatch = createEventDispatcher<{
-		open: { source: string; path: string; kind: string; archivePath?: string };
-	}>();
-
-	let expanded = false;
-	let children: DirEntry[] = [];
-	let loaded = false;
-	let loading = false;
-	let loadError = false;
-	let rowEl: HTMLElement | null = null;
+	let expanded = $state(false);
+	let children: DirEntry[] = $state([]);
+	let loaded = $state(false);
+	let loading = $state(false);
+	let loadError = $state(false);
+	let rowEl: HTMLElement | null = $state(null);
 	// Tracks the activePath value that last triggered auto-expand, so that a
-	// manual collapse is not immediately overridden by the reactive below.
-	let prevAutoExpandPath: string | null = null;
+	// manual collapse is not immediately overridden by the effect below.
+	let prevAutoExpandPath: string | null = $state(null);
 
-	$: if (entry.path === activePath && rowEl) {
-		tick().then(() => rowEl?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
-	}
+	$effect(() => {
+		if (entry.path === activePath && rowEl) {
+			tick().then(() => rowEl?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+		}
+	});
 
 	// An archive file (kind='archive') can be expanded like a directory.
-	$: isExpandable = entry.entry_type === 'dir' || entry.kind === 'archive';
+	let isExpandable = $derived(entry.entry_type === 'dir' || entry.kind === 'archive');
 
 	// Auto-expand when activePath changes to a new descendant value. By
 	// gating on `activePath !== prevAutoExpandPath`, a manual collapse is not
-	// immediately overridden: the reactive re-runs when `expanded` changes, but
+	// immediately overridden: the effect re-runs when `expanded` changes, but
 	// the path comparison short-circuits and leaves `expanded` alone.
-	$: if (isExpandable && activePath !== prevAutoExpandPath && activePath && shouldExpandEntry(entry, activePath)) {
-		prevAutoExpandPath = activePath;
-		if (!expanded) expandDir();
-	}
+	$effect(() => {
+		if (isExpandable && activePath !== prevAutoExpandPath && activePath && shouldExpandEntry(entry, activePath)) {
+			prevAutoExpandPath = activePath;
+			if (!expanded) expandDir();
+		}
+	});
 
 	// Compute the prefix this directory row is responsible for.
 	// entry.path for directories already has a trailing slash (e.g. "docs/plans/").
-	$: myPrefix = entry.entry_type === 'dir' ? entry.path : null;
+	let myPrefix = $derived(entry.entry_type === 'dir' ? entry.path : null);
 
 	// React to live index events: silently refresh children when this expanded
 	// directory is an ancestor of a changed file. Checking ancestors (not just
 	// the immediate parent) ensures a new subdirectory becomes visible in its
 	// parent's listing even though the SSE path points deeper (e.g.
 	// "dir/newsubdir/file.txt" must trigger a refresh of "dir/").
-	$: if ($liveEvent && myPrefix && expanded && $liveEvent.source === source) {
-		const ev = $liveEvent;
-		if (ev.path.startsWith(myPrefix) || (ev.new_path && ev.new_path.startsWith(myPrefix))) {
-			silentRefresh();
+	$effect(() => {
+		if ($liveEvent && myPrefix && expanded && $liveEvent.source === source) {
+			const ev = $liveEvent;
+			if (ev.path.startsWith(myPrefix) || (ev.new_path && ev.new_path.startsWith(myPrefix))) {
+				silentRefresh();
+			}
 		}
-	}
+	});
 
 	async function silentRefresh() {
 		try {
@@ -117,12 +129,12 @@
 	}
 
 	async function onDirRowClick() {
-		// For archive nodes: expand to one level and dispatch open event
+		// For archive nodes: expand to one level and fire the open callback
 		if (entry.kind === 'archive') {
 			if (!expanded) {
 				await expandDir();
 			}
-			dispatch('open', {
+			onOpen?.({
 				source,
 				path: entry.path,
 				kind: 'archive',
@@ -136,7 +148,7 @@
 	function openFile() {
 		keyboardCursorPath.set(null); // activePath takes over the highlight
 		const { path, archivePath } = splitEntryPath(entry.path);
-		dispatch('open', { source, path, kind: entry.kind ?? 'text', archivePath });
+		onOpen?.({ source, path, kind: entry.kind ?? 'text', archivePath });
 		// Restore focus to this button after the file viewer renders, so that
 		// arrow key navigation continues to work without re-clicking the tree.
 		// Only steal it back if the user hasn't already moved focus to another tree item.
@@ -155,10 +167,10 @@
 			style="padding-left: {8 + depth * 16}px"
 			bind:this={rowEl}
 		>
-			<button class="expand-arrow" on:click={toggleDir} title={expanded ? 'Collapse' : 'Expand'}>
+			<button class="expand-arrow" onclick={toggleDir} title={expanded ? 'Collapse' : 'Expand'}>
 				<span class="icon">{expanded ? '▾' : '▸'}</span>
 			</button>
-			<button class="dir-name" data-tree-nav="dir" data-tree-path={entry.path} on:click={onDirRowClick}>
+			<button class="dir-name" data-tree-nav="dir" data-tree-path={entry.path} onclick={onDirRowClick}>
 				<span class="name">{entry.name}</span>
 			</button>
 		</div>
@@ -170,12 +182,12 @@
 			{:else}
 				<ul class="tree-list">
 					{#each children as child (child.path)}
-						<svelte:self
+						<TreeRow
 							source={source}
 							entry={child}
 							activePath={activePath}
 							depth={depth + 1}
-							on:open
+							{onOpen}
 						/>
 					{/each}
 				</ul>
@@ -188,7 +200,7 @@
 			style="padding-left: {8 + depth * 16}px"
 			data-tree-nav="file"
 			data-tree-path={entry.path}
-			on:click={openFile}
+			onclick={openFile}
 			bind:this={rowEl}
 		>
 			<span class="icon kind-icon" title={entry.kind}>·</span>
