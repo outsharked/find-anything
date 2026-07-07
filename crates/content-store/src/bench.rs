@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand::Rng;
+// random()/random_range() moved out of Rng into a separate extension trait in rand 0.10.
+use rand::RngExt;
 
 use crate::{ContentKey, ContentStore};
 
