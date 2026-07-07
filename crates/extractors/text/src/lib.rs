@@ -219,9 +219,24 @@ fn is_binary_ext(ext: &str) -> bool {
 fn extract_markdown_with_frontmatter(content: &str) -> Vec<IndexLine> {
     let mut lines = Vec::new();
 
-    // Try to parse frontmatter
+    // Try to parse frontmatter. As of gray_matter 0.3, parse() is fallible
+    // (Result instead of a best-effort ParsedEntity); on malformed frontmatter,
+    // fall back to indexing the whole input as plain content with no metadata
+    // line, matching the pre-0.3 best-effort behavior for that edge case.
     let matter = Matter::<YAML>::new();
-    let parsed = matter.parse(content);
+    let parsed = match matter.parse(content) {
+        Ok(p) => p,
+        Err(_) => {
+            for (i, line) in content.lines().enumerate() {
+                lines.push(IndexLine {
+                    archive_path: None,
+                    line_number: i + LINE_CONTENT_START,
+                    content: line.trim().to_string(),
+                });
+            }
+            return lines;
+        }
+    };
 
     // If frontmatter exists, concatenate all fields into the metadata slot (LINE_METADATA).
     if let Some(data) = parsed.data {
