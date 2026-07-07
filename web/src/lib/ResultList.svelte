@@ -45,7 +45,7 @@
 		{#each groups as group (group.key)}
 			{@const isDeleted = deletedPaths.has(`${group.hits[0].source}:${group.hits[0].path}`)}
 			<div class="result-pad" class:deleted={isDeleted}>
-				<SearchResultItem hits={group.hits} {query} on:open={(e) => onOpen?.(e.detail)} />
+				<SearchResultItem hits={group.hits} {query} {onOpen} />
 			</div>
 		{/each}
 	{/if}

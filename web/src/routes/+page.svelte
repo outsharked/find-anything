@@ -430,9 +430,9 @@
 
 	// ── Search event handlers ────────────────────────────────────────────────────
 
-	function handleSearch(e: CustomEvent<{ query: string }>) {
+	function handleSearch(detail: { query: string }) {
 		// New query text = fresh NLP parse (clear any prior suppression).
-		query = e.detail.query;
+		query = detail.query;
 		doSearch(query, selectedSources);
 	}
 
@@ -447,14 +447,14 @@
 		doSearch(stripped, selectedSources);
 	}
 
-	function handleFilterChange(e: CustomEvent<{ sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType }>) {
-		selectedSources = e.detail.sources;
-		selectedKinds = e.detail.kinds;
-		caseSensitive = e.detail.caseSensitive;
-		scope = e.detail.scope;
-		matchType = e.detail.matchType;
-		dateFromTs = e.detail.dateFrom;
-		dateToTs = e.detail.dateTo;
+	function handleFilterChange(detail: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType }) {
+		selectedSources = detail.sources;
+		selectedKinds = detail.kinds;
+		caseSensitive = detail.caseSensitive;
+		scope = detail.scope;
+		matchType = detail.matchType;
+		dateFromTs = detail.dateFrom;
+		dateToTs = detail.dateTo;
 		// Keep ISO strings in sync so AdvancedSearch inputs remain controlled.
 		dateFromStr = dateFromTs != null ? new Date(dateFromTs * 1000).toISOString().slice(0, 10) : '';
 		dateToStr = dateToTs != null ? new Date(dateToTs * 1000).toISOString().slice(0, 10) : '';
@@ -470,8 +470,7 @@
 		pushState();
 	}
 
-	function openFile(e: CustomEvent<SearchResult>) {
-		const r = e.detail;
+	function openFile(r: SearchResult) {
 		const file = FilePath.fromParts(r.path, r.archive_path ?? null);
 		// Server line_number: 0=path, 1=metadata, 2+=content (LINE_CONTENT_START=2).
 		// Display line number = server line_number - 1 (1-based content index).
@@ -489,26 +488,26 @@
 		openFileView({ source: r.source, file, selection, panelMode: 'file', dirPrefix: '' });
 	}
 
-	function handleOpenFileFromTree(e: CustomEvent<{ source: string; path: string; kind: string; archivePath?: string; showAsDirectory?: boolean }>) {
-		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath ?? null);
-		if (e.detail.showAsDirectory) {
-			openFileView({ source: e.detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' });
+	function handleOpenFileFromTree(detail: { source: string; path: string; kind: string; archivePath?: string; showAsDirectory?: boolean }) {
+		const file = FilePath.fromParts(detail.path, detail.archivePath ?? null);
+		if (detail.showAsDirectory) {
+			openFileView({ source: detail.source, file, selection: [], panelMode: 'dir', dirPrefix: file.full + '::' });
 		} else {
-			openFileView({ source: e.detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' });
+			openFileView({ source: detail.source, file, selection: [], panelMode: 'file', dirPrefix: '' });
 		}
 	}
 
-	function handleOpenDirFile(e: CustomEvent<{ source: string; path: string; kind: string; archivePath?: string }>) {
-		const file = FilePath.fromParts(e.detail.path, e.detail.archivePath ?? null);
+	function handleOpenDirFile(detail: { source: string; path: string; kind: string; archivePath?: string }) {
+		const file = FilePath.fromParts(detail.path, detail.archivePath ?? null);
 		openFileView({ ...(fileView!), file, selection: [], panelMode: 'file' });
 	}
 
-	function handleOpenDir(e: CustomEvent<{ prefix: string }>) {
-		openFileView({ ...(fileView!), panelMode: 'dir', dirPrefix: e.detail.prefix });
+	function handleOpenDir(detail: { prefix: string }) {
+		openFileView({ ...(fileView!), panelMode: 'dir', dirPrefix: detail.prefix });
 	}
 
-	function handleLineSelect(e: CustomEvent<{ selection: LineSelection }>) {
-		if (fileView) fileView = { ...fileView, selection: e.detail.selection };
+	function handleLineSelect(detail: { selection: LineSelection }) {
+		if (fileView) fileView = { ...fileView, selection: detail.selection };
 		syncHash();
 	}
 
@@ -594,7 +593,7 @@
 				sources={sourceNames}
 				activeSource={fileView?.source ?? null}
 				activePath={fileView?.file.full ?? null}
-				onOpen={(detail) => handleOpenFileFromTree(new CustomEvent('open', { detail }))}
+				onOpen={handleOpenFileFromTree}
 			/>
 		</aside>
 		<button
@@ -622,14 +621,14 @@
 				{caseSensitive}
 				dateFrom={dateFromStr}
 				dateTo={dateToStr}
-				on:back={handleBack}
-				on:search={handleSearch}
-				on:filterChange={handleFilterChange}
-				on:treeToggle={handleTreeToggle}
-				on:openFileFromTree={handleOpenFileFromTree}
-				on:openDirFile={handleOpenDirFile}
-				on:openDir={handleOpenDir}
-				on:lineselect={handleLineSelect}
+				onBack={handleBack}
+				onSearch={handleSearch}
+				onFilterChange={handleFilterChange}
+				onTreeToggle={handleTreeToggle}
+				onOpenFileFromTree={handleOpenFileFromTree}
+				onOpenDirFile={handleOpenDirFile}
+				onOpenDir={handleOpenDir}
+				onLineSelect={handleLineSelect}
 			/>
 		{:else}
 			<SearchView
@@ -655,15 +654,15 @@
 				nlpDateLabel={nlpResult?.dateLabel}
 				nlpDetectedPhrase={nlpResult?.detectedPhrase}
 				nlpConflict={!!nlpResult?.dateLabel && (dateFromTs != null || dateToTs != null)}
-				on:search={handleSearch}
-				on:filterChange={handleFilterChange}
-				on:clearNlpDate={handleClearNlpDate}
-				on:open={openFile}
-				on:treeToggle={handleTreeToggle}
+				onSearch={handleSearch}
+				onFilterChange={handleFilterChange}
+				onClearNlpDate={handleClearNlpDate}
+				onOpen={openFile}
+				onTreeToggle={handleTreeToggle}
 				{resultsStale}
 				{deletedPaths}
-				on:refreshResults={() => { doSearch(query, selectedSources); }}
-				on:dismissStale={() => { resultsStale = false; }}
+				onRefreshResults={() => { doSearch(query, selectedSources); }}
+				onDismissStale={() => { resultsStale = false; }}
 			/>
 			<div bind:this={sentinel}></div>
 			{#if loadingMore}

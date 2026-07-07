@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher, onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import SearchBox from '$lib/SearchBox.svelte';
 	import AdvancedSearch from '$lib/AdvancedSearch.svelte';
@@ -11,56 +11,79 @@
 	import { listDir } from '$lib/api';
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 
-	export let query: string;
-	export let searching: boolean;
-	export let showTree: boolean;
-	export let sources: string[] = [];
-	export let selectedSources: string[] = [];
-	export let selectedKinds: string[] = [];
-	export let dateFrom = '';
-	export let dateTo = '';
-	export let caseSensitive = false;
-	export let scope: SearchScope = 'line';
-	export let matchType: SearchMatchType = 'fuzzy';
-	export let nlpDetectedPhrase: string | undefined = undefined;
+	type FilterChangeDetail = { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
 
-	const dispatch = createEventDispatcher<{
-		search: { query: string };
-		treeToggle: void;
-		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
-	}>();
+	let {
+		query,
+		searching,
+		showTree,
+		sources = [],
+		selectedSources = [],
+		selectedKinds = [],
+		dateFrom = '',
+		dateTo = '',
+		caseSensitive = false,
+		scope = 'line',
+		matchType = 'fuzzy',
+		nlpDetectedPhrase = undefined,
+		isSearchActive = $bindable(false),
+		onSearch,
+		onTreeToggle,
+		onFilterChange
+	}: {
+		query: string;
+		searching: boolean;
+		showTree: boolean;
+		sources?: string[];
+		selectedSources?: string[];
+		selectedKinds?: string[];
+		dateFrom?: string;
+		dateTo?: string;
+		caseSensitive?: boolean;
+		scope?: SearchScope;
+		matchType?: SearchMatchType;
+		nlpDetectedPhrase?: string | undefined;
+		isSearchActive?: boolean;
+		onSearch?: (detail: { query: string }) => void;
+		onTreeToggle?: () => void;
+		onFilterChange?: (detail: FilterChangeDetail) => void;
+	} = $props();
 
-	export let isSearchActive = false;
+	let helpOpen = $state(false);
+	let isTyping = $state(false);
 
-	let helpOpen = false;
-	let isTyping = false;
-	$: isSearchActive = isTyping || searching;
-	$: nlpHighlightSpan = (() => {
+	// isSearchActive is a $bindable output, computed entirely from isTyping/
+	// searching — the parent only ever reads it, never sets it independently.
+	$effect(() => {
+		isSearchActive = isTyping || searching;
+	});
+
+	let nlpHighlightSpan = $derived.by(() => {
 		if (!nlpDetectedPhrase || isTyping) return undefined;
 		const idx = query.toLowerCase().indexOf(nlpDetectedPhrase.toLowerCase());
 		if (idx === -1) return undefined;
 		return [idx, idx + nlpDetectedPhrase.length] as [number, number];
-	})();
+	});
 
 	let searchBox: SearchBox;
 	export function focus() { searchBox?.focus(); }
 
 	// ── Dir typeahead ──────────────────────────────────────────────────────────
 
-	let liveQuery = query;
-	let searchFocused = false;
-	let taOpen = false;
-	let taItems: string[] = [];
-	let taActiveIdx = -1;
-	let taLoading = false;
-	let taSourcePhase = false;
+	let liveQuery = $state(query);
+	let searchFocused = $state(false);
+	let taOpen = $state(false);
+	let taItems: string[] = $state([]);
+	let taActiveIdx = $state(-1);
+	let taLoading = $state(false);
+	let taSourcePhase = $state(false);
 	/**
 	 * The resolved token currently displayed in the typeahead (may differ from
 	 * liveQuery when auto-advance jumped ahead). Used by selectItem so it always
 	 * builds the next token from the correct resolved position.
 	 * Reset to null whenever the user types (liveQuery changes from rawInput).
 	 */
-	let activeToken: string | null = null;
+	let activeToken: string | null = $state(null);
 
 	// Simple in-memory cache: "source:prefix" → dir names
 	const dirCache = new Map<string, string[]>();
@@ -160,7 +183,7 @@
 				: `source:${src}/`;
 			activeToken = finalToken;
 			liveQuery = replaceLastDirToken(liveQuery, finalToken);
-			dispatch('search', { query: liveQuery });
+			onSearch?.({ query: liveQuery });
 
 			taSourcePhase = false;
 			taLoading = false;
@@ -182,7 +205,7 @@
 				const finalToken = `source:${source}/${resolved.path}/`;
 				activeToken = finalToken;
 				liveQuery = replaceLastDirToken(liveQuery, finalToken);
-				dispatch('search', { query: liveQuery });
+				onSearch?.({ query: liveQuery });
 			} else {
 				activeToken = token;
 			}
@@ -220,27 +243,33 @@
 		}
 		activeToken = null; // reset so reactive block re-runs updateTypeahead for next level
 		liveQuery = replaceLastDirToken(liveQuery, newToken);
-		dispatch('search', { query: liveQuery });
+		onSearch?.({ query: liveQuery });
 		taActiveIdx = -1;
 	}
 
 	// React to live query changes. Guard: skip when liveQuery was updated by
 	// auto-advance (activeToken set) to avoid re-triggering updateTypeahead.
-	$: {
+	$effect(() => {
 		const token = getDirToken(liveQuery);
 		if (token && searchFocused && token !== activeToken) {
 			updateTypeahead(token);
 		} else if (!token) {
 			closeTypeahead();
 		}
-	}
+	});
 
 	// Sync liveQuery when the query PROP changes externally (e.g. chip removed).
+	// The explicit _prevQuery comparison (rather than relying on $effect's own
+	// dependency tracking) matters here: this effect also reads taOpen, and
+	// without the guard it would re-fire (and clobber in-progress typing) simply
+	// because taOpen toggled, even when query itself hasn't changed.
 	let _prevQuery = query;
-	$: if (query !== _prevQuery) {
-		_prevQuery = query;
-		if (!taOpen) liveQuery = query;
-	}
+	$effect(() => {
+		if (query !== _prevQuery) {
+			_prevQuery = query;
+			if (!taOpen) liveQuery = query;
+		}
+	});
 
 	function handleTypeaheadKeydown(e: KeyboardEvent) {
 		if (!taOpen || !searchFocused) return;
@@ -269,14 +298,14 @@
 </script>
 
 <div class="topbar">
-	<button class="logo-btn" on:click={() => (helpOpen = true)} aria-label="Search help">
+	<button class="logo-btn" onclick={() => (helpOpen = true)} aria-label="Search help">
 		<AppLogo />
 	</button>
 	<button
 		class="tree-toggle"
 		class:active={showTree}
 		data-tooltip="Toggle file tree"
-		on:click={() => dispatch('treeToggle')}
+		onclick={() => onTreeToggle?.()}
 	>◫</button>
 	<div class="help-wrap-outer"><SearchHelp bind:open={helpOpen} /></div>
 	<div class="search-wrap">
@@ -286,7 +315,7 @@
 			searching={isSearchActive}
 			{nlpHighlightSpan}
 			bind:isTyping
-			onChange={(detail) => dispatch('search', { query: detail.query })}
+			onChange={(detail) => onSearch?.({ query: detail.query })}
 			onRawInput={(detail) => {
 				const wasDeletion = detail.query.length < liveQuery.length;
 				liveQuery = detail.query;
@@ -324,11 +353,11 @@
 				{caseSensitive}
 				{scope}
 				{matchType}
-				on:change={(e) => dispatch('filterChange', e.detail)}
+				onChange={(detail) => onFilterChange?.(detail)}
 			/>
 		</div>
 	{/if}
-	<button class="gear-btn" on:click={() => goto('/settings')}>⚙</button>
+	<button class="gear-btn" onclick={() => goto('/settings')}>⚙</button>
 </div>
 
 <MobilePanel bind:open={helpOpen} title="Search Help">

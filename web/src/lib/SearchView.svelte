@@ -1,52 +1,83 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import ResultList from '$lib/ResultList.svelte';
 	import type { SearchResult } from '$lib/api';
 	import { parseSearchPrefixes } from '$lib/searchPrefixes';
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 	import TopBar from '$lib/TopBar.svelte';
 
-	export let query: string;
-	export let scope: SearchScope = 'line';
-	export let matchType: SearchMatchType = 'fuzzy';
-	export let searching: boolean;
-	export let sources: string[];
-	export let selectedSources: string[];
-	export let selectedKinds: string[] = [];
-	export let dateFrom = '';
-	export let dateTo = '';
-	export let caseSensitive = false;
-	export let results: SearchResult[] = [];
-	export let totalResults = 0;
-	export let resultsCapped = false;
-	export let searchError: string | null = null;
-	export let searchId = 0;
-	export let showTree = false;
-	export let filterDateFrom: number | undefined = undefined;
-	export let filterDateTo: number | undefined = undefined;
-	export let nlpDateLabel: string | undefined = undefined;
-	export let nlpDetectedPhrase: string | undefined = undefined;
-	export let nlpConflict = false;
-	export let resultsStale = false;
-	export let deletedPaths: Set<string> = new Set();
+	type FilterChangeDetail = { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
 
-	const dispatch = createEventDispatcher<{
-		search: { query: string };
-		filterChange: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
-		clearNlpDate: void;
-		open: SearchResult;
-		treeToggle: void;
-		refreshResults: void;
-		dismissStale: void;
-	}>();
+	let {
+		query,
+		scope = 'line',
+		matchType = 'fuzzy',
+		searching,
+		sources,
+		selectedSources,
+		selectedKinds = [],
+		dateFrom = '',
+		dateTo = '',
+		caseSensitive = false,
+		results = [],
+		totalResults = 0,
+		resultsCapped = false,
+		searchError = null,
+		searchId = 0,
+		showTree = false,
+		filterDateFrom = undefined,
+		filterDateTo = undefined,
+		nlpDateLabel = undefined,
+		nlpDetectedPhrase = undefined,
+		nlpConflict = false,
+		resultsStale = false,
+		deletedPaths = new Set(),
+		onSearch,
+		onFilterChange,
+		onClearNlpDate,
+		onOpen,
+		onTreeToggle,
+		onRefreshResults,
+		onDismissStale
+	}: {
+		query: string;
+		scope?: SearchScope;
+		matchType?: SearchMatchType;
+		searching: boolean;
+		sources: string[];
+		selectedSources: string[];
+		selectedKinds?: string[];
+		dateFrom?: string;
+		dateTo?: string;
+		caseSensitive?: boolean;
+		results?: SearchResult[];
+		totalResults?: number;
+		resultsCapped?: boolean;
+		searchError?: string | null;
+		searchId?: number;
+		showTree?: boolean;
+		filterDateFrom?: number | undefined;
+		filterDateTo?: number | undefined;
+		nlpDateLabel?: string | undefined;
+		nlpDetectedPhrase?: string | undefined;
+		nlpConflict?: boolean;
+		resultsStale?: boolean;
+		deletedPaths?: Set<string>;
+		onSearch?: (detail: { query: string }) => void;
+		onFilterChange?: (detail: FilterChangeDetail) => void;
+		onClearNlpDate?: () => void;
+		onOpen?: (result: SearchResult) => void;
+		onTreeToggle?: () => void;
+		onRefreshResults?: () => void;
+		onDismissStale?: () => void;
+	} = $props();
 
 	let topBar: TopBar;
-	let isSearchActive = false;
+	let isSearchActive = $state(false);
 	export function focus() { topBar?.focus(); }
 
 	// Compute prefix chips from the current query.
-	$: prefixResult = parseSearchPrefixes(query);
-	$: prefixTokens = prefixResult.prefixTokens;
+	let prefixResult = $derived(parseSearchPrefixes(query));
+	let prefixTokens = $derived(prefixResult.prefixTokens);
 
 	function removePrefixToken(token: { raw: string; value: string }) {
 		// Replace the full prefix token with its bare value (the non-prefix part),
@@ -55,17 +86,17 @@
 		const newQuery = parts
 			.flatMap((t) => (t === token.raw ? (token.value ? [token.value] : []) : [t]))
 			.join(' ');
-		dispatch('search', { query: newQuery });
+		onSearch?.({ query: newQuery });
 	}
 
 	const SHORT_DATE = new Intl.DateTimeFormat('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' });
 	function fmtTs(ts: number): string { return SHORT_DATE.format(new Date(ts * 1000)); }
-	$: resultDateSuffix = (() => {
+	let resultDateSuffix = $derived.by(() => {
 		if (filterDateFrom != null && filterDateTo != null) return ` between ${fmtTs(filterDateFrom)} and ${fmtTs(filterDateTo)}`;
 		if (filterDateFrom != null) return ` after ${fmtTs(filterDateFrom)}`;
 		if (filterDateTo != null) return ` before ${fmtTs(filterDateTo)}`;
 		return '';
-	})();
+	});
 </script>
 
 <TopBar
@@ -83,9 +114,9 @@
 	{scope}
 	{matchType}
 	{nlpDetectedPhrase}
-	on:search={(e) => dispatch('search', e.detail)}
-	on:treeToggle={() => dispatch('treeToggle')}
-	on:filterChange={(e) => dispatch('filterChange', e.detail)}
+	{onSearch}
+	{onTreeToggle}
+	{onFilterChange}
 />
 
 {#if prefixTokens.length > 0 || nlpDateLabel}
@@ -98,7 +129,7 @@
 					token.kind ? `type: ${token.kind}` : null,
 					token.dirSource ? `source: ${token.dirSource}${token.dirPrefix ? '/' + token.dirPrefix : ''}` : null,
 				].filter(Boolean).join(' · ')}</span>
-				<button class="nlp-dismiss" on:click={() => removePrefixToken(token)} aria-label="Remove prefix">✕</button>
+				<button class="nlp-dismiss" onclick={() => removePrefixToken(token)} aria-label="Remove prefix">✕</button>
 			</div>
 		{/each}
 		{#if nlpDateLabel}
@@ -111,7 +142,7 @@
 						aria-label="Date conflict: manual range overrides query date"
 					>!</span>
 				{:else}
-					<button class="nlp-dismiss" on:click={() => dispatch('clearNlpDate')} aria-label="Clear detected date">✕</button>
+					<button class="nlp-dismiss" onclick={() => onClearNlpDate?.()} aria-label="Clear detected date">✕</button>
 				{/if}
 			</div>
 		{/if}
@@ -130,8 +161,8 @@
 		{#if resultsStale}
 			<div class="stale-banner">
 				Index updated —
-				<button class="stale-refresh" on:click={() => dispatch('refreshResults')}>refresh results</button>
-				<button class="stale-dismiss" on:click={() => dispatch('dismissStale')} aria-label="Dismiss">✕</button>
+				<button class="stale-refresh" onclick={() => onRefreshResults?.()}>refresh results</button>
+				<button class="stale-dismiss" onclick={() => onDismissStale?.()} aria-label="Dismiss">✕</button>
 			</div>
 		{/if}
 		{#key searchId}
@@ -140,7 +171,7 @@
 				searching={isSearchActive}
 				{deletedPaths}
 				{query}
-				onOpen={(result) => dispatch('open', result)}
+				{onOpen}
 			/>
 		{/key}
 	{/if}

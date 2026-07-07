@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import { clickOutside } from '$lib/clickOutside';
 	import IconBack from '$lib/icons/IconBack.svelte';
 	import IconFilter from '$lib/icons/IconFilter.svelte';
@@ -7,37 +6,48 @@
 	import type { SearchScope, SearchMatchType } from '$lib/searchPrefixes';
 	import MobilePanel from '$lib/MobilePanel.svelte';
 
-	/** All available source names. */
-	export let sources: string[] = [];
-	/** Currently active sources (empty = all). */
-	export let selectedSources: string[] = [];
-	/** Currently active kind filter (empty = all). */
-	export let selectedKinds: string[] = [];
-	/** Current date-from value as ISO string (YYYY-MM-DD), or empty. */
-	export let dateFrom = '';
-	/** Current date-to value as ISO string (YYYY-MM-DD), or empty. */
-	export let dateTo = '';
-	/** Whether case-sensitive matching is active. */
-	export let caseSensitive = false;
-	/** Current scope selection. */
-	export let scope: SearchScope = 'line';
-	/** Current match type selection. */
-	export let matchType: SearchMatchType = 'fuzzy';
+	type ChangeDetail = { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
 
-	const dispatch = createEventDispatcher<{
-		change: { sources: string[]; kinds: string[]; dateFrom?: number; dateTo?: number; caseSensitive: boolean; scope: SearchScope; matchType: SearchMatchType };
-	}>();
+	let {
+		sources = [],
+		selectedSources = [],
+		selectedKinds = [],
+		dateFrom = '',
+		dateTo = '',
+		caseSensitive = false,
+		scope = 'line',
+		matchType = 'fuzzy',
+		onChange
+	}: {
+		/** All available source names. */
+		sources?: string[];
+		/** Currently active sources (empty = all). */
+		selectedSources?: string[];
+		/** Currently active kind filter (empty = all). */
+		selectedKinds?: string[];
+		/** Current date-from value as ISO string (YYYY-MM-DD), or empty. */
+		dateFrom?: string;
+		/** Current date-to value as ISO string (YYYY-MM-DD), or empty. */
+		dateTo?: string;
+		/** Whether case-sensitive matching is active. */
+		caseSensitive?: boolean;
+		/** Current scope selection. */
+		scope?: SearchScope;
+		/** Current match type selection. */
+		matchType?: SearchMatchType;
+		onChange?: (detail: ChangeDetail) => void;
+	} = $props();
 
-	let isOpen = false;
+	let isOpen = $state(false);
 
 	// Draft state — what the user is currently editing inside the panel.
-	let draftSources: string[] = [];
-	let draftKinds: string[] = [];
-	let draftFrom = '';
-	let draftTo = '';
-	let draftCaseSensitive = false;
-	let draftScope: SearchScope = 'line';
-	let draftMatchType: SearchMatchType = 'fuzzy';
+	let draftSources: string[] = $state([]);
+	let draftKinds: string[] = $state([]);
+	let draftFrom = $state('');
+	let draftTo = $state('');
+	let draftCaseSensitive = $state(false);
+	let draftScope: SearchScope = $state('line');
+	let draftMatchType: SearchMatchType = $state('fuzzy');
 
 	// Sync draft from props whenever the panel opens.
 	function openPanel() {
@@ -58,7 +68,7 @@
 	}
 
 	function apply() {
-		dispatch('change', {
+		onChange?.({
 			sources: draftSources,
 			kinds: draftKinds,
 			dateFrom: isoToUnix(draftFrom),
@@ -78,7 +88,7 @@
 		draftCaseSensitive = false;
 		draftScope = 'line';
 		draftMatchType = 'fuzzy';
-		dispatch('change', { sources: [], kinds: [], caseSensitive: false, scope: 'line', matchType: 'fuzzy' });
+		onChange?.({ sources: [], kinds: [], caseSensitive: false, scope: 'line', matchType: 'fuzzy' });
 		isOpen = false;
 	}
 
@@ -99,24 +109,25 @@
 	}
 
 	// Whether the draft differs from what's currently applied (props).
-	$: isDirty =
+	let isDirty = $derived(
 		JSON.stringify(draftSources.slice().sort()) !== JSON.stringify(selectedSources.slice().sort()) ||
 		JSON.stringify(draftKinds.slice().sort()) !== JSON.stringify(selectedKinds.slice().sort()) ||
 		draftFrom !== dateFrom ||
 		draftTo !== dateTo ||
 		draftCaseSensitive !== caseSensitive ||
 		draftScope !== scope ||
-		draftMatchType !== matchType;
+		draftMatchType !== matchType
+	);
 
-	$: sourceFiltered = selectedSources.length > 0 && selectedSources.length < sources.length;
-	$: kindFiltered = selectedKinds.length > 0;
-	$: dateFiltered = dateFrom !== '' || dateTo !== '';
-	$: scopeActive = scope !== 'line';
-	$: matchActive = matchType !== 'fuzzy';
-	$: anyFilter = sourceFiltered || kindFiltered || dateFiltered || caseSensitive || scopeActive || matchActive;
+	let sourceFiltered = $derived(selectedSources.length > 0 && selectedSources.length < sources.length);
+	let kindFiltered = $derived(selectedKinds.length > 0);
+	let dateFiltered = $derived(dateFrom !== '' || dateTo !== '');
+	let scopeActive = $derived(scope !== 'line');
+	let matchActive = $derived(matchType !== 'fuzzy');
+	let anyFilter = $derived(sourceFiltered || kindFiltered || dateFiltered || caseSensitive || scopeActive || matchActive);
 
 	// Count badge: number of active filter dimensions
-	$: filterCount = (sourceFiltered ? 1 : 0) + (kindFiltered ? 1 : 0) + (dateFiltered ? 1 : 0) + (caseSensitive ? 1 : 0) + (scopeActive ? 1 : 0) + (matchActive ? 1 : 0);
+	let filterCount = $derived((sourceFiltered ? 1 : 0) + (kindFiltered ? 1 : 0) + (dateFiltered ? 1 : 0) + (caseSensitive ? 1 : 0) + (scopeActive ? 1 : 0) + (matchActive ? 1 : 0));
 
 	function showFromPicker() {
 		(document.getElementById('adv-date-from') as HTMLInputElement)?.showPicker();
@@ -141,7 +152,7 @@
 	<button
 		class="trigger"
 		class:active={anyFilter}
-		on:click={() => (isOpen ? (isOpen = false) : openPanel())}
+		onclick={() => (isOpen ? (isOpen = false) : openPanel())}
 		title="Advanced filters"
 	>
 		<IconFilter />
@@ -155,7 +166,7 @@
 	{#if isOpen}
 		<div class="panel">
 			<div class="panel-mobile-header">
-				<button class="panel-back" on:click={() => (isOpen = false)} aria-label="Close filters">
+				<button class="panel-back" onclick={() => (isOpen = false)} aria-label="Close filters">
 					<IconBack />
 				</button>
 				<span class="panel-mobile-title">Filters</span>
@@ -166,7 +177,7 @@
 						<div class="section-header">
 							<span class="section-title">Sources</span>
 							{#if draftSources.length > 0 && draftSources.length < sources.length}
-								<button class="clear-link" on:click={() => (draftSources = [])}>All</button>
+								<button class="clear-link" onclick={() => (draftSources = [])}>All</button>
 							{/if}
 						</div>
 						<div class="source-list">
@@ -175,7 +186,7 @@
 									<input
 										type="checkbox"
 										checked={draftSources.includes(source)}
-										on:change={() => toggleDraftSource(source)}
+										onchange={() => toggleDraftSource(source)}
 									/>
 									<span class="source-name">{source}</span>
 								</label>
@@ -187,7 +198,7 @@
 				<div class="section">
 					<div class="section-header">
 						{#if draftKinds.length > 0}
-							<button class="clear-link" on:click={() => (draftKinds = [])}>All</button>
+							<button class="clear-link" onclick={() => (draftKinds = [])}>All</button>
 						{/if}
 					</div>
 					{#each KIND_GROUPS as group}
@@ -200,7 +211,7 @@
 								<input
 									type="checkbox"
 									checked={draftKinds.includes(opt.value)}
-									on:change={() => toggleDraftKind(opt.value)}
+									onchange={() => toggleDraftKind(opt.value)}
 								/>
 								<span class="kind-label">{opt.label}</span>
 							</label>
@@ -213,7 +224,7 @@
 					<div class="section-header">
 						<span class="section-title">Date range</span>
 						{#if draftFrom || draftTo}
-							<button class="clear-link" on:click={() => { draftFrom = ''; draftTo = ''; }}>Clear</button>
+							<button class="clear-link" onclick={() => { draftFrom = ''; draftTo = ''; }}>Clear</button>
 						{/if}
 					</div>
 					<div class="date-row">
@@ -226,7 +237,7 @@
 								type="date"
 								bind:value={draftFrom}
 							/>
-							<button class="cal-btn" tabindex="-1" on:click={showFromPicker}>📅</button>
+							<button class="cal-btn" tabindex="-1" onclick={showFromPicker}>📅</button>
 						</div>
 					</div>
 					<div class="date-row">
@@ -239,7 +250,7 @@
 								type="date"
 								bind:value={draftTo}
 							/>
-							<button class="cal-btn" tabindex="-1" on:click={showToPicker}>📅</button>
+							<button class="cal-btn" tabindex="-1" onclick={showToPicker}>📅</button>
 						</div>
 					</div>
 				</div>
@@ -253,7 +264,7 @@
 							<button
 								class="toggle-btn"
 								class:active={draftScope === opt.value}
-								on:click={() => (draftScope = opt.value)}
+								onclick={() => (draftScope = opt.value)}
 								type="button"
 							>{opt.label}</button>
 						{/each}
@@ -269,7 +280,7 @@
 							<button
 								class="toggle-btn"
 								class:active={draftMatchType === opt.value}
-								on:click={() => (draftMatchType = opt.value)}
+								onclick={() => (draftMatchType = opt.value)}
 								type="button"
 							>{opt.label}</button>
 						{/each}
@@ -286,9 +297,9 @@
 
 			<div class="footer">
 				{#if anyFilter}
-					<button class="clear-all" on:click={clearAll}>Clear all</button>
+					<button class="clear-all" onclick={clearAll}>Clear all</button>
 				{/if}
-				<button class="apply-btn" class:dirty={isDirty} disabled={!isDirty} on:click={apply}>Apply</button>
+				<button class="apply-btn" class:dirty={isDirty} disabled={!isDirty} onclick={apply}>Apply</button>
 			</div>
 		</div>
 	{/if}

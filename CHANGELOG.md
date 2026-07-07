@@ -11,6 +11,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- **Svelte runes migration (incremental, 5/N)** — `AdvancedSearch`, `TopBar`, `SearchView`, `FileView`, `SearchResult` converted from legacy syntax to runes, plus the `ResultList`/`+page.svelte` call sites touched to forward the new callback props. Highlights:
+  - `AdvancedSearch`'s `dispatch('change', ...)` became an `onChange` callback prop; `isDirty`/`sourceFiltered`/`filterCount` and friends became `$derived`.
+  - `TopBar` (the most complex file in this group): `isSearchActive` is a genuinely two-way `$bindable` written from an internal `$effect` (`isTyping || searching`); the `liveQuery` typeahead state is seeded from the one-way `query` prop with a resync `$effect` that deliberately keeps an explicit `_prevQuery` guard (documented inline) — the effect also reads `taOpen`, and without the guard it would clobber in-progress typing whenever `taOpen` toggles alone, even though `query` itself hasn't changed.
+  - `SearchResult` (formerly `SearchResultItem`) no longer dispatches `open` — it calls the new `onOpen` callback prop directly, so `ResultList`'s usage became `{onOpen}` instead of `on:open={(e) => onOpen?.(e.detail)}`.
+  - `SearchView`/`FileView`/`+page.svelte` handler signatures updated in lockstep (`handleSearch`, `handleFilterChange`, `openFile`, etc. now take plain objects instead of `CustomEvent`s) since both components share the same handlers in `+page.svelte`.
+  - `FileView`'s internal `<FileViewer>` usage is intentionally left on `on:lineselect`/`on:open`/`on:navigateDir`/`on:navigate` — `FileViewer.svelte` itself is Group 6 (not yet migrated).
+  - Verified live end-to-end: search, hit-nav (prev/next within a file card), alias-badge expand, opening a result into `FileView`, the back button, and the Advanced Search toggle.
+
+### Changed
+
 - **Svelte runes migration (incremental, 4/N)** — `CommandPalette`, `DirListing`, `PathBar`, `TreeRow`, `SearchBox`, `DirectImageViewer` converted from legacy syntax to runes, plus follow-up touches to `DirectoryTree`/`MultiSourceTree` (Group 2/3) to forward the new `onOpen` callback now that `TreeRow` no longer dispatches a `CustomEvent`. Highlights:
   - `TreeRow` (the most complex file so far): recursive `<svelte:self>` replaced with a self-import (also newly deprecated in Svelte 5); several genuine side-effect `$:` blocks (auto-scroll, auto-expand, live-refresh) converted to `$effect`.
   - `CommandPalette`'s `beforeUpdate` + manual `prevOpen` guard — a workaround for a Svelte 4 infinite-loop hazard when reactively reading a `bind:this` element inside a `tick().then()` callback — was removed. `$effect` only tracks reads made synchronously during its callback, so the same logic as a plain `$effect(() => { if (open) {...} })` no longer has that hazard. Verified by reopening the palette twice in the same session.
