@@ -16,6 +16,6 @@ jpeg2000 = ["dicom-pixeldata/openjp2"]
 
 [dependencies]
 anyhow         = { workspace = true }
-dicom-object   = "0.9"
-dicom-pixeldata = { version = "0.9", features = ["image"] }
+dicom-object   = "0.10"
+dicom-pixeldata = { version = "0.10", features = ["image"] }
 image          = { version = "0.25", default-features = false, features = ["png"] }
