@@ -63,7 +63,7 @@ path = "src/lib.rs"
 [dev-dependencies]
 find-server = { path = "../server" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 axum = "0.8"
 filetime = "0.2"
 
