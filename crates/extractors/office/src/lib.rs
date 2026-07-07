@@ -94,12 +94,22 @@ fn extract_docx(path: &Path) -> anyhow::Result<Vec<IndexLine>> {
     Ok(lines)
 }
 
+/// Resolve a `GeneralRef` event (a `&entity;` or `&#nn;` reference that quick-xml
+/// 0.41+ splits out of surrounding text as its own event) into its literal text.
+fn resolve_ref(e: &quick_xml::events::BytesRef) -> Option<String> {
+    if let Ok(Some(ch)) = e.resolve_char_ref() {
+        return Some(ch.to_string());
+    }
+    e.decode().ok().and_then(|name| quick_xml::escape::resolve_predefined_entity(&name).map(String::from))
+}
+
 /// Extract dc:title and dc:creator from docProps/core.xml, concatenated into a
 /// single IndexLine at LINE_METADATA.
 fn parse_docx_metadata(xml: &str) -> Option<IndexLine> {
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut parts = Vec::new();
     let mut current_field: Option<&'static str> = None;
+    let mut field_buf = String::new();
     let mut buf = Vec::new();
 
     loop {
@@ -110,19 +120,30 @@ fn parse_docx_metadata(xml: &str) -> Option<IndexLine> {
                     b"dc:creator" => Some("author"),
                     _ => None,
                 };
+                field_buf.clear();
             }
             Ok(Event::Text(e)) => {
-                if let Some(field) = current_field {
-                    if let Ok(text) = e.unescape() {
-                        let text = text.trim().to_string();
-                        if !text.is_empty() {
-                            parts.push(format!("[DOCX:{}] {}", field, text));
-                        }
+                if current_field.is_some() {
+                    if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
+                        field_buf.push_str(&text);
+                    }
+                }
+            }
+            Ok(Event::GeneralRef(e)) => {
+                if current_field.is_some() {
+                    if let Some(s) = resolve_ref(&e) {
+                        field_buf.push_str(&s);
                     }
                 }
             }
             Ok(Event::End(_)) => {
-                current_field = None;
+                if let Some(field) = current_field.take() {
+                    let text = field_buf.trim().to_string();
+                    if !text.is_empty() {
+                        parts.push(format!("[DOCX:{}] {}", field, text));
+                    }
+                }
+                field_buf.clear();
             }
             Ok(Event::Eof) => break,
             _ => {}
@@ -168,8 +189,13 @@ fn parse_docx_paragraphs(xml: &str) -> Vec<String> {
                 _ => {}
             },
             Ok(Event::Text(e)) if in_t => {
-                if let Ok(text) = e.unescape() {
+                if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
                     current_para.push_str(&text);
+                }
+            }
+            Ok(Event::GeneralRef(e)) if in_t => {
+                if let Some(s) = resolve_ref(&e) {
+                    current_para.push_str(&s);
                 }
             }
             Ok(Event::Eof) => break,
@@ -326,8 +352,13 @@ fn parse_pptx_paragraphs(xml: &str) -> Vec<String> {
                 _ => {}
             },
             Ok(Event::Text(e)) if in_t => {
-                if let Ok(text) = e.unescape() {
+                if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
                     current_para.push_str(&text);
+                }
+            }
+            Ok(Event::GeneralRef(e)) if in_t => {
+                if let Some(s) = resolve_ref(&e) {
+                    current_para.push_str(&s);
                 }
             }
             Ok(Event::Eof) => break,
@@ -475,6 +506,19 @@ mod tests {
         assert_eq!(paras[0], "First paragraph");
         assert_eq!(paras[1], "Second paragraph");
         assert_eq!(paras[2], "Third paragraph");
+    }
+
+    #[test]
+    fn test_parse_docx_paragraphs_unescapes_xml_entities() {
+        let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Q&amp;A: 1 &lt; 2 &amp;&amp; 3 &gt; 2, say &quot;hi&quot;</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+
+        let paras = parse_docx_paragraphs(xml);
+        assert_eq!(paras.len(), 1);
+        assert_eq!(paras[0], r#"Q&A: 1 < 2 && 3 > 2, say "hi""#);
     }
 
     #[test]
