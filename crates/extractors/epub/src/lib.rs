@@ -125,6 +125,7 @@ fn parse_opf(xml: &str, opf_dir: &str) -> (Vec<IndexLine>, Vec<String>) {
     let mut spine_idrefs: Vec<String> = Vec::new();
 
     let mut current_field: Option<&'static str> = None;
+    let mut field_buf = String::new();
     let mut in_manifest = false;
     let mut in_spine = false;
     let mut buf = Vec::new();
@@ -145,7 +146,15 @@ fn parse_opf(xml: &str, opf_dir: &str) -> (Vec<IndexLine>, Vec<String>) {
             Ok(Event::End(e)) => match e.local_name().as_ref() {
                 b"manifest" => in_manifest = false,
                 b"spine" => in_spine = false,
-                _ => current_field = None,
+                _ => {
+                    if let Some(field) = current_field.take() {
+                        let text = field_buf.trim().to_string();
+                        if !text.is_empty() {
+                            parts.push(format!("[EPUB:{}] {}", field, text));
+                        }
+                    }
+                    field_buf.clear();
+                }
             },
             Ok(Event::Empty(e)) => {
                 if in_manifest && e.local_name().as_ref() == b"item" {
@@ -166,14 +175,17 @@ fn parse_opf(xml: &str, opf_dir: &str) -> (Vec<IndexLine>, Vec<String>) {
                 }
             }
             Ok(Event::Text(e)) => {
-                if let Some(field) = current_field {
-                    if let Ok(text) = e.unescape() {
-                        let text = text.trim().to_string();
-                        if !text.is_empty() {
-                            parts.push(format!("[EPUB:{}] {}", field, text));
-                        }
+                if current_field.is_some() {
+                    if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
+                        field_buf.push_str(&text);
                     }
-                    current_field = None;
+                }
+            }
+            Ok(Event::GeneralRef(e)) => {
+                if current_field.is_some() {
+                    if let Some(s) = resolve_ref(&e) {
+                        field_buf.push_str(&s);
+                    }
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -239,8 +251,13 @@ fn extract_xhtml_text(xml: &str) -> Vec<String> {
                 }
             }
             Ok(Event::Text(e)) if skip_depth == 0 => {
-                if let Ok(text) = e.unescape() {
+                if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
                     current.push_str(&text);
+                }
+            }
+            Ok(Event::GeneralRef(e)) if skip_depth == 0 => {
+                if let Some(s) = resolve_ref(&e) {
+                    current.push_str(&s);
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -259,6 +276,15 @@ fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option<String> {
         .filter_map(|a| a.ok())
         .find(|a| a.key.as_ref() == name)
         .map(|a| String::from_utf8_lossy(&a.value).into_owned())
+}
+
+/// Resolve a `GeneralRef` event (a `&entity;` or `&#nn;` reference that quick-xml
+/// 0.41+ splits out of surrounding text as its own event) into its literal text.
+fn resolve_ref(e: &quick_xml::events::BytesRef) -> Option<String> {
+    if let Ok(Some(ch)) = e.resolve_char_ref() {
+        return Some(ch.to_string());
+    }
+    e.decode().ok().and_then(|name| quick_xml::escape::resolve_predefined_entity(&name).map(String::from))
 }
 
 #[cfg(test)]
@@ -318,6 +344,27 @@ mod tests {
         assert!(m.content.contains("[EPUB:language] en"), "content: {}", m.content);
 
         assert_eq!(hrefs, vec!["OEBPS/chapter1.xhtml"]);
+    }
+
+    #[test]
+    fn test_parse_opf_metadata_unescapes_xml_entities() {
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf"
+         xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <metadata>
+    <dc:title>Q&amp;A: 1 &lt; 2 &amp;&amp; 3 &gt; 2</dc:title>
+  </metadata>
+  <manifest></manifest>
+  <spine></spine>
+</package>"#;
+
+        let (meta, _hrefs) = parse_opf(xml, "OEBPS");
+
+        assert_eq!(meta.len(), 1);
+        assert!(
+            meta[0].content.contains(r#"[EPUB:title] Q&A: 1 < 2 && 3 > 2"#),
+            "content: {}", meta[0].content
+        );
     }
 
     #[test]
