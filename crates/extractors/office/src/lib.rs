@@ -456,6 +456,103 @@ mod tests {
         zip.finish().unwrap().into_inner()
     }
 
+    /// Builds an XLSX using the representation real-world spreadsheet tools
+    /// (Excel, Google Sheets, LibreOffice) actually produce: text cells go
+    /// through the shared-strings table (not inline strings), plus a plain
+    /// numeric cell, a float cell, and a cell styled with a built-in date
+    /// number format (numFmtId 14) so calamine has to resolve it through
+    /// styles.xml rather than returning a bare float.
+    fn make_realistic_xlsx() -> Vec<u8> {
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts = SimpleFileOptions::default();
+
+        zip.start_file("[Content_Types].xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("xl/workbook.xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#).unwrap();
+
+        zip.start_file("xl/_rels/workbook.xml.rels", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>"#).unwrap();
+
+        // Shared-strings table: this is how real tools store repeated text,
+        // as opposed to the t="inlineStr" form make_minimal_xlsx() uses.
+        zip.start_file("xl/sharedStrings.xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="3" uniqueCount="3">
+  <si><t>Product</t></si>
+  <si><t>Widget</t></si>
+  <si><t>Gadget &amp; Gizmo</t></si>
+</sst>"#).unwrap();
+
+        // Minimal valid styles.xml with one cellXfs entry (index 1) using the
+        // built-in "date" number format (numFmtId 14 = mm-dd-yy), so a cell
+        // referencing s="1" is resolved by calamine as a date, not a float.
+        zip.start_file("xl/styles.xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="2">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="2">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>"#).unwrap();
+
+        zip.start_file("xl/worksheets/sheet1.xml", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s"><v>0</v></c>
+      <c r="B1" t="s"><v>1</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s"><v>2</v></c>
+      <c r="B2"><v>42</v></c>
+      <c r="C2"><v>3.14</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" s="1"><v>45292</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#).unwrap();
+
+        zip.finish().unwrap().into_inner()
+    }
+
     fn write_tmp(bytes: &[u8], suffix: &str) -> tempfile::NamedTempFile {
         let mut f = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
         f.write_all(bytes).unwrap();
@@ -695,6 +792,28 @@ mod tests {
         assert!(meta.content.contains("[XLSX:sheet] Sheet1"), "meta: {}", meta.content);
         let all_content: String = lines.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join(" ");
         assert!(all_content.contains("Hello"), "content: {all_content}");
+    }
+
+    #[test]
+    fn xlsx_shared_strings_numbers_and_dates() {
+        let cfg = ExtractorConfig::default();
+        let bytes = make_realistic_xlsx();
+        let f = write_tmp(&bytes, ".xlsx");
+        let lines = extract(f.path(), &cfg).unwrap();
+        let all_content: String = lines.iter().map(|l| l.content.as_str()).collect::<Vec<_>>().join(" ");
+
+        // Shared-string cells resolved to their table values (not raw indices).
+        assert!(all_content.contains("Product"), "content: {all_content}");
+        assert!(all_content.contains("Widget"), "content: {all_content}");
+        assert!(all_content.contains("Gadget & Gizmo"), "content: {all_content}");
+        // Plain numeric cells.
+        assert!(all_content.contains("42"), "content: {all_content}");
+        assert!(all_content.contains("3.14"), "content: {all_content}");
+        // Date-styled cell (numFmtId 14): the `dates` calamine feature isn't
+        // enabled, so this currently comes through as the raw XLSX date serial
+        // number rather than a formatted date. This pins that behavior so a
+        // calamine bump can't silently change it without this test catching it.
+        assert!(all_content.contains("45292"), "content: {all_content}");
     }
 
     #[test]
