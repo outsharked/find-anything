@@ -18,5 +18,5 @@ serde = { workspace = true }
 
 zip = "8"
 quick-xml = "0.41"
-calamine = "0.26"
+calamine = "0.35"
 tempfile = "3"
