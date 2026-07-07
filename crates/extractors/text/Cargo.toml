@@ -17,7 +17,7 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 
 # For Markdown frontmatter
-gray_matter = "0.2"
+gray_matter = "0.3"
 serde_yaml = "0.9"
 
 # For text detection
