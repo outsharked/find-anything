@@ -1,6 +1,6 @@
 [package]
 name = "find-extract-types"
-version = "0.6.1"
+version = "0.7.7"
 edition = "2021"
 
 [dependencies]
