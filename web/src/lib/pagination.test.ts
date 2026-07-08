@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergePage } from './pagination';
+import { mergePage, nextForwardOffset } from './pagination';
 import type { SearchResult } from './api';
 
 // Minimal stub factory — only the fields used by mergePage's dedup key.
@@ -90,5 +90,28 @@ describe('mergePage', () => {
 		const { results, newOffset } = mergePage(existing, incoming, 3);
 		expect(results).toHaveLength(1);
 		expect(newOffset).toBe(4);
+	});
+});
+
+describe('nextForwardOffset', () => {
+	// The offset advances by the raw page size regardless of how many lines the
+	// response actually contained. This matters because the server silently
+	// skips any raw line whose stored chunk lookup misses — e.g. blank lines
+	// between Cargo.lock [[package]] entries never got their own content chunk
+	// — so a page covering raw lines [0, 2000) can come back with only 1994
+	// lines. Advancing by data.lines.length (1994) instead of the raw page size
+	// (2000) would make the next page re-request part of the same range and
+	// produce duplicate line-number keys in CodeViewer's keyed `{#each}`.
+	it('advances by a full page when far from the end', () => {
+		expect(nextForwardOffset(0, 2000, 7361)).toBe(2000);
+		expect(nextForwardOffset(2000, 2000, 7361)).toBe(4000);
+	});
+
+	it('clamps to totalLines on the final partial page', () => {
+		expect(nextForwardOffset(6000, 2000, 7361)).toBe(7361);
+	});
+
+	it('does not overcount past totalLines when already at the end', () => {
+		expect(nextForwardOffset(7361, 2000, 7361)).toBe(7361);
 	});
 });

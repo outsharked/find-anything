@@ -46,7 +46,7 @@
 
 <table class="code-table" cellspacing="0" cellpadding="0" style="tab-size: {tabWidth}">
 	<tbody>
-		{#each codeLines as line, i}
+		{#each codeLines as line, i (lineOffsets[i] ?? i)}
 			{@const lineNum = lineOffsets[i] ?? i + 1}
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
