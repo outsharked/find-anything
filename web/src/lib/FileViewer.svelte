@@ -82,6 +82,7 @@
 	let showOriginal = $state(false);
 	// Track previous preferOriginal to detect changes after the component is mounted
 	// (e.g. same file re-opened from a different entry point without remounting).
+	// svelte-ignore state_referenced_locally
 	let _prevPreferOriginal = preferOriginal;
 	$effect(() => {
 		if (preferOriginal !== _prevPreferOriginal) {

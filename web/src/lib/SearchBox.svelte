@@ -27,6 +27,7 @@
 	// types (the parent isn't bound to it — it only finds out via onChange/
 	// onRawInput). Re-sync from the prop only when the parent's own value
 	// actually changes (e.g. browser back/forward), not on every render.
+	// svelte-ignore state_referenced_locally
 	let query = $state(queryProp);
 	$effect(() => {
 		query = queryProp;

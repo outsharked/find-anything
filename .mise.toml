@@ -43,6 +43,10 @@ run = [
 GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}"
 GIT_TAG = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
 GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
+# Absolute path to sccache, resolved per-machine at task run time (see Cross.toml —
+# it mounts and execs this path directly inside the container, since a bare
+# "sccache" would need a PATH lookup the container doesn't have).
+RUSTC_WRAPPER = "{{exec(command='which sccache')}}"
 
 [tasks.build-linux]
 description = "Build all Linux release artifacts: x86_64 server and ARM7 NAS binaries"
@@ -60,6 +64,8 @@ run = [
 GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}"
 GIT_TAG = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
 GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
+# See build-arm.env — same reasoning, Cross.toml applies to all cross targets.
+RUSTC_WRAPPER = "{{exec(command='which sccache')}}"
 
 [tasks.build-wsl-cross]
 description = "Cross-compile Windows binaries via Docker/mingw and package with Inno Setup"
