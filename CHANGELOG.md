@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **`crates/client/src/walk.rs`: unused `root_dev` warning on non-Unix builds** — `root_dev` was only ever read inside a `#[cfg(unix)]`-gated filesystem-boundary check, but was declared unconditionally (defaulting to `None` on other platforms via a `#[cfg(not(unix))]` branch). On a non-Unix compile target (e.g. the Windows cross-build) that made it a genuinely unused variable. Gated the whole declaration behind `#[cfg(unix)]` instead, matching where it's actually used — no behavior change on Unix, no more warning elsewhere. Verified with `cargo clippy -p find-client` (native) and `cross check -p find-client --target x86_64-pc-windows-gnu`.
+
 ---
 
 ## [0.7.7] - 2026-07-08
