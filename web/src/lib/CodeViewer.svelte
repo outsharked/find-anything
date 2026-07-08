@@ -12,6 +12,8 @@
 		selection = [],
 		wordWrap = false,
 		tabWidth = 4,
+		spacerBeforePx = 0,
+		spacerAfterPx = 0,
 		onLineSelect
 	}: {
 		/** Syntax-highlighted HTML lines from highlightFile(). */
@@ -24,6 +26,9 @@
 		wordWrap?: boolean;
 		/** Number of spaces a tab character occupies. */
 		tabWidth?: number;
+		/** Virtual-scroll spacers (plan 092): height standing in for unrendered lines above/below. */
+		spacerBeforePx?: number;
+		spacerAfterPx?: number;
 		onLineSelect?: (selection: LineSelection) => void;
 	} = $props();
 
@@ -46,6 +51,9 @@
 
 <table class="code-table" cellspacing="0" cellpadding="0" style="tab-size: {tabWidth}">
 	<tbody>
+		{#if spacerBeforePx > 0}
+			<tr class="spacer-row" style="height: {spacerBeforePx}px" aria-hidden="true"><td colspan="3"></td></tr>
+		{/if}
 		{#each codeLines as line, i (lineOffsets[i] ?? i)}
 			{@const lineNum = lineOffsets[i] ?? i + 1}
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -61,6 +69,9 @@
 				<td class="td-code" class:wrap={wordWrap}><code>{@html line}</code></td>
 			</tr>
 		{/each}
+		{#if spacerAfterPx > 0}
+			<tr class="spacer-row" style="height: {spacerAfterPx}px" aria-hidden="true"><td colspan="3"></td></tr>
+		{/if}
 	</tbody>
 </table>
 
@@ -76,6 +87,11 @@
 	.code-row {
 		border-left: 2px solid transparent;
 		cursor: pointer;
+	}
+
+	.spacer-row td {
+		padding: 0;
+		border: none;
 	}
 
 	.code-row:hover {

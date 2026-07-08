@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy, tick } from 'svelte';
+	import { onMount } from 'svelte';
 	import IconDownload from '$lib/icons/IconDownload.svelte';
 	import IconCopy from '$lib/icons/IconCopy.svelte';
 	import IconCheck from '$lib/icons/IconCheck.svelte';
@@ -10,16 +10,15 @@
 	import IconEmail from '$lib/icons/IconEmail.svelte';
 	import IconWrapOn from '$lib/icons/IconWrapOn.svelte';
 	import IconWrapOff from '$lib/icons/IconWrapOff.svelte';
-	import { getFile, createLink } from '$lib/api';
-	import { nextForwardOffset } from '$lib/pagination';
+	import { getFile, createLink, type FileResponse } from '$lib/api';
 	import { fileViewPageSize, tabWidth as serverTabWidth } from '$lib/settingsStore';
-	import { highlightFile } from '$lib/highlight';
 	import DirListing from './DirListing.svelte';
 	import AudioViewer from './AudioViewer.svelte';
 	import DirectImageViewer from './DirectImageViewer.svelte';
 	import MetaDrawer from './MetaDrawer.svelte';
 	import MarkdownViewer from './MarkdownViewer.svelte';
-	import CodeViewer from './CodeViewer.svelte';
+	import PagedCodeView from './PagedCodeView.svelte';
+	import WindowedCodeView from './WindowedCodeView.svelte';
 	import PdfViewer from './PdfViewer.svelte';
 	import VideoViewer from './VideoViewer.svelte';
 	import { parseMetaTags } from '$lib/metaTags';
@@ -28,7 +27,6 @@
 	import {
 		type LineSelection,
 		firstLine,
-		isLineLoaded,
 	} from '$lib/lineSelection';
 	import { profile } from '$lib/profile';
 	import { publicUrl } from '$lib/settingsStore';
@@ -64,9 +62,6 @@
 	let loading = $state(true);
 	let error: string | null = $state(null);
 	let contentUnavailable = $state(false);
-	let highlightedCode = $state('');
-	/** Maps 0-based render index → line_number */
-	let lineOffsets: number[] = $state([]);
 	let mtime: number | null = $state(null);
 	let size: number | null = $state(null);
 	let fileKind: string | null = $state(null);
@@ -121,7 +116,7 @@
 
 	// iWork preview: present when the document has an embedded preview image.
 	// The preview name is stored in metadata as "[IWORK_PREVIEW] preview.jpg".
-	// Set by applyFileData / applyFileMeta; cannot use metaLines because [IWORK_PREVIEW]
+	// Set by applyFileMeta; cannot use metaLines because [IWORK_PREVIEW]
 	// is deliberately filtered out of metaLines so it doesn't appear in the UI.
 	let iworkPreviewName: string | null = $state(null);
 	let iworkPreviewUrl = $derived(iworkPreviewName
@@ -195,26 +190,9 @@
 	// Word wrap preference (default: false for code, true for text files)
 	let wordWrap = $derived($profile.wordWrap ?? false);
 
+	// Horizontal-overflow flag reported by the mounted code-view component;
+	// gates the word-wrap toggle in the toolbar.
 	let hasOverflow = $state(false);
-	let overflowObserver: ResizeObserver | null = null;
-
-	function checkOverflow() {
-		if (!codeContainer) return;
-		hasOverflow = codeContainer.scrollWidth > codeContainer.clientWidth;
-	}
-
-	// Re-check overflow whenever the rendered content could have changed shape.
-	// (Replaces afterUpdate, which isn't available in runes mode; the explicit
-	// dependency list below stands in for "rerun after every update".)
-	$effect(() => {
-		void [codeLines, wordWrap, showFormatted, metaLines, htmlInlineUrl, renderedMarkdown, renderedRtf, loading, pagedMode];
-		if (!codeContainer) return;
-		checkOverflow();
-		if (!overflowObserver) {
-			overflowObserver = new ResizeObserver(checkOverflow);
-			overflowObserver.observe(codeContainer);
-		}
-	});
 
 	// Tab width: user profile overrides server default.
 	let tabWidth = $derived($profile.tabWidth ?? $serverTabWidth);
@@ -356,6 +334,16 @@
 		: '');
 
 	function toggleWordWrap() {
+		// Preserve the reading position across the toggle: in paged mode the
+		// windowed and legacy components swap on this flag, and the newly
+		// mounted one starts at this line.
+		if (pagedMode) {
+			const top = codeViewRef?.getTopLine() ?? null;
+			if (top !== null) {
+				initialLine = top;
+				initialScrollAlign = 'top';
+			}
+		}
 		$profile.wordWrap = !wordWrap;
 	}
 
@@ -373,87 +361,35 @@
 		return date.toLocaleString();
 	}
 
-	// ── Paged loading state ──────────────────────────────────────────────────────
+	// ── File loading state ───────────────────────────────────────────────────────
+	// The shell fetches the first page (which also carries all file metadata)
+	// and hands it to a text-view component; all subsequent range loading and
+	// scrolling lives in that component, not here.
 
+	/** First page (or whole file) from the shell's metadata fetch. */
+	let initialData: FileResponse | null = $state(null);
+	/** Raw offset `initialData` was fetched at. */
+	let initialOffset = $state(0);
+	/** True when the file is larger than the page size (scroll-loading applies). */
 	let pagedMode = $state(false);
-	/** Accumulated content lines (strings) across all loaded pages. */
-	let allContentLines: string[] = [];
-	/** Accumulated line offsets (1-based actual line_numbers) for allContentLines. */
-	let allLineOffsets: number[] = [];
-	/** True total content line count as reported by the server. */
-	let totalLines = 0;
-	/** Next content-line index to fetch in the forward direction. */
-	let forwardOffset = 0;
-	/** Start of the earliest page loaded (for backward loading). */
-	let backwardOffset = 0;
-	let loadingForward = $state(false);
-	let loadingBackward = $state(false);
-	let noMoreForward = $state(false);
-	let noMoreBackward = $state(true);
+	/** Display line the mounted code view should start at, or null for the top. */
+	let initialLine: number | null = $state(null);
+	let initialScrollAlign: 'center' | 'top' = $state('center');
+	/** Bumped per loadFile so the code-view component remounts with fresh data. */
+	let loadGeneration = $state(0);
+	/** Handle onto the mounted code view, for position preservation and jumps. */
+	let codeViewRef:
+		| { getTopLine: () => number | null; jumpToLine: (line: number, align?: 'center' | 'top') => void }
+		| undefined = $state();
 
-	/** Reference to the scrollable .code-container element. */
-	let codeContainer: HTMLElement | undefined = $state();
+	let hasTextContent = $derived.by(() => (initialData?.lines.length ?? 0) > 0);
 
-	function isNearBottom(): boolean {
-		if (!codeContainer) return false;
-		return codeContainer.scrollHeight - codeContainer.scrollTop - codeContainer.clientHeight < 600;
-	}
-
-	function isNearTop(): boolean {
-		if (!codeContainer) return false;
-		return codeContainer.scrollTop < 300;
-	}
-
-	function handleScroll() {
-		if (!pagedMode) return;
-		if (!loadingForward && !noMoreForward && isNearBottom()) loadForward();
-		if (!loadingBackward && !noMoreBackward && isNearTop()) loadBackward();
-	}
-
-	/** Adjust raw line_offsets from server (LINE_CONTENT_START=2) to display line numbers (1-based). */
-	function adjustOffsets(raw: number[]): number[] {
-		return raw.map(n => n - 1);
-	}
-
-	/** Rebuild rawContent / highlightedCode / lineOffsets from accumulated lines. */
-	async function updateCodeState() {
-		lineOffsets = allLineOffsets;
-		rawContent = allContentLines.join('\n');
-		highlightedCode = await highlightFile(allContentLines, path);
-	}
-
-	/**
-	 * Append a newly-loaded forward page without re-highlighting the whole
-	 * accumulated buffer. Highlighting only the new lines and concatenating
-	 * the HTML keeps each `loadForward` call O(page size) instead of
-	 * O(total lines loaded so far) — re-tokenizing everything on every page
-	 * turns a long scroll session into O(n²) work. A token that spans the
-	 * page boundary (e.g. a multi-line comment) can lose its highlight class
-	 * on the seam line, same as it already does at every line boundary today
-	 * since each line is rendered as its own `{@html}` fragment.
-	 */
-	async function appendCodeState(newLines: string[]) {
-		lineOffsets = allLineOffsets;
-		rawContent = allContentLines.join('\n');
-		if (newLines.length === 0) return;
-		const newHtml = await highlightFile(newLines, path);
-		highlightedCode = highlightedCode ? `${highlightedCode}\n${newHtml}` : newHtml;
-	}
-
-	/** Same as {@link appendCodeState}, but prepends — used by `loadBackward`. */
-	async function prependCodeState(newLines: string[]) {
-		lineOffsets = allLineOffsets;
-		rawContent = allContentLines.join('\n');
-		if (newLines.length === 0) return;
-		const newHtml = await highlightFile(newLines, path);
-		highlightedCode = highlightedCode ? `${newHtml}\n${highlightedCode}` : newHtml;
-	}
-
-	async function applyFileData(data: import('$lib/api').FileResponse, isInitial: boolean) {
-		contentUnavailable = data.content_unavailable ?? false;
-		if (contentUnavailable) return;
-		error = null;
-
+	/** Apply file-level metadata from the initial response. */
+	function applyFileMeta(data: FileResponse, isInitial: boolean) {
+		mtime = data.mtime;
+		size = data.size;
+		fileKind = data.file_kind ?? null;
+		indexingError = data.indexing_error ?? null;
 		// Separate metadata entries from duplicate paths.
 		// Entries tagged [fa:duplicate] are duplicate paths; all others are metadata content.
 		// Actual duplicate paths also come from the dedicated duplicate_paths field (schema v3).
@@ -474,16 +410,6 @@
 		for (const dup of (data.duplicate_paths ?? [])) {
 			if (dup && !duplicatePaths.includes(dup)) duplicatePaths.push(dup);
 		}
-
-		lineOffsets = data.line_offsets && data.line_offsets.length > 0
-			? adjustOffsets(data.line_offsets)
-			: data.lines.map((_, i) => i + 1);
-		rawContent = data.lines.join('\n');
-		highlightedCode = await highlightFile(data.lines, path);
-		mtime = data.mtime;
-		size = data.size;
-		fileKind = data.file_kind ?? null;
-		indexingError = data.indexing_error ?? null;
 		isEncrypted = fileKind === 'pdf' && data.lines.length === 1 && data.lines[0] === 'Content encrypted';
 		// For kinds with no viewer toggle (image, audio, dicom), always sync showOriginal so
 		// live-update reloads (isInitial=false) work correctly after an upgrade scan changes the kind.
@@ -494,46 +420,8 @@
 		}
 	}
 
-	/** Apply file-level metadata from the initial response (for paged mode). */
-	function applyFileMeta(data: import('$lib/api').FileResponse, isInitial: boolean) {
-		mtime = data.mtime;
-		size = data.size;
-		fileKind = data.file_kind ?? null;
-		indexingError = data.indexing_error ?? null;
-		const compositePath = archivePath ? `${path}::${archivePath}` : path;
-		metaLines = [];
-		duplicatePaths = [];
-		iworkPreviewName = null;
-		for (const s of data.metadata) {
-			if (!s || s === compositePath) continue;
-			if (s.startsWith('[fa:duplicate] ')) {
-				duplicatePaths.push(s.slice('[fa:duplicate] '.length));
-			} else if (s.startsWith('[IWORK_PREVIEW] ')) {
-				iworkPreviewName = s.slice('[IWORK_PREVIEW] '.length);
-			} else {
-				metaLines.push({ content: s });
-			}
-		}
-		for (const dup of (data.duplicate_paths ?? [])) {
-			if (dup && !duplicatePaths.includes(dup)) duplicatePaths.push(dup);
-		}
-		if (isInitial) {
-			isEncrypted = fileKind === 'pdf' && data.lines.length === 1 && data.lines[0] === 'Content encrypted';
-		}
-		const noToggleKind = fileKind === 'image' || fileKind === 'audio' || fileKind === 'dicom';
-		if (isInitial || noToggleKind) {
-			showOriginal = fileKind === 'image' || fileKind === 'video' || fileKind === 'audio' || fileKind === 'dicom' || (fileKind === 'pdf' && !isEncrypted && preferOriginal) || isSvg || (iworkPreviewName !== null && preferOriginal);
-		}
-	}
-
 	async function loadFile(isInitial: boolean) {
 		loading = true;
-		pagedMode = false;
-		allContentLines = [];
-		allLineOffsets = [];
-		noMoreForward = false;
-		noMoreBackward = true;
-
 		try {
 			const pageSize = $fileViewPageSize;
 			const firstLn = firstLine(selection);
@@ -552,95 +440,25 @@
 			if (contentUnavailable) return;
 			error = null;
 
-			if (pageSize > 0 && data.total_lines > pageSize) {
-				// Paged mode.
-				pagedMode = true;
-				applyFileMeta(data, isInitial);
-
-				const pageOffsets = data.line_offsets && data.line_offsets.length > 0
-					? adjustOffsets(data.line_offsets)
-					: data.lines.map((_, i) => anchorOffset + i + 1);
-				allContentLines = [...data.lines];
-				allLineOffsets = pageOffsets;
-				totalLines = data.total_lines;
-				forwardOffset = nextForwardOffset(anchorOffset, pageSize, data.total_lines);
-				backwardOffset = anchorOffset;
-				noMoreForward = forwardOffset >= totalLines;
-				noMoreBackward = anchorOffset === 0;
-				await updateCodeState();
-			} else {
-				// Single-page (full file) mode — identical to previous behaviour.
-				await applyFileData(data, isInitial);
-			}
+			pagedMode = pageSize > 0 && data.total_lines > pageSize;
+			applyFileMeta(data, isInitial);
+			rawContent = data.lines.join('\n');
+			initialOffset = anchorOffset;
+			initialData = data;
+			// Scroll to the selection on first open only; reloads keep the top
+			// (the container is recreated either way, same as before).
+			initialLine = isInitial ? firstLn : null;
+			initialScrollAlign = 'center';
+			loadGeneration++;
 		} catch (e) {
 			error = String(e);
 		} finally {
 			loading = false;
 		}
-
-		if (isInitial) {
-			const ln = firstLine(selection);
-			if (ln !== null) {
-				await tick();
-				scrollToLine(ln);
-			}
-		}
-	}
-
-	async function loadForward() {
-		if (loadingForward || noMoreForward) return;
-		loadingForward = true;
-		try {
-			const pageSize = $fileViewPageSize;
-			const data = await getFile(source, path, archivePath ?? undefined, forwardOffset, pageSize);
-			const pageOffsets = data.line_offsets && data.line_offsets.length > 0
-				? adjustOffsets(data.line_offsets)
-				: data.lines.map((_, i) => forwardOffset + i + 1);
-			allContentLines = [...allContentLines, ...data.lines];
-			allLineOffsets = [...allLineOffsets, ...pageOffsets];
-			forwardOffset = nextForwardOffset(forwardOffset, pageSize, totalLines);
-			noMoreForward = forwardOffset >= totalLines;
-			await appendCodeState(data.lines);
-			await tick();
-		} catch { /* silent — user can scroll again to retry */ }
-		loadingForward = false;
-		if (isNearBottom() && !noMoreForward) loadForward();
-	}
-
-	async function loadBackward() {
-		if (loadingBackward || noMoreBackward || !codeContainer) return;
-		loadingBackward = true;
-		try {
-			const pageSize = $fileViewPageSize;
-			const prevOffset = Math.max(0, backwardOffset - pageSize);
-			const limit = backwardOffset - prevOffset;
-			const data = await getFile(source, path, archivePath ?? undefined, prevOffset, limit);
-			const pageOffsets = data.line_offsets && data.line_offsets.length > 0
-				? adjustOffsets(data.line_offsets)
-				: data.lines.map((_, i) => prevOffset + i + 1);
-
-			// Preserve scroll position when prepending.
-			const oldScrollHeight = codeContainer.scrollHeight;
-			const oldScrollTop = codeContainer.scrollTop;
-
-			allContentLines = [...data.lines, ...allContentLines];
-			allLineOffsets = [...pageOffsets, ...allLineOffsets];
-			backwardOffset = prevOffset;
-			noMoreBackward = prevOffset === 0;
-			await prependCodeState(data.lines);
-
-			await tick();
-			codeContainer.scrollTop = oldScrollTop + (codeContainer.scrollHeight - oldScrollHeight);
-		} catch { /* silent */ }
-		loadingBackward = false;
 	}
 
 	onMount(async () => {
 		await loadFile(true);
-	});
-
-	onDestroy(() => {
-		overflowObserver?.disconnect();
 	});
 
 	function openDuplicate(dupPath: string) {
@@ -650,33 +468,21 @@
 		onOpen?.({ source, path: outerPath, kind: 'unknown', archivePath });
 	}
 
-	function scrollToLine(ln: number) {
-		const el = document.getElementById(`line-${ln}`);
-		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-	}
-
 	// React to the selection changing after mount (e.g. the URL hash edited
-	// directly, wired up in +page.svelte's hashchange handler): if the target
-	// line is already in the loaded range, just scroll to it; otherwise reload
-	// centered on it. The initial mount's scroll is handled separately by
-	// onMount → loadFile(true), so this only needs to act on later changes —
-	// the prevLine guard skips re-running when lineOffsets changes for an
-	// unrelated reason (e.g. infinite-scroll loading another page) without a
-	// selection change, which would otherwise steal scroll focus mid-read.
+	// directly or Ctrl+G — both wired up in +page.svelte): delegate to the
+	// mounted code view's jumpToLine, which scrolls if the target is already
+	// rendered/loaded and fetches around it if not. The initial mount's scroll
+	// is handled by the initialLine prop instead, so this only acts on later
+	// changes — the prevLine guard skips re-runs where the selection is
+	// unchanged (e.g. the view component ref becoming available).
 	let _prevSelectionLine: number | null = null;
 	$effect(() => {
 		const ln = firstLine(selection);
 		if (ln === _prevSelectionLine) return;
 		_prevSelectionLine = ln;
 		if (ln === null) return;
-		if (isLineLoaded(lineOffsets, ln)) {
-			scrollToLine(ln);
-		} else if (pagedMode) {
-			loadFile(true);
-		}
+		codeViewRef?.jumpToLine(ln, 'center');
 	});
-
-	let codeLines = $derived(highlightedCode ? highlightedCode.split('\n') : []);
 
 	// Live update state
 	type FileState = 'normal' | 'deleted' | 'renamed' | 'modified';
@@ -883,16 +689,7 @@
 			{/if}
 		{:else}
 			<!-- Extracted text / code view -->
-			<div class="code-container" bind:this={codeContainer} onscroll={handleScroll}>
-				{#if pagedMode && !noMoreBackward}
-					<div class="load-sentinel">
-						{#if loadingBackward}
-							<span class="sentinel-msg">Loading earlier lines…</span>
-						{:else}
-							<button class="sentinel-btn" onclick={loadBackward}>Load earlier lines</button>
-						{/if}
-					</div>
-				{/if}
+			{#snippet textHeader()}
 				{#if isEncrypted}
 					<div class="encrypted-notice">🔒 This PDF is password-protected and cannot be displayed.</div>
 				{/if}
@@ -911,9 +708,15 @@
 				{#if markdownTooLarge && showFormatted}
 					<div class="no-content">File too large to render as markdown ({Math.round(rawContent.length / 1024)} KB &gt; {$maxMarkdownRenderKb} KB limit). Showing plain text.</div>
 				{/if}
-				{#if showFormatted && isHtml}
+			{/snippet}
+			{#if showFormatted && isHtml}
+				<div class="code-container">
+					{@render textHeader()}
 					<iframe src={htmlInlineUrl} title="HTML preview" class="html-iframe"></iframe>
-				{:else if showFormatted && isRtf}
+				</div>
+			{:else if showFormatted && isRtf}
+				<div class="code-container">
+					{@render textHeader()}
 					{#if renderedRtf}
 						<MarkdownViewer rendered={renderedRtf} />
 					{:else if rtfError}
@@ -921,10 +724,15 @@
 					{:else}
 						<div class="no-content">Converting…</div>
 					{/if}
-				{:else if showFormatted && isMarkdown && !markdownTooLarge}
+				</div>
+			{:else if showFormatted && isMarkdown && !markdownTooLarge}
+				<div class="code-container">
+					{@render textHeader()}
 					<MarkdownViewer rendered={String(renderedMarkdown)} />
-				{:else if codeLines.length === 0 && metaLines.length === 0 && archivePrefix}
-					<!-- Archive root or ZIP-like archive member: show member listing inline -->
+				</div>
+			{:else if !hasTextContent && metaLines.length === 0 && archivePrefix}
+				<!-- Archive root or ZIP-like archive member: show member listing inline -->
+				<div class="code-container">
 					<DirListing
 						source={source}
 						prefix={archivePrefix}
@@ -943,28 +751,56 @@
 							}
 						}}
 					/>
-				{:else if codeLines.length === 0 && metaLines.length === 0}
+				</div>
+			{:else if !hasTextContent && metaLines.length === 0}
+				<div class="code-container">
 					<div class="no-content">No text content or metadata available for this file.</div>
-				{:else}
-					<CodeViewer
-						{codeLines}
-						{lineOffsets}
-						{selection}
-						{wordWrap}
-						{tabWidth}
-						onLineSelect={(next) => {
-							onLineSelect?.({ selection: next });
-						}}
-					/>
-				{/if}
-				{#if pagedMode && !noMoreForward}
-					<div class="load-sentinel">
-						{#if loadingForward}
-							<span class="sentinel-msg">Loading…</span>
-						{/if}
-					</div>
-				{/if}
-			</div>
+				</div>
+			{:else if initialData}
+				{#key loadGeneration}
+					{#if pagedMode && !wordWrap}
+						<!-- Virtualized: bounded DOM window positioned by spacer rows. -->
+						<WindowedCodeView
+							bind:this={codeViewRef}
+							{source}
+							{path}
+							{archivePath}
+							{initialData}
+							{initialOffset}
+							{initialLine}
+							{initialScrollAlign}
+							{selection}
+							{tabWidth}
+							header={textHeader}
+							onLineSelect={(next) => {
+								onLineSelect?.({ selection: next });
+							}}
+							onOverflowChange={(v) => (hasOverflow = v)}
+						/>
+					{:else}
+						<!-- Legacy accumulate path: word-wrap mode and small (non-paged) files. -->
+						<PagedCodeView
+							bind:this={codeViewRef}
+							{source}
+							{path}
+							{archivePath}
+							{initialData}
+							{initialOffset}
+							{pagedMode}
+							{initialLine}
+							{initialScrollAlign}
+							{selection}
+							{wordWrap}
+							{tabWidth}
+							header={textHeader}
+							onLineSelect={(next) => {
+								onLineSelect?.({ selection: next });
+							}}
+							onOverflowChange={(v) => (hasOverflow = v)}
+						/>
+					{/if}
+				{/key}
+			{/if}
 		{/if}
 	{/if}
 </div>
@@ -1505,33 +1341,6 @@
 		padding: 24px 16px;
 		color: var(--text-muted);
 		font-size: 13px;
-	}
-
-	.load-sentinel {
-		padding: 8px 16px;
-		text-align: center;
-	}
-
-	.sentinel-msg {
-		font-size: 12px;
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-	}
-
-	.sentinel-btn {
-		background: none;
-		border: 1px solid var(--border, rgba(255, 255, 255, 0.15));
-		border-radius: 4px;
-		padding: 4px 12px;
-		font-size: 12px;
-		font-family: var(--font-mono);
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-
-	.sentinel-btn:hover {
-		color: var(--text);
-		background: var(--bg-hover);
 	}
 
 	.image-viewer-panel {
