@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.7.7] - 2026-07-08
+
 ### Fixed
 
 - **`cross`-based ARM/Windows builds: sccache wasn't actually being used** — `Cross.toml`'s `volumes` key was under the top-level `[build]` section, but `cross` only reads `volumes`/`passthrough` from `[build.env]`, so the sccache binary and cache dir mounts were silently dropped (cross even warned "found unused key(s)"). Even moved to the right place, `cross` doesn't support Docker's `host:container` remap — it always mounts a volume at the same absolute path inside the container as on the host — so `RUSTC_WRAPPER=sccache` (a bare name) could never resolve via a `PATH` lookup the container doesn't have. Fixed by resolving `RUSTC_WRAPPER` to sccache's absolute path via `which sccache` in `.mise.toml`'s `build-arm`/`build-win` task env blocks (no hardcoded paths — portable across machines), and mounting/passing it through by that same env var name in `Cross.toml`.
