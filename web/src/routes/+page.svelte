@@ -7,13 +7,14 @@
 	import SearchView from '$lib/SearchView.svelte';
 	import FileView from '$lib/FileView.svelte';
 	import CommandPalette from '$lib/CommandPalette.svelte';
+	import GoToLineDialog from '$lib/GoToLineDialog.svelte';
 	import MultiSourceTree from '$lib/MultiSourceTree.svelte';
 	import { search, listSources, getSettings, activateSession, AuthError } from '$lib/api';
 	import type { SearchResult, SourceInfo } from '$lib/api';
 	import { getToken, setToken } from '$lib/token';
 	import { startLiveUpdates, liveEvent } from '$lib/liveUpdates';
 	import { contextWindow, maxMarkdownRenderKb, fileViewPageSize, tabWidth, publicUrl } from '$lib/settingsStore';
-	import { formatHash } from '$lib/lineSelection';
+	import { formatHash, parseHash } from '$lib/lineSelection';
 	import type { LineSelection } from '$lib/lineSelection';
 	import { FilePath } from '$lib/filePath';
 	import { prefetchTreePath } from '$lib/treeCache';
@@ -74,6 +75,7 @@
 
 	let showTree = $state(true);
 	let showPalette = $state(false);
+	let showGoToLine = $state(false);
 
 	// Live index update state
 	let resultsStale = $state(false);
@@ -230,6 +232,12 @@
 			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
 				e.preventDefault();
 				showPalette = !showPalette;
+			} else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g' && fileView?.panelMode === 'file') {
+				// Browsers bind Ctrl+G to "find next" — only take it over while a
+				// file (not a directory listing) is open, where the browser
+				// shortcut wouldn't be useful anyway.
+				e.preventDefault();
+				showGoToLine = !showGoToLine;
 			}
 		}
 
@@ -254,8 +262,24 @@
 			}
 		}
 
+		// Editing the URL hash directly (e.g. typing "#L5000" in the address bar)
+		// is a same-document navigation that fires hashchange, not popstate — our
+		// own in-app selection changes go through history.pushState/replaceState
+		// instead (syncHash), which never fires either event, so there's no echo
+		// loop here. Re-parses location.hash and hands it to the open FileViewer,
+		// which reacts to a selection change by scrolling to (or, if the target
+		// line isn't in the currently-loaded page, loading the chunk that
+		// contains) the requested line.
+		function handleHashchange() {
+			if (!fileView) return;
+			const newSelection = parseHash(location.hash);
+			if (formatHash(fileView.selection) === formatHash(newSelection)) return;
+			fileView = { ...fileView, selection: newSelection };
+		}
+
 		window.addEventListener('keydown', handleKeydown, { capture: true });
 		window.addEventListener('popstate', handlePopstate);
+		window.addEventListener('hashchange', handleHashchange);
 		// Scroll events as a secondary trigger: when the window is scrollable
 		// and the user scrolls near the sentinel, load more results.
 		mainContent.addEventListener('scroll', checkScroll, { passive: true });
@@ -263,6 +287,7 @@
 			stopLive();
 			window.removeEventListener('keydown', handleKeydown, { capture: true });
 			window.removeEventListener('popstate', handlePopstate);
+			window.removeEventListener('hashchange', handleHashchange);
 			mainContent.removeEventListener('scroll', checkScroll);
 		};
 	});
@@ -520,6 +545,12 @@
 		syncHash();
 	}
 
+	/** Ctrl+G "go to line" — same selection/hash update path as clicking a line. */
+	function handleGoToLine(line: number) {
+		if (fileView) fileView = { ...fileView, selection: [line] };
+		syncHash();
+	}
+
 	function handleTreeToggle() {
 		showTree = !showTree;
 	}
@@ -692,6 +723,12 @@
 	totalSourceCount={sourceNames.length}
 	onSelect={handlePaletteSelect}
 	onClose={() => (showPalette = false)}
+/>
+
+<GoToLineDialog
+	open={showGoToLine}
+	onSubmit={handleGoToLine}
+	onClose={() => (showGoToLine = false)}
 />
 
 

@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **Ctrl+G "go to line" dialog, and deep-link `#L…` hash edits now work** — editing the URL hash directly (e.g. typing `#L5000` in the address bar) previously did nothing: there was no `hashchange` listener at all, and `FileViewer` only computed its paged-mode anchor from the line selection once, at mount. Added a `hashchange` listener in `+page.svelte` and a `FileViewer` effect that reacts to the selection changing after mount — scrolling to the target line if it's already loaded (`isLineLoaded()`, new `lineSelection.ts` helper), or reloading centered on it (reusing the same `nextForwardOffset` anchor math as the initial load) if not. New `GoToLineDialog.svelte` (mirrors `CommandPalette`'s modal pattern) wires the same mechanism to Ctrl+G, gated to file view only since Ctrl+G is normally browser "find next". Verified live via Playwright against real paged files: cold-load-to-hash, runtime hash edits, and deep multi-page-skip jumps (temporarily shrinking `file_view_page_size` to force an 8-page skip) all resolve to a single correctly-anchored fetch, no incremental walk-through.
+
 ---
 
 ## [0.7.7] - 2026-07-08
