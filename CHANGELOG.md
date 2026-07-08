@@ -9,6 +9,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- **Phase 1 indexing: batch SQLite commits instead of one per file** — investigation into disk write amplification on a production deployment found that `sources/{source}.db` (up to 19GB there) was seeing 100-250x write amplification during upload bursts: `worker/pipeline.rs`'s `process_file_phase1_fallback` opened and committed its own transaction per file, so each commit rewrote WAL frames and interior btree pages of the whole multi-GB database, for every single file. Changed the per-file transaction to a SQLite savepoint (rusqlite behaves identically to a transaction when no outer one is open, and nests cleanly when one is), and `worker/request.rs`'s phase1 loop now opens one transaction per `PHASE1_BATCH_SIZE` (25) files instead of relying on each file's own commit — one bad file still only rolls back its own savepoint, not the rest of the batch already accumulated. Also folded the outer-archive stale-inner-member delete (previously its own separate mini-transaction per file) into the same per-file savepoint. Added a regression test (`batch_crossing_phase1_batch_size_indexes_every_file`) covering a request with more files than `PHASE1_BATCH_SIZE`, verifying every file — before, at, and after the internal commit boundary — is still correctly persisted.
+  - This addresses bulk `find-scan` uploads (many files per request) directly. It does *not* address a burst of many separate single-file requests (e.g. a file watcher uploading one changed file at a time) — each such request still gets its own DB connection and its own transaction, since batching only happens *within* one request's file list. Tracked as a follow-up: [#59](https://github.com/outsharked/find-anything/issues/59).
+
 ---
 
 ## [0.7.7] - 2026-07-08
