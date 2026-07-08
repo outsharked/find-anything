@@ -70,6 +70,9 @@
 
 	// ── Dir typeahead ──────────────────────────────────────────────────────────
 
+	// Seeded once from the query prop; kept in sync by the guarded resync
+	// effect further down (see _prevQuery below), not by direct reactivity.
+	// svelte-ignore state_referenced_locally
 	let liveQuery = $state(query);
 	let searchFocused = $state(false);
 	let taOpen = $state(false);
@@ -263,6 +266,7 @@
 	// dependency tracking) matters here: this effect also reads taOpen, and
 	// without the guard it would re-fire (and clobber in-progress typing) simply
 	// because taOpen toggled, even when query itself hasn't changed.
+	// svelte-ignore state_referenced_locally
 	let _prevQuery = query;
 	$effect(() => {
 		if (query !== _prevQuery) {

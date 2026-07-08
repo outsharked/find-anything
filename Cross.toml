@@ -1,11 +1,22 @@
-[build]
-# Mount sccache binary and cache dir into all cross containers
-volumes = [
-    "/home/jamiet/.local/bin/sccache:/usr/local/bin/sccache",
-    "/home/jamiet/.cache/sccache:/root/.cache/sccache",
-]
-
 [build.env]
+# Mount the sccache binary and its cache dir into cross containers. No paths
+# are hardcoded here — RUSTC_WRAPPER and SCCACHE_DIR are resolved per-machine
+# by the calling mise task (see build-arm.env / build-win.env in .mise.toml,
+# which set RUSTC_WRAPPER to `which sccache`'s output) or the developer's
+# shell profile (SCCACHE_DIR), and read from the host environment here.
+#
+# cross only reads `volumes`/`passthrough` from [build.env] (not top-level
+# [build]), and it always mounts a volume at the SAME absolute path inside
+# the container as on the host — there's no host:container remap like plain
+# `docker -v`. So RUSTC_WRAPPER must resolve to that same absolute path
+# rather than a bare "sccache" (which would need a PATH lookup the container
+# doesn't have) — hence resolving it to an absolute path before it gets here.
+#
+# The installed cross 0.2.5 also has a bug where a bare `volumes` entry
+# mounts the path correctly but exports it as `-e <path>=<path>` instead of
+# `-e RUSTC_WRAPPER=<path>` — so `passthrough` still needs to independently
+# export the correctly-named variable; `volumes` here is only for the mount.
+volumes = ["SCCACHE_DIR", "RUSTC_WRAPPER"]
 passthrough = ["RUSTC_WRAPPER", "SCCACHE_DIR"]
 
 [target.x86_64-pc-windows-gnu]

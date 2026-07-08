@@ -14,6 +14,7 @@
 
 	// Intentionally a one-time snapshot, not synced to the prop afterward — the
 	// drawer's open/closed state is then controlled entirely by the toggle button.
+	// svelte-ignore state_referenced_locally
 	let open = $state(initialOpen);
 </script>
 
