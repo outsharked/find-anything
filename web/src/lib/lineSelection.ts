@@ -63,6 +63,19 @@ export function firstLine(sel: LineSelection): number | null {
 }
 
 /**
+ * Whether line `ln` falls within the span of currently-rendered lines.
+ *
+ * `lineOffsets` is sorted but may have gaps (e.g. blank lines with no stored
+ * content chunk never appear in it), so this checks the covered *range*
+ * rather than exact membership — a line inside the loaded span that happens
+ * to be a gap simply won't have a DOM node to scroll to, which is an
+ * acceptable edge case compared to re-fetching a page that's already loaded.
+ */
+export function isLineLoaded(lineOffsets: number[], ln: number): boolean {
+	return lineOffsets.length > 0 && ln >= lineOffsets[0] && ln <= lineOffsets[lineOffsets.length - 1];
+}
+
+/**
  * Toggle a single line number in the selection.
  * Handles simple number parts only (ranges are kept as-is).
  */

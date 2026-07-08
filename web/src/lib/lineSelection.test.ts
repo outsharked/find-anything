@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseHash, formatHash, selectionSet, firstLine, toggleLine } from './lineSelection';
+import { parseHash, formatHash, selectionSet, firstLine, isLineLoaded, toggleLine } from './lineSelection';
 
 // ── parseHash ────────────────────────────────────────────────────────────────
 
@@ -103,6 +103,37 @@ describe('firstLine', () => {
 
 	it('empty [] → null', () => {
 		expect(firstLine([])).toBeNull();
+	});
+});
+
+// ── isLineLoaded ─────────────────────────────────────────────────────────────
+
+describe('isLineLoaded', () => {
+	it('line within the loaded span → true', () => {
+		expect(isLineLoaded([1, 2, 3, 4, 5], 3)).toBe(true);
+	});
+
+	it('line at the exact start or end of the span → true', () => {
+		expect(isLineLoaded([2001, 2002, 4000], 2001)).toBe(true);
+		expect(isLineLoaded([2001, 2002, 4000], 4000)).toBe(true);
+	});
+
+	it('line before the loaded span → false', () => {
+		expect(isLineLoaded([2001, 2002, 4000], 500)).toBe(false);
+	});
+
+	it('line after the loaded span → false', () => {
+		expect(isLineLoaded([2001, 2002, 4000], 9000)).toBe(false);
+	});
+
+	it('a gap line within the span\'s range but not literally present → still true', () => {
+		// e.g. a blank line between Cargo.lock [[package]] entries never gets its
+		// own entry in lineOffsets, but it's still within the loaded page's span.
+		expect(isLineLoaded([2001, 2002, 2004], 2003)).toBe(true);
+	});
+
+	it('empty lineOffsets (nothing loaded yet) → false', () => {
+		expect(isLineLoaded([], 5)).toBe(false);
 	});
 });
 

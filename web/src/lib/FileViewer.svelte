@@ -28,6 +28,7 @@
 	import {
 		type LineSelection,
 		firstLine,
+		isLineLoaded,
 	} from '$lib/lineSelection';
 	import { profile } from '$lib/profile';
 	import { publicUrl } from '$lib/settingsStore';
@@ -653,6 +654,27 @@
 		const el = document.getElementById(`line-${ln}`);
 		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 	}
+
+	// React to the selection changing after mount (e.g. the URL hash edited
+	// directly, wired up in +page.svelte's hashchange handler): if the target
+	// line is already in the loaded range, just scroll to it; otherwise reload
+	// centered on it. The initial mount's scroll is handled separately by
+	// onMount → loadFile(true), so this only needs to act on later changes —
+	// the prevLine guard skips re-running when lineOffsets changes for an
+	// unrelated reason (e.g. infinite-scroll loading another page) without a
+	// selection change, which would otherwise steal scroll focus mid-read.
+	let _prevSelectionLine: number | null = null;
+	$effect(() => {
+		const ln = firstLine(selection);
+		if (ln === _prevSelectionLine) return;
+		_prevSelectionLine = ln;
+		if (ln === null) return;
+		if (isLineLoaded(lineOffsets, ln)) {
+			scrollToLine(ln);
+		} else if (pagedMode) {
+			loadFile(true);
+		}
+	});
 
 	let codeLines = $derived(highlightedCode ? highlightedCode.split('\n') : []);
 
