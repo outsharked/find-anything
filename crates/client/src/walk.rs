@@ -75,15 +75,13 @@ pub(crate) fn walk_source_tree(
     let mut override_stack: Vec<(usize, HashSet<String>)> = Vec::new();
 
     // Device ID of the walk root, captured once for filesystem-boundary checks.
-    // None when cross_filesystems = true (check disabled) or on non-Unix.
+    // None when cross_filesystems = true (check disabled). Unix-only — the
+    // filesystem-boundary check that reads this is #[cfg(unix)] below, so on
+    // other platforms this is never consulted and isn't declared at all.
+    #[cfg(unix)]
     let root_dev: Option<u64> = if !scan.cross_filesystems {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            std::fs::metadata(walk_root).ok().map(|m| m.dev())
-        }
-        #[cfg(not(unix))]
-        { None }
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(walk_root).ok().map(|m| m.dev())
     } else {
         None
     };

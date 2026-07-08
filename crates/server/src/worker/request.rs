@@ -26,6 +26,13 @@ use crate::normalize;
 use super::{StatusHandle, WorkerConfig, timed, warn_slow};
 use super::pipeline;
 
+/// How many files' phase1 savepoints to accumulate into one SQLite
+/// transaction before committing. Each commit rewrites WAL frames and
+/// interior btree pages of the source DB; on a multi-GB DB, committing after
+/// every single file (as opposed to a batch of them) is the dominant cost
+/// when many small files are indexed one at a time.
+const PHASE1_BATCH_SIZE: usize = 25;
+
 // ── Context structs ─────────────────────────────────────────────────────────────
 
 /// Per-request path context for `process_request_async`.
@@ -327,6 +334,19 @@ fn process_request_phase1(
 
     tracing::debug!("{tag} → index {} files", n_files);
     let index_loop_start = std::time::Instant::now();
+    // Batch phase1's per-file savepoints into one SQLite transaction every
+    // PHASE1_BATCH_SIZE files instead of committing after each one — each
+    // commit rewrites WAL frames and interior btree pages of the source DB,
+    // which on a multi-GB DB dominates write volume when many small files are
+    // indexed individually (see CHANGELOG). process_file_phase1 still uses a
+    // per-file savepoint internally, so one bad file only rolls back its own
+    // savepoint, not the rest of the batch already accumulated in this
+    // transaction.
+    let batched = !files_owned.is_empty();
+    if batched {
+        conn.execute_batch("BEGIN")?;
+    }
+    let mut since_commit = 0usize;
     for file in files_owned {
         if let Ok(mut guard) = status.lock() {
             *guard = find_common::api::WorkerStatus::Processing {
@@ -397,6 +417,16 @@ fn process_request_phase1(
         }
         warn_slow(file_start, 30, "process_file_phase1", &file.path);
         normalized_files.push(file); // moved, not cloned
+
+        since_commit += 1;
+        if since_commit >= PHASE1_BATCH_SIZE {
+            conn.execute_batch("COMMIT")?;
+            conn.execute_batch("BEGIN")?;
+            since_commit = 0;
+        }
+    }
+    if batched {
+        conn.execute_batch("COMMIT")?;
     }
     tracing::debug!("{tag} ← index {} files ({:.1}ms)", n_files, index_loop_start.elapsed().as_secs_f64() * 1000.0);
 
@@ -638,6 +668,59 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM files WHERE path = 'docs/readme.txt'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "expected file record in DB");
+    }
+
+    /// Regression test for the phase1 batched-commit change: a request with
+    /// more files than PHASE1_BATCH_SIZE must cross at least one internal
+    /// COMMIT/BEGIN boundary, and every file — before, at, and after that
+    /// boundary — must still end up correctly persisted.
+    #[test]
+    fn batch_crossing_phase1_batch_size_indexes_every_file() {
+        let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
+        let (recent_tx, _rx) = tokio::sync::broadcast::channel::<RecentFile>(16);
+
+        let n_files = PHASE1_BATCH_SIZE + 5; // crosses exactly one batch boundary
+        let files: Vec<IndexFile> = (0..n_files)
+            .map(|i| make_index_file(&format!("batch/file{i:03}.txt"), FileKind::Text))
+            .collect();
+
+        let req = BulkRequest {
+            source: "batchsource".to_string(),
+            files,
+            delete_paths: vec![],
+            rename_paths: vec![],
+            scan_timestamp: Some(1_000_000),
+            indexing_failures: vec![],
+        };
+
+        let request_path = inbox_dir.join("req_batch.gz");
+        write_bulk_request_gz(&request_path, &req);
+
+        call_phase1(
+            &data_dir,
+            &request_path,
+            &to_archive_dir,
+            &make_status(),
+            make_worker_config(),
+            &recent_tx,
+            &make_stats_watch(),
+        )
+        .unwrap();
+
+        let db_path = data_dir.join("sources").join("batchsource.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM files WHERE path LIKE 'batch/%'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, n_files as i64, "every file across the batch boundary should be persisted");
+
+        // Spot-check the last file in the batch (the one committed by the
+        // *final* COMMIT after the loop, not one of the periodic ones).
+        let last_path = format!("batch/file{:03}.txt", n_files - 1);
+        let last_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM files WHERE path = ?1", [&last_path], |r| r.get(0))
+            .unwrap();
+        assert_eq!(last_count, 1, "last file in the batch should be persisted");
     }
 
     #[test]
