@@ -48,14 +48,17 @@ pub(super) fn process_file_phase1_fallback(
         .unwrap_or_default()
         .as_secs() as i64;
 
-    // If re-indexing an outer archive, delete stale inner members first (SQL only).
-    // Orphaned chunks left in ZIPs are reclaimed by the periodic compaction pass.
-    if !skip_inner_delete && is_outer_archive(&file.path, &file.kind) && file.mtime == 0 {
-        let like_pat = composite_like_prefix(&file.path);
-        let tx = conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM files WHERE path LIKE ?1", rusqlite::params![like_pat])?;
-        tx.commit()?;
-    }
+    // If re-indexing an outer archive, stale inner members need deleting (SQL
+    // only). Computed here but issued as the first statement inside the
+    // savepoint below, alongside the upsert — the SELECT for existing_record
+    // just below matches this file's own path exactly, never a "path LIKE"
+    // inner-member row, so doing the delete after the read here doesn't
+    // change what that query sees. Orphaned chunks left in ZIPs are reclaimed
+    // by the periodic compaction pass.
+    let inner_delete_pattern = (!skip_inner_delete
+        && is_outer_archive(&file.path, &file.kind)
+        && file.mtime == 0)
+        .then(|| composite_like_prefix(&file.path));
 
     // Single query for the existing record: id, mtime, size, kind, file_hash, line_count.
     let existing_record: Option<(i64, i64, i64, String, Option<String>, i64)> = conn.query_row(
@@ -111,14 +114,26 @@ pub(super) fn process_file_phase1_fallback(
             Vec::new()
         };
 
-    // Single transaction for the whole file.
+    // Single savepoint for the whole file. A savepoint (rather than
+    // conn.transaction()) lets callers batch many files into one enclosing
+    // SQLite transaction — see request.rs's phase1 loop, which commits every
+    // PHASE1_BATCH_SIZE files instead of after each one, collapsing the
+    // WAL/page-rewrite cost of many small commits — while still rolling back
+    // just this file's writes (RAII: dropped without commit() = rollback) if
+    // something fails partway through. When no enclosing transaction is open
+    // (e.g. tests calling this directly), a savepoint behaves exactly like a
+    // transaction: releasing the outermost savepoint commits to disk.
     let t_fts = std::time::Instant::now();
-    let tx = conn.transaction()?;
+    let sp = conn.savepoint()?;
+
+    if let Some(like_pat) = &inner_delete_pattern {
+        sp.execute("DELETE FROM files WHERE path LIKE ?1", rusqlite::params![like_pat])?;
+    }
 
     let line_count = file.lines.len() as i64;
 
     // Upsert the file record, keeping the same file_id on re-index.
-    let file_id: i64 = tx.query_row(
+    let file_id: i64 = sp.query_row(
         "INSERT INTO files (path, mtime, size, kind, scanner_version, indexed_at, extract_ms, file_hash, line_count)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(path) DO UPDATE SET
@@ -157,7 +172,7 @@ pub(super) fn process_file_phase1_fallback(
         }
         if (pos as i64) < MAX_LINES_PER_FILE {
             let old_rowid = encode_fts_rowid(file_id, pos as i64);
-            tx.execute(
+            sp.execute(
                 "INSERT INTO lines_fts(lines_fts, rowid, content) VALUES('delete', ?1, ?2)",
                 rusqlite::params![old_rowid, content],
             )?;
@@ -177,7 +192,7 @@ pub(super) fn process_file_phase1_fallback(
             continue;
         }
         let rowid = encode_fts_rowid(file_id, line_number);
-        tx.execute(
+        sp.execute(
             "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
             rusqlite::params![rowid, line.content.trim_end()],
         )?;
@@ -185,10 +200,10 @@ pub(super) fn process_file_phase1_fallback(
 
     // Update duplicate tracking.
     if let Some(hash) = &file.file_hash {
-        upsert_duplicate_tracking(&tx, hash, file_id)?;
+        upsert_duplicate_tracking(&sp, hash, file_id)?;
     }
 
-    tx.commit()?;
+    sp.commit()?;
     super::warn_slow(t_fts, 10, "fts_insert_phase1", &file.path);
 
     if existing_id.is_none() {
@@ -201,13 +216,13 @@ pub(super) fn process_file_phase1_fallback(
 
 /// Insert duplicate tracking entries when 2+ files share a file_hash.
 fn upsert_duplicate_tracking(
-    tx: &rusqlite::Transaction,
+    conn: &Connection,
     hash: &str,
     file_id: i64,
 ) -> Result<()> {
     // Find other files with the same file_hash.
     let other_ids: Vec<i64> = {
-        let mut stmt = tx.prepare(
+        let mut stmt = conn.prepare(
             "SELECT id FROM files WHERE file_hash = ?1 AND id != ?2",
         )?;
         let ids: Vec<i64> = stmt.query_map(rusqlite::params![hash, file_id], |r| r.get(0))?
@@ -217,12 +232,12 @@ fn upsert_duplicate_tracking(
     if !other_ids.is_empty() {
         // Insert for all existing duplicates and for the current file.
         for other_id in &other_ids {
-            tx.execute(
+            conn.execute(
                 "INSERT OR IGNORE INTO duplicates(file_hash, file_id) VALUES(?1, ?2)",
                 rusqlite::params![hash, other_id],
             )?;
         }
-        tx.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO duplicates(file_hash, file_id) VALUES(?1, ?2)",
             rusqlite::params![hash, file_id],
         )?;
