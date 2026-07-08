@@ -120,13 +120,13 @@ read -rp "Push and create GitHub release? [Y/n] " PUSH
 PUSH="${PUSH:-Y}"
 if [[ ! "$PUSH" =~ ^[Yy]$ ]]; then
   echo ""
-  echo "  git push origin master v$NEW_VERSION"
+  echo "  git push origin main v$NEW_VERSION"
   echo "  gh release create v$NEW_VERSION --title \"v$NEW_VERSION\" --notes \"...\""
   exit 0
 fi
 
 echo "→ Pushing commits and tag..."
-git push origin master "v$NEW_VERSION"
+git push origin main "v$NEW_VERSION"
 
 # Extract release notes for this version from CHANGELOG
 NOTES=$(python3 - "$NEW_VERSION" <<'PYEOF'
