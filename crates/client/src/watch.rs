@@ -127,7 +127,25 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
         watch_tree(&mut watcher, path, None, &global_excludes, &scan);
     };
 
-    run_event_loop(rx, &api, &source_map, batch_window, batch_limit, &scan, &extractor_dir, &mut register_dir).await
+    // Rescan a directory (via a scoped `find-scan` subprocess) after one of its
+    // `.index`/`.noindex` control files changes.
+    let rescan_config_path = opts.config_path.clone();
+    let rescan_log_dir = config.log.dir.clone();
+    let mut rescan_parent = |dir: &Path| {
+        spawn_find_scan(&rescan_config_path, &rescan_log_dir, Some(dir));
+    };
+
+    run_event_loop(
+        rx,
+        &api,
+        &source_map,
+        batch_window,
+        batch_limit,
+        &scan,
+        &extractor_dir,
+        &mut register_dir,
+        &mut rescan_parent,
+    ).await
 }
 
 /// The inner event-processing loop, separated from watcher setup so it can be
@@ -137,8 +155,12 @@ pub async fn run_watch(config: &ClientConfig, opts: &WatchOptions) -> Result<()>
 /// into debounce windows and flushing batches to the server via `api`.
 /// `register_dir` is called when a new directory is created; in production it
 /// registers an inotify watch; in tests it is a no-op.
+/// `rescan_parent` is called (via [`crate::path_util::resolve_scan_target`])
+/// with the directory to rescan when a `.index`/`.noindex` control file
+/// changes; in production it spawns a scoped `find-scan` rescan, in tests it
+/// is a no-op or call-recording closure.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_event_loop<F>(
+pub(crate) async fn run_event_loop<F, G>(
     mut rx: mpsc::Receiver<notify::Result<Event>>,
     api: &ApiClient,
     source_map: &SourceMap,
@@ -147,9 +169,11 @@ pub(crate) async fn run_event_loop<F>(
     scan: &ScanConfig,
     extractor_dir: &Option<String>,
     register_dir: &mut F,
+    rescan_parent: &mut G,
 ) -> Result<()>
 where
     F: FnMut(&Path),
+    G: FnMut(&Path),
 {
     // Accumulator: path → what to do.
     let mut pending: HashMap<PathBuf, AccumulatedKind> = HashMap::new();
@@ -231,6 +255,24 @@ where
             else {
                 continue;
             };
+
+            // A `.index`/`.noindex` control file changed: it alters what's indexed
+            // in its own directory, so rescan from an ancestor directory instead
+            // of treating the control file's own content as indexable. This
+            // applies regardless of Create/Update/Delete — even removing the
+            // control file needs a rescan, to reveal files it had been hiding
+            // or restricting. See `resolve_scan_target` for why the rescan
+            // starts one level above the control file's own directory.
+            let (rescan_target, is_control_file) =
+                crate::path_util::resolve_scan_target(&abs_path, true, &scan.index_file, &scan.noindex_file);
+            if is_control_file {
+                tracing::info!(
+                    "{} changed — rescanning {}",
+                    abs_path.display(), rescan_target.display()
+                );
+                rescan_parent(&rescan_target);
+                continue;
+            }
 
             // Apply source-level include filter.
             if !source_includes.is_empty() && !source_includes.is_match(&*rel_path) {
@@ -1119,9 +1161,21 @@ async fn run_scan_scheduler(interval_hours: f64, config_path: &str, log_dir: &st
 
 /// Spawn `find-scan --config <config_path>` and return the child handle.
 fn spawn_scan(config_path: &str, log_dir: &str) -> Option<tokio::process::Child> {
+    spawn_find_scan(config_path, log_dir, None)
+}
+
+/// Spawn `find-scan --config <config_path> [path]`. When `path` is `None`,
+/// scans all configured sources (the periodic full scan); when `Some`, scans
+/// just that file or directory — used to rescan a directory whose `.index`/
+/// `.noindex` control file changed. Fire-and-forget: the child is returned
+/// but its exit is not awaited here.
+fn spawn_find_scan(config_path: &str, log_dir: &str, path: Option<&Path>) -> Option<tokio::process::Child> {
     let binary = find_scan_binary();
     let mut cmd = tokio::process::Command::new(&binary);
     cmd.arg("--config").arg(config_path);
+    if let Some(p) = path {
+        cmd.arg(p);
+    }
 
     if !log_dir.is_empty() {
         let today = chrono::Local::now().format("%Y-%m-%d");
@@ -1136,11 +1190,15 @@ fn spawn_scan(config_path: &str, log_dir: &str) -> Option<tokio::process::Child>
 
     match cmd.spawn() {
         Ok(c) => {
-            tracing::info!("scheduled scan: started {}", binary.display());
+            tracing::info!(
+                "started {}{}",
+                binary.display(),
+                path.map(|p| format!(" {}", p.display())).unwrap_or_default()
+            );
             Some(c)
         }
         Err(e) => {
-            tracing::warn!("scheduled scan: failed to spawn {}: {e:#}", binary.display());
+            tracing::warn!("failed to spawn {}: {e:#}", binary.display());
             None
         }
     }
@@ -1403,6 +1461,8 @@ mod tests {
             drop(tx);
         });
 
+        let mut rescan_parent_fn = |_: &Path| {};
+
         run_event_loop(
             rx,
             &api,
@@ -1412,9 +1472,51 @@ mod tests {
             &config.scan,
             &None,
             &mut register_dir_fn,
+            &mut rescan_parent_fn,
         ).await.ok();
 
         call_count.load(Ordering::Relaxed)
+    }
+
+    /// Helper: run the event loop against a synthetic event channel, return the
+    /// list of directory paths passed to `rescan_parent` (in call order).
+    async fn run_events_collect_rescans(
+        source_map: &SourceMap,
+        scan: &ScanConfig,
+        events: Vec<notify::Result<notify::Event>>,
+    ) -> Vec<PathBuf> {
+        use std::sync::{Arc, Mutex};
+
+        let api = crate::api::ApiClient::new("http://127.0.0.1:1", "fake-token");
+        let mut register_dir_fn = |_: &Path| {};
+        let rescans = Arc::new(Mutex::new(Vec::new()));
+        let r = Arc::clone(&rescans);
+        let mut rescan_parent_fn = move |p: &Path| { r.lock().unwrap().push(p.to_path_buf()); };
+
+        let (tx, rx) = mpsc::channel(64);
+        for ev in events {
+            tx.send(ev).await.unwrap();
+        }
+        // Drop tx after the batch window so run_event_loop exits cleanly.
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            drop(tx);
+        });
+
+        run_event_loop(
+            rx,
+            &api,
+            source_map,
+            std::time::Duration::from_millis(10),
+            1000,
+            scan,
+            &None,
+            &mut register_dir_fn,
+            &mut rescan_parent_fn,
+        ).await.ok();
+
+        let result = rescans.lock().unwrap().clone();
+        result
     }
 
     /// Regression: on Windows, creating a file inside a watched directory also
@@ -1464,5 +1566,92 @@ mod tests {
 
         assert_eq!(calls, 1,
             "register_dir must be called exactly once for a directory Create event");
+    }
+
+    // ── run_event_loop: .index/.noindex control-file rescan ───────────────────
+
+    fn default_test_scan_config() -> ScanConfig {
+        find_common::config::parse_client_config(
+            "[server]\nurl=\"http://x\"\ntoken=\"t\"\n\
+             [[sources]]\nname=\"s\"\npath=\"/t\"\n\
+             [scan]\nexclude=[]\n",
+        ).unwrap().0.scan
+    }
+
+    /// Creating a `.noindex` file must trigger a rescan one level above its own
+    /// directory (`sub`'s parent), not be indexed as regular file content.
+    /// Rescanning `sub` itself wouldn't work: the walker only evaluates
+    /// `.noindex`/`.index` for non-root entries, so `sub`'s own control file
+    /// must be visited by walking from `sub`'s parent instead.
+    #[tokio::test]
+    async fn noindex_create_triggers_grandparent_rescan() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        let noindex_path = tmp.path().join("sub/.noindex");
+        std::fs::write(&noindex_path, "").unwrap();
+
+        let source_map = make_source_map_raw(&[("test", tmp.path().to_str().unwrap())]);
+        let scan = default_test_scan_config();
+
+        let rescans = run_events_collect_rescans(
+            &source_map,
+            &scan,
+            vec![Ok(notify::Event {
+                kind: notify::EventKind::Create(notify::event::CreateKind::Any),
+                paths: vec![noindex_path],
+                attrs: Default::default(),
+            })],
+        ).await;
+
+        assert_eq!(rescans, vec![tmp.path().to_path_buf()]);
+    }
+
+    /// Deleting a `.index` file must also trigger a rescan — removing an
+    /// include filter can reveal files that were previously excluded.
+    #[tokio::test]
+    async fn index_delete_triggers_grandparent_rescan() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        let index_path = tmp.path().join("sub/.index");
+        // The file no longer exists on disk by the time the event is processed —
+        // this must not prevent the rescan (the ancestor directory still exists).
+
+        let source_map = make_source_map_raw(&[("test", tmp.path().to_str().unwrap())]);
+        let scan = default_test_scan_config();
+
+        let rescans = run_events_collect_rescans(
+            &source_map,
+            &scan,
+            vec![Ok(notify::Event {
+                kind: notify::EventKind::Remove(notify::event::RemoveKind::Any),
+                paths: vec![index_path],
+                attrs: Default::default(),
+            })],
+        ).await;
+
+        assert_eq!(rescans, vec![tmp.path().to_path_buf()]);
+    }
+
+    /// A normal content file must never trigger a parent rescan.
+    #[tokio::test]
+    async fn normal_file_change_does_not_trigger_parent_rescan() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file_path = tmp.path().join("notes.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        let source_map = make_source_map_raw(&[("test", tmp.path().to_str().unwrap())]);
+        let scan = default_test_scan_config();
+
+        let rescans = run_events_collect_rescans(
+            &source_map,
+            &scan,
+            vec![Ok(notify::Event {
+                kind: notify::EventKind::Create(notify::event::CreateKind::Any),
+                paths: vec![file_path],
+                attrs: Default::default(),
+            })],
+        ).await;
+
+        assert!(rescans.is_empty());
     }
 }
