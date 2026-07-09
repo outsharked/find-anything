@@ -106,11 +106,23 @@ Key invariants:
 - **All DB writes go through the inbox worker** — no route handler writes SQLite directly.
 - The bulk route handler only writes a `.gz` file to `data_dir/inbox/` and returns `202 Accepted`.
 - Within a `BulkRequest`, the worker processes **deletes first, then upserts** so renames work correctly.
-- **Phase 1** (worker/request.rs) handles all SQLite writes synchronously. When re-indexing a modified
-  file, it reads the old blob from the content store (via `file_hash`) and issues the FTS5 `'delete'`
-  command for each old line before inserting new content — keeping the contentless FTS5 index clean.
-  Empty lines are skipped in the delete pass (issuing `'delete'` with `""` corrupts FTS5 state).
-  At the end it writes a normalised `.gz` to `inbox/to-archive/` and notifies the archive worker.
+- **Group coalescing (plan 093):** the router dispatches inbox files in bounded *groups*
+  (≤ 32 files / ≤ 8 MiB compressed per group, mtime order). Consecutive same-source requests
+  share one SQLite connection (`SourceSession` in worker/group.rs) with an open transaction
+  committed every 25 write units *across* request boundaries — so a burst of single-file
+  uploads doesn't pay one full commit per request. Groups only contain files already queued
+  at dispatch time; the worker never holds a transaction open waiting for future arrivals.
+  There is still exactly one indexing worker and never concurrent write access to a source DB.
+- **Flush points:** an inbox `.gz` is deleted only after (in order) the COMMIT covering all
+  of its writes, then its normalised to-archive `.gz` is written to disk. The to-archive
+  payload is buffered in memory until the covering COMMIT because phase 2's stale-hash check
+  reads `files.file_hash` — the payload must never be visible before the hash it matches is
+  committed. Crash recovery = reprocess whatever is left in `inbox/` (idempotent).
+- **Phase 1** (worker/request.rs + worker/group.rs) handles all SQLite writes synchronously.
+  When re-indexing a modified file, it reads the old blob from the content store (via `file_hash`)
+  and issues the FTS5 `'delete'` command for each old line before inserting new content —
+  keeping the contentless FTS5 index clean. Empty lines are skipped in the delete pass
+  (issuing `'delete'` with `""` corrupts FTS5 state).
 - **Phase 2** (worker/archive_batch.rs) reads from `to-archive/`, verifies each file's `content_hash`
   matches the current DB record (to skip stale batches), then calls `content_store.put_overwrite(key, blob)`.
   Always overwrites — extraction output may differ even when raw bytes are unchanged (e.g. SCANNER_VERSION bump).
@@ -125,16 +137,24 @@ Inbox processing is split into two phases.
 ```
 router loop (every 1 s)
   → scan inbox/, sort .gz files by mtime
-  → try_send to indexing worker (capacity-1 channel, non-blocking)
+  → form a bounded group (≤32 files / ≤8 MiB compressed)
+  → try_send group to indexing worker (capacity-1 channel, non-blocking)
   → track in-flight paths in HashSet to avoid re-dispatching
 
 Phase 1 — inbox worker (SQLite only, no blob I/O):
-  receive path → spawn_blocking(process_request) with timeout
-    → deletes: read old blob from content_store, issue FTS5 'delete' per old line,
-               delete files rows
-    → upserts: insert/update files table, insert FTS5 rows
-    → write normalised .gz to inbox/to-archive/
-    → signal archive worker via Notify
+  receive group → spawn_blocking(process_group) with timeout
+  per source run (SourceSession: one connection, open transaction):
+    per request:
+      → deletes: read old blob from content_store, issue FTS5 'delete' per old line,
+                 delete files rows
+      → upserts: insert/update files table, insert FTS5 rows
+      → buffer normalised .gz bytes in memory
+    every 25 write units, and at source switch / group end (flush point):
+      → COMMIT
+      → write buffered .gz files to inbox/to-archive/
+      → signal archive worker via Notify
+      → delete covered inbox .gz files
+      → apply stats deltas
 
 Phase 2 — archive worker (blob I/O):
   wait for Notify (or timeout)
@@ -150,8 +170,12 @@ Phase 2 — archive worker (blob I/O):
 ### Timeout
 
 The phase 1 `spawn_blocking` call is wrapped in `tokio::time::timeout`
-(`inbox_request_timeout_secs`, default 1800 s / 30 min). If the blocking
-thread hangs, the worker logs an error and moves the file to `inbox/failed/`.
+(`inbox_request_timeout_secs`, default 1800 s / 30 min), applied per **group**.
+If the blocking thread hangs, the worker interrupts the current SQLite
+connection (via a shared `InterruptHandle` slot refreshed on every session
+open, so the RESERVED write lock is released), logs an error, and moves the
+in-flight file to `inbox/failed/`; already-flushed files are gone from the
+inbox and the rest are retried on the next router tick.
 
 ---
 

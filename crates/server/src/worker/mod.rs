@@ -1,4 +1,5 @@
 mod archive_batch;
+mod group;
 mod pipeline;
 mod request;
 
@@ -141,8 +142,8 @@ pub async fn start_inbox_worker(
 
     let archive_notify = Arc::new(tokio::sync::Notify::new());
 
-    // Channel from router → worker (capacity 1: at most one file buffered ahead).
-    let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<PathBuf>(1);
+    // Channel from router → worker (capacity 1: at most one group buffered ahead).
+    let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<Vec<PathBuf>>(1);
     // Channel from worker → router: signals that a path is no longer in-flight.
     let (done_tx, done_rx) = tokio::sync::mpsc::channel::<PathBuf>(64);
 
@@ -151,36 +152,35 @@ pub async fn start_inbox_worker(
         let data_dir = data_dir.clone();
         let failed_dir = failed_dir.clone();
         let to_archive_dir_clone = to_archive_dir.clone();
-        let status = status.clone();
-        let archive_notify = Arc::clone(&archive_notify);
-        let cfg_index = cfg.clone();
-        let content_store_index = Arc::clone(&content_store);
-        let inbox_paused_index = Arc::clone(&inbox_paused);
-        let consecutive_timeouts_index = Arc::clone(&consecutive_timeouts);
+        let handles = group::IndexerHandles {
+            phase1: group::Phase1Handles {
+                status: status.clone(),
+                cfg: cfg.clone(),
+                recent_tx,
+                stats_watch,
+                content_store: Arc::clone(&content_store),
+                source_stats_cache,
+                archive_notify: Arc::clone(&archive_notify),
+            },
+            inbox_paused: Arc::clone(&inbox_paused),
+            consecutive_timeouts: Arc::clone(&consecutive_timeouts),
+        };
 
         tokio::spawn(async move {
             tracing::debug!("Indexing worker started");
-            let handles = request::IndexerHandles {
-                status,
-                cfg: cfg_index,
-                archive_notify,
-                recent_tx,
-                source_stats_cache,
-                content_store: content_store_index,
-                stats_watch,
-                inbox_paused: inbox_paused_index,
-                consecutive_timeouts: consecutive_timeouts_index,
-            };
-            while let Some(path) = work_rx.recv().await {
-                let ctx = request::RequestContext {
+            while let Some(paths) = work_rx.recv().await {
+                let ctx = group::GroupContext {
                     data_dir: data_dir.clone(),
-                    request_path: path.clone(),
+                    paths: paths.clone(),
                     failed_dir: failed_dir.clone(),
                     to_archive_dir: to_archive_dir_clone.clone(),
                 };
-                request::process_request_async(&ctx, &handles).await;
-                // Signal the router that this path is done (success or failure).
-                let _ = done_tx.send(path).await;
+                group::process_group_async(ctx, &handles).await;
+                // Signal the router that these paths are done (whatever the
+                // outcome: flushed, failed, or left in inbox for rediscovery).
+                for path in paths {
+                    let _ = done_tx.send(path).await;
+                }
             }
             tracing::debug!("Indexing worker exited");
         });
@@ -285,30 +285,40 @@ pub async fn start_inbox_worker(
             }
         };
 
-        let mut gz_files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+        let mut gz_files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if path.extension() == Some(OsStr::new("gz")) {
-                let mtime = entry.metadata().await
-                    .ok()
+                let meta = entry.metadata().await.ok();
+                let mtime = meta.as_ref()
                     .and_then(|m| m.modified().ok())
                     .unwrap_or(std::time::UNIX_EPOCH);
-                gz_files.push((mtime, path));
+                let size = meta.map(|m| m.len()).unwrap_or(0);
+                gz_files.push((mtime, size, path));
             }
         }
-        gz_files.sort_unstable_by_key(|(mtime, _)| *mtime);
+        gz_files.sort_unstable_by_key(|(mtime, _, _)| *mtime);
 
         if inbox_paused.load(Ordering::Relaxed) {
             continue;
         }
 
-        for (_, inbox_path) in gz_files {
-            if in_flight.contains(&inbox_path) {
-                continue;
-            }
-            match work_tx.try_send(inbox_path.clone()) {
+        let candidates: Vec<(u64, PathBuf)> = gz_files
+            .into_iter()
+            .filter(|(_, _, p)| !in_flight.contains(p))
+            .map(|(_, size, p)| (size, p))
+            .collect();
+
+        let mut remaining = candidates.as_slice();
+        while !remaining.is_empty() {
+            let group_paths = form_group(remaining);
+            let n = group_paths.len();
+            match work_tx.try_send(group_paths.clone()) {
                 Ok(()) => {
-                    in_flight.insert(inbox_path);
+                    for p in group_paths {
+                        in_flight.insert(p);
+                    }
+                    remaining = &remaining[n..];
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     break;
@@ -319,6 +329,73 @@ pub async fn start_inbox_worker(
                 }
             }
         }
+    }
+}
+
+/// Take a bounded prefix of the pending inbox files (mtime order) as one
+/// dispatch group. Caps: `MAX_GROUP_REQUESTS` files or `MAX_GROUP_GZ_BYTES`
+/// of compressed input, whichever comes first — but always at least one
+/// file, so an oversized request degrades to a group of one (today's
+/// one-at-a-time behavior).
+fn form_group(candidates: &[(u64, PathBuf)]) -> Vec<PathBuf> {
+    let mut group = Vec::new();
+    let mut bytes: u64 = 0;
+    for (size, path) in candidates {
+        if !group.is_empty()
+            && (group.len() >= group::MAX_GROUP_REQUESTS || bytes + size > group::MAX_GROUP_GZ_BYTES)
+        {
+            break;
+        }
+        group.push(path.clone());
+        bytes += size;
+    }
+    group
+}
+
+#[cfg(test)]
+mod group_dispatch_tests {
+    use super::*;
+
+    fn p(name: &str) -> PathBuf {
+        PathBuf::from(format!("/inbox/{name}.gz"))
+    }
+
+    #[test]
+    fn form_group_takes_all_when_under_caps() {
+        let candidates = vec![(100u64, p("a")), (100, p("b")), (100, p("c"))];
+        assert_eq!(form_group(&candidates).len(), 3);
+    }
+
+    #[test]
+    fn form_group_caps_request_count() {
+        let candidates: Vec<(u64, PathBuf)> =
+            (0..group::MAX_GROUP_REQUESTS + 10).map(|i| (10u64, p(&format!("f{i}")))).collect();
+        assert_eq!(form_group(&candidates).len(), group::MAX_GROUP_REQUESTS);
+    }
+
+    #[test]
+    fn form_group_caps_total_bytes() {
+        let half = group::MAX_GROUP_GZ_BYTES / 2 + 1;
+        let candidates = vec![(half, p("a")), (half, p("b")), (half, p("c"))];
+        assert_eq!(form_group(&candidates).len(), 1, "second file would exceed the byte cap");
+    }
+
+    #[test]
+    fn form_group_always_takes_at_least_one() {
+        let candidates = vec![(group::MAX_GROUP_GZ_BYTES * 10, p("huge"))];
+        assert_eq!(form_group(&candidates).len(), 1);
+    }
+
+    #[test]
+    fn form_group_preserves_input_order() {
+        let candidates = vec![(1u64, p("first")), (1, p("second")), (1, p("third"))];
+        let group = form_group(&candidates);
+        assert_eq!(group, vec![p("first"), p("second"), p("third")]);
+    }
+
+    #[test]
+    fn form_group_empty_input() {
+        assert!(form_group(&[]).is_empty());
     }
 }
 

@@ -337,9 +337,11 @@ pub fn log_activity(
     if added.is_empty() && modified.is_empty() && deleted.is_empty() && renamed.is_empty() {
         return Ok(());
     }
-    let tx = conn.unchecked_transaction()?;
+    // Only open an inner transaction when in autocommit mode; when the caller
+    // already holds one (group-coalesced phase 1), run inside it directly.
+    let tx = if conn.is_autocommit() { Some(conn.unchecked_transaction()?) } else { None };
     {
-        let mut stmt = tx.prepare_cached(
+        let mut stmt = conn.prepare_cached(
             "INSERT INTO activity_log (occurred_at, action, path, new_path) VALUES (?1, ?2, ?3, ?4)"
         )?;
         for path in added    { if !is_composite(path) { stmt.execute(params![now, "added",    path, None::<&str>])?; } }
@@ -354,13 +356,13 @@ pub fn log_activity(
     // Prune to max_entries, keeping the most recent rows.  Since IDs are
     // monotonically increasing with a single worker, ORDER BY id ≈ ORDER BY occurred_at.
     if max_entries > 0 {
-        tx.execute(
+        conn.execute(
             "DELETE FROM activity_log WHERE id NOT IN \
              (SELECT id FROM activity_log ORDER BY id DESC LIMIT ?1)",
             params![max_entries as i64],
         )?;
     }
-    tx.commit()?;
+    if let Some(tx) = tx { tx.commit()?; }
     Ok(())
 }
 
@@ -496,7 +498,9 @@ pub fn delete_files(
 }
 
 /// Delete one path (outer + inner archive members). No canonical promotion in v3.
-fn delete_one_path_simple(tx: &rusqlite::Transaction, path: &str) -> Result<()> {
+/// Takes `&Connection` so callers can pass either a `Transaction` (derefs) or a
+/// connection with an already-open transaction.
+fn delete_one_path_simple(tx: &Connection, path: &str) -> Result<()> {
     let outer_id: Option<i64> = tx.query_row(
         "SELECT id FROM files WHERE path = ?1",
         params![path],
@@ -516,8 +520,9 @@ fn delete_one_path_simple(tx: &rusqlite::Transaction, path: &str) -> Result<()> 
     Ok(())
 }
 
-/// Run singleton-duplicate cleanup inside an existing transaction.
-fn cleanup_singleton_duplicates_tx(tx: &rusqlite::Transaction) -> Result<()> {
+/// Run singleton-duplicate cleanup inside the caller's transaction (or in
+/// autocommit mode if none is open).
+fn cleanup_singleton_duplicates_tx(tx: &Connection) -> Result<()> {
     tx.execute(
         "DELETE FROM duplicates
          WHERE file_hash IN (
@@ -547,12 +552,14 @@ pub struct DeleteDelta {
 pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<DeleteDelta> {
     let mut delta = DeleteDelta { files_removed: 0, size_removed: 0, by_kind: HashMap::new() };
 
-    let tx = conn.unchecked_transaction()?;
+    // Only open an inner transaction when in autocommit mode; when the caller
+    // already holds one (group-coalesced phase 1), run inside it directly.
+    let tx = if conn.is_autocommit() { Some(conn.unchecked_transaction()?) } else { None };
 
     for path in paths {
         // Composite paths (archive members) don't appear in outer-file stats.
         if !is_composite(path) {
-            let row: Option<(i64, String)> = tx.query_row(
+            let row: Option<(i64, String)> = conn.query_row(
                 "SELECT COALESCE(size,0), kind FROM files WHERE path = ?1",
                 params![path],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -566,18 +573,18 @@ pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<Delete
                 e.1 += size;
             }
         }
-        delete_one_path_simple(&tx, path)?;
-        tx.execute("DELETE FROM indexing_errors WHERE path = ?1", params![path])?;
-        tx.execute(
+        delete_one_path_simple(conn, path)?;
+        conn.execute("DELETE FROM indexing_errors WHERE path = ?1", params![path])?;
+        conn.execute(
             "DELETE FROM indexing_errors WHERE path LIKE ?1",
             params![format!("{}::%", path)],
         )?;
     }
 
     // Clean up singleton duplicates.
-    cleanup_singleton_duplicates_tx(&tx)?;
+    cleanup_singleton_duplicates_tx(conn)?;
 
-    tx.commit()?;
+    if let Some(tx) = tx { tx.commit()?; }
     Ok(delta)
 }
 
@@ -587,10 +594,12 @@ pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<Delete
 /// Also updates FTS line_number=0 entries (filename search lines).
 /// No ZIP operations needed — chunk names are now {block_id}.{N} and are path-independent.
 pub fn rename_files(conn: &Connection, renames: &[PathRename]) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    // Only open an inner transaction when in autocommit mode; when the caller
+    // already holds one (group-coalesced phase 1), run inside it directly.
+    let tx = if conn.is_autocommit() { Some(conn.unchecked_transaction()?) } else { None };
     for rename in renames {
         // Check old path exists
-        let file_id: Option<i64> = tx.query_row(
+        let file_id: Option<i64> = conn.query_row(
             "SELECT id FROM files WHERE path = ?1",
             params![rename.old_path],
             |r| r.get(0),
@@ -598,7 +607,7 @@ pub fn rename_files(conn: &Connection, renames: &[PathRename]) -> Result<()> {
         let Some(file_id) = file_id else { continue; };
 
         // Skip if new path already exists (race with periodic scan)
-        let new_exists: bool = tx.query_row(
+        let new_exists: bool = conn.query_row(
             "SELECT COUNT(*) FROM files WHERE path = ?1",
             params![rename.new_path],
             |r| r.get::<_, i64>(0),
@@ -609,7 +618,7 @@ pub fn rename_files(conn: &Connection, renames: &[PathRename]) -> Result<()> {
         }
 
         // Update the file's path
-        tx.execute(
+        conn.execute(
             "UPDATE files SET path = ?1 WHERE path = ?2",
             params![rename.new_path, rename.old_path],
         )?;
@@ -617,7 +626,7 @@ pub fn rename_files(conn: &Connection, renames: &[PathRename]) -> Result<()> {
         // Update archive member paths: old_path::member → new_path::member
         let old_prefix = format!("{}::", rename.old_path);
         let new_prefix = format!("{}::", rename.new_path);
-        tx.execute(
+        conn.execute(
             "UPDATE files SET path = ?1 || substr(path, length(?2) + 1) WHERE path LIKE ?3",
             params![new_prefix, old_prefix, format!("{}%", old_prefix)],
         )?;
@@ -626,18 +635,18 @@ pub fn rename_files(conn: &Connection, renames: &[PathRename]) -> Result<()> {
         // In v3, the FTS rowid for line_number=0 is encode_fts_rowid(file_id, 0).
         let rowid0 = crate::db::encode_fts_rowid(file_id, 0);
         // Delete old FTS entry for line 0
-        tx.execute(
+        conn.execute(
             "INSERT INTO lines_fts(lines_fts, rowid, content) VALUES('delete', ?1, ?2)",
             params![rowid0, rename.old_path],
         )?;
         // Insert new FTS entry for line 0
-        tx.execute(
+        conn.execute(
             "INSERT INTO lines_fts(rowid, content) VALUES(?1, ?2)",
             params![rowid0, rename.new_path],
         )?;
 
     }
-    tx.commit()?;
+    if let Some(tx) = tx { tx.commit()?; }
     Ok(())
 }
 
@@ -908,6 +917,44 @@ mod tests {
             params![path],
             |r| r.get::<_, i64>(0),
         ).unwrap_or(0) > 0
+    }
+
+    // ── Transaction-nesting safety (group-coalesced phase 1, plan 093) ────────
+    // These helpers are called inside an already-open transaction by the group
+    // worker; they must not try to BEGIN their own.
+
+    #[test]
+    fn delete_files_phase1_works_inside_open_transaction() {
+        let conn = test_conn();
+        insert_file(&conn, "doomed.txt", 1000, &["doomed.txt", "bye"]);
+        conn.execute_batch("BEGIN").unwrap();
+        delete_files_phase1(&conn, &["doomed.txt".to_string()]).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        assert!(!file_exists(&conn, "doomed.txt"));
+    }
+
+    #[test]
+    fn rename_files_works_inside_open_transaction() {
+        let conn = test_conn();
+        insert_file(&conn, "a.txt", 1000, &["a.txt", "content"]);
+        conn.execute_batch("BEGIN").unwrap();
+        rename_files(&conn, &[PathRename {
+            old_path: "a.txt".to_string(),
+            new_path: "b.txt".to_string(),
+        }]).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        assert!(!file_exists(&conn, "a.txt"));
+        assert!(file_exists(&conn, "b.txt"));
+    }
+
+    #[test]
+    fn log_activity_works_inside_open_transaction() {
+        let conn = test_conn();
+        conn.execute_batch("BEGIN").unwrap();
+        log_activity(&conn, 1000, &["x.txt".to_string()], &[], &[], &[], 100).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM activity_log", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 
     // ── delete_files_phase1 ────────────────────────────────────────────────────

@@ -102,12 +102,23 @@ Key invariants:
   SQLite directly. This eliminates write contention entirely.
 - The bulk route handler only writes a `.gz` file to `data_dir/inbox/` and
   returns `202 Accepted` immediately.
-- The worker processes inbox files sequentially (one at a time), so there is
-  never concurrent write access to a source database.
+- The worker processes inbox files sequentially in bounded **groups** (≤32 files /
+  ≤8 MiB compressed per group). Consecutive same-source requests share one SQLite
+  connection (`SourceSession` in `worker/group.rs`) and commit every 25 write units
+  across request boundaries, so single-file upload bursts don't pay one commit per
+  request. Groups only contain files already queued at dispatch time — no transaction
+  is ever held open waiting for future arrivals. There is still exactly one indexing
+  worker and never concurrent write access to a source database.
+- An inbox `.gz` is deleted only at a **flush point**: after the COMMIT covering all
+  of its writes and after its normalised to-archive `.gz` is written to disk (the
+  payload is buffered in memory until then — phase 2's stale-hash check reads
+  `files.file_hash`, so the payload must not be visible before its hash is committed).
+  Crash recovery = reprocess whatever is left in `inbox/` (idempotent).
 - Within a `BulkRequest`, the worker processes **deletes first, then upserts**,
   so renames (path in both lists) are handled correctly.
-- **Phase 1** (request.rs) handles all SQLite work synchronously. At the end it
-  writes a normalised `.gz` to `inbox/to-archive/` and notifies the archive worker.
+- **Phase 1** (request.rs + group.rs) handles all SQLite work synchronously. At each
+  flush point it writes the buffered normalised `.gz` files to `inbox/to-archive/` and
+  notifies the archive worker.
   When re-indexing a modified file, Phase 1 reads the old blob from the content store
   (via `file_hash`) and issues the FTS5 `'delete'` command for each old line before
   inserting new content — keeping the contentless FTS5 index clean. Empty lines are
@@ -278,7 +289,9 @@ so large file chunks (>2 MB) are accepted without 413 errors.
 | `crates/extract-types/src/extractor_config.rs` | `ExtractorConfig` (max_content_kb, ffprobe_path, etc.) |
 | `crates/content-store/src/store.rs` | `ContentStore` trait |
 | `crates/content-store/src/sqlite_store/mod.rs` | `SqliteContentStore` — blobs.db implementation |
-| `crates/server/src/worker.rs` | Inbox polling loop + phase 1 request processing |
+| `crates/server/src/worker/mod.rs` | Inbox polling loop, group dispatch |
+| `crates/server/src/worker/group.rs` | Group coalescing: `SourceSession` (shared transaction + flush points), group loop, timeout wrapper |
+| `crates/server/src/worker/request.rs` | Phase 1 per-request processing (deletes, renames, upserts, FTS) |
 | `crates/server/src/worker/archive_batch.rs` | Phase 2: reads to-archive/ gz, stores blobs in content_store |
 | `crates/server/src/db.rs` | All SQLite operations |
 | `crates/server/src/routes/mod.rs` | HTTP route helpers + shared auth/path utilities |
