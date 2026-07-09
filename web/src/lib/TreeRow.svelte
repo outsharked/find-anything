@@ -7,19 +7,23 @@
 	import { liveEvent } from '$lib/liveUpdates';
 	import { keyboardCursorPath } from '$lib/treeStore';
 	import { getCachedDir, setCachedDir, prefetchTreePath } from '$lib/treeCache';
+	import { eventMatchesPrefix, computeRefreshWait } from '$lib/treeRowLogic';
 
 	let {
 		source,
 		entry,
 		activePath = null,
 		depth = 0,
-		onOpen
+		onOpen,
+		liveRefreshIntervalMs = 1000
 	}: {
 		source: string;
 		entry: DirEntry;
 		activePath?: string | null;
 		depth?: number;
 		onOpen?: (detail: { source: string; path: string; kind: string; archivePath?: string }) => void;
+		/** Minimum time between silent refreshes triggered by live index events (see effect below). */
+		liveRefreshIntervalMs?: number;
 	} = $props();
 
 	let expanded = $state(false);
@@ -57,15 +61,20 @@
 	let myPrefix = $derived(entry.entry_type === 'dir' ? entry.path : null);
 
 	// React to live index events: silently refresh children when this expanded
-	// directory is an ancestor of a changed file. Checking ancestors (not just
-	// the immediate parent) ensures a new subdirectory becomes visible in its
-	// parent's listing even though the SSE path points deeper (e.g.
-	// "dir/newsubdir/file.txt" must trigger a refresh of "dir/").
+	// directory is an ancestor of a changed file. Throttled (trailing edge) —
+	// see treeRowLogic.ts for why a plain debounce doesn't work here.
+	let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+	let lastRefreshAt = 0;
+
 	$effect(() => {
-		if ($liveEvent && myPrefix && expanded && $liveEvent.source === source) {
-			const ev = $liveEvent;
-			if (ev.path.startsWith(myPrefix) || (ev.new_path && ev.new_path.startsWith(myPrefix))) {
-				silentRefresh();
+		if ($liveEvent && myPrefix && expanded && $liveEvent.source === source && !refreshTimer) {
+			if (eventMatchesPrefix($liveEvent, myPrefix)) {
+				const wait = computeRefreshWait(lastRefreshAt, Date.now(), liveRefreshIntervalMs);
+				refreshTimer = setTimeout(() => {
+					refreshTimer = null;
+					lastRefreshAt = Date.now();
+					silentRefresh();
+				}, wait);
 			}
 		}
 	});
@@ -188,6 +197,7 @@
 							activePath={activePath}
 							depth={depth + 1}
 							{onOpen}
+							{liveRefreshIntervalMs}
 						/>
 					{/each}
 				</ul>
