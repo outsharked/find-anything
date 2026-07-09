@@ -11,233 +11,40 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use rusqlite::ErrorCode;
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use tokio::sync::broadcast;
+use std::path::Path;
 
 use find_common::api::{BulkRequest, IndexingFailure, RecentAction, RecentFile};
 use find_common::path::is_composite;
-use find_content_store::ContentStore;
 
 use crate::db;
 use crate::normalize;
 
-use super::{StatusHandle, WorkerConfig, timed, warn_slow};
+use super::{timed, warn_slow};
 use super::pipeline;
 
-/// How many files' phase1 savepoints to accumulate into one SQLite
-/// transaction before committing. Each commit rewrites WAL frames and
-/// interior btree pages of the source DB; on a multi-GB DB, committing after
-/// every single file (as opposed to a batch of them) is the dominant cost
-/// when many small files are indexed one at a time.
-const PHASE1_BATCH_SIZE: usize = 25;
+// ── Group-coalesced per-request processing (plan 093) ──────────────────────────
 
-// ── Context structs ─────────────────────────────────────────────────────────────
-
-/// Per-request path context for `process_request_async`.
-pub(super) struct RequestContext {
-    pub data_dir:       PathBuf,
-    pub request_path:   PathBuf,
-    pub failed_dir:     PathBuf,
-    pub to_archive_dir: PathBuf,
-}
-
-/// Worker-lifetime handles passed by reference to every `process_request_async` call.
-pub(super) struct IndexerHandles {
-    pub status:              StatusHandle,
-    pub cfg:                 WorkerConfig,
-    pub archive_notify:      Arc<tokio::sync::Notify>,
-    pub recent_tx:           broadcast::Sender<RecentFile>,
-    pub source_stats_cache:  Arc<std::sync::RwLock<crate::stats_cache::SourceStatsCache>>,
-    pub stats_watch:         Arc<tokio::sync::watch::Sender<u64>>,
-    pub content_store:       Arc<dyn ContentStore>,
-    /// Shared flag used to pause inbox processing.  Set to `true` by the
-    /// circuit breaker when consecutive timeouts reach the configured limit.
-    pub inbox_paused:        Arc<AtomicBool>,
-    /// Counts consecutive timeouts for the circuit-breaker check.
-    pub consecutive_timeouts: Arc<AtomicU32>,
-}
-
-// ── Public entry point ─────────────────────────────────────────────────────────
-
-/// Async wrapper: runs `process_request_phase1` in a blocking task with a
-/// configurable timeout, then moves the file to `failed/` on error.
+/// Process one decoded request against an open `SourceSession`.
 ///
-/// When the timeout fires, we call `sqlite3_interrupt` on the connection opened
-/// inside the blocking task (via a oneshot channel that carries the
-/// `InterruptHandle` back to us as soon as the connection is ready).  This
-/// causes any in-progress SQLite call on that connection to return
-/// `SQLITE_INTERRUPT`, which unblocks the thread and allows it to drop the
-/// connection — releasing whatever write lock it was holding.  Without the
-/// interrupt, a detached blocking task holding a SQLite RESERVED lock would
-/// cause every subsequent write to the same source DB to block for the full
-/// `busy_timeout` before failing, cascading into every subsequent request also
-/// timing out.
-pub(super) async fn process_request_async(
-    ctx: &RequestContext,
-    handles: &IndexerHandles,
-) {
-    let status_reset = handles.status.clone();
-    let request_timeout = handles.cfg.request_timeout;
-
-    // The blocking task sends back the interrupt handle as soon as it opens the
-    // SQLite connection, before doing any work that could block.
-    let (interrupt_tx, mut interrupt_rx) =
-        tokio::sync::oneshot::channel::<rusqlite::InterruptHandle>();
-
-    let blocking_task = tokio::task::spawn_blocking({
-        let data_dir = ctx.data_dir.clone();
-        let request_path = ctx.request_path.clone();
-        let to_archive_dir = ctx.to_archive_dir.clone();
-        let status = handles.status.clone();
-        let cfg = handles.cfg.clone();
-        let recent_tx = handles.recent_tx.clone();
-        let stats_watch = Arc::clone(&handles.stats_watch);
-        let content_store = Arc::clone(&handles.content_store);
-        move || process_request_phase1(interrupt_tx, &data_dir, &request_path, &to_archive_dir, &status, cfg, &recent_tx, &stats_watch, &content_store)
-    });
-
-    let timed_result = tokio::time::timeout(request_timeout, blocking_task).await;
-
-    if let Ok(mut guard) = status_reset.lock() {
-        *guard = find_common::api::WorkerStatus::Idle;
-    }
-
-    match timed_result {
-        Err(_timeout) => {
-            // Interrupt the stuck SQLite connection so the detached blocking
-            // thread unblocks, rolls back its transaction, and drops the
-            // connection — releasing any RESERVED lock on the source DB.
-            if let Ok(handle) = interrupt_rx.try_recv() {
-                handle.interrupt();
-                tracing::warn!(
-                    "Interrupted SQLite connection for timed-out request: {}",
-                    ctx.request_path.display(),
-                );
-            }
-            tracing::error!(
-                "Request processing timed out after {}s, abandoning: {}",
-                request_timeout.as_secs(),
-                ctx.request_path.display(),
-            );
-            handle_failure(
-                &ctx.request_path,
-                &ctx.failed_dir,
-                anyhow::anyhow!("Processing timed out after {}s", request_timeout.as_secs()),
-            )
-            .await;
-
-            // Circuit breaker: if consecutive timeouts reach the configured
-            // limit, auto-pause the inbox and send an alert email.
-            let limit = handles.cfg.consecutive_timeout_limit;
-            if limit > 0 {
-                let count = handles.consecutive_timeouts.fetch_add(1, Ordering::Relaxed) + 1;
-                if count >= limit {
-                    handles.inbox_paused.store(true, Ordering::Relaxed);
-                    tracing::error!(
-                        "Inbox worker auto-paused after {count} consecutive processing timeouts. \
-                         Manual intervention required. \
-                         Use `find-admin inbox resume` or POST /api/v1/admin/inbox/resume to restart."
-                    );
-                    crate::alerts::send_inbox_paused_alert(
-                        &handles.cfg.alerts,
-                        count,
-                        request_timeout.as_secs(),
-                    );
-                }
-            }
-        }
-        Ok(Ok(Ok(delta))) => {
-            // Success: reset the consecutive timeout counter.
-            handles.consecutive_timeouts.store(0, Ordering::Relaxed);
-
-            // The normalized .gz was already written to to-archive/ by the blocking task.
-            // Delete the original from inbox/.
-            if let Err(e) = tokio::fs::remove_file(&ctx.request_path).await {
-                tracing::error!(
-                    "Failed to delete processed request {}: {}",
-                    ctx.request_path.display(),
-                    e
-                );
-            } else {
-                tracing::debug!("Phase 1 complete, queued for archive: {}", ctx.request_path.display());
-                handles.archive_notify.notify_one();
-            }
-            // Apply incremental stats delta to the cache.
-            if let Ok(mut guard) = handles.source_stats_cache.write() {
-                guard.apply_delta(&delta);
-            }
-            handles.stats_watch.send_modify(|v| *v = v.wrapping_add(1));
-        }
-        Ok(Ok(Err(e))) => {
-            if is_db_locked(&e) {
-                // File is still in inbox/ — the router will rediscover and
-                // retry it on the next scan tick.  Do not touch the timeout
-                // counter: a lock error is a transient condition, not a sign
-                // the worker has recovered or is stuck for 1800s.
-                tracing::warn!(
-                    "Database locked while processing {}, will retry: {e:#}",
-                    ctx.request_path.display(),
-                );
-            } else {
-                // Non-lock error resolved quickly — reset the timeout counter.
-                handles.consecutive_timeouts.store(0, Ordering::Relaxed);
-                handle_failure(&ctx.request_path, &ctx.failed_dir, e).await;
-            }
-        }
-        Ok(Err(e)) => {
-            // Blocking task panic or join error — reset the timeout counter.
-            handles.consecutive_timeouts.store(0, Ordering::Relaxed);
-            handle_failure(
-                &ctx.request_path,
-                &ctx.failed_dir,
-                anyhow::anyhow!("Task error: {}", e),
-            )
-            .await;
-        }
-    }
-}
-
-// ── Phase 1: synchronous request processing ───────────────────────────────────
-
-/// Phase 1: process a single inbox request — SQLite only, no content store I/O.
-/// Writes a normalized `.gz` to `to_archive_dir` for the archive phase.
+/// SQLite writes land in the session's open transaction; commit cadence is
+/// driven through `session.add_units_and_maybe_commit`. The normalized
+/// to-archive payload is *buffered* (gzipped bytes) and only written to disk
+/// by the session at the flush point after the covering COMMIT — phase 2's
+/// stale-hash check reads `files.file_hash` from the source DB, so the
+/// payload must never be visible before the hash it matches is committed.
 ///
-/// `interrupt_tx` is a oneshot sender that carries the `InterruptHandle` for
-/// the source-DB connection back to the async side.  It is sent immediately
-/// after the connection is opened and before any SQLite work begins, so that
-/// if the async timeout fires it can call `interrupt()` to unblock this thread.
-#[allow(clippy::too_many_arguments)]
-fn process_request_phase1(
-    interrupt_tx: tokio::sync::oneshot::Sender<rusqlite::InterruptHandle>,
-    data_dir: &Path,
+/// On success the request is registered via `session.request_done` (inbox gz
+/// deletion is likewise deferred to the flush point).
+pub(super) fn process_one_request(
+    session: &mut super::group::SourceSession,
+    mut request: BulkRequest,
     request_path: &Path,
     to_archive_dir: &Path,
-    status: &StatusHandle,
-    cfg: WorkerConfig,
-    recent_tx: &tokio::sync::broadcast::Sender<RecentFile>,
-    stats_watch: &Arc<tokio::sync::watch::Sender<u64>>,
-    content_store: &Arc<dyn ContentStore>,
-) -> Result<crate::stats_cache::SourceStatsDelta> {
+    compressed_bytes: usize,
+    h: &super::group::Phase1Handles,
+) -> Result<()> {
     let request_start = std::time::Instant::now();
-
-    // Use a placeholder tag until we've parsed the request.
     let req_stem = request_path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
-    let pre_tag = format!("[indexer:?:{req_stem}]");
-
-    // Bug fix: stream directly from disk rather than reading the whole gz into
-    // a Vec<u8> and then decompressing into a String before parsing.  This
-    // keeps only the parsed BulkRequest in memory — no intermediate buffers.
-    let compressed_bytes = std::fs::metadata(request_path)
-        .map(|m| m.len() as usize)
-        .unwrap_or(0);
-    let mut request: BulkRequest = timed!(pre_tag, "read+decode gz", {
-        let file = std::fs::File::open(request_path)?;
-        let decoder = GzDecoder::new(BufReader::new(file));
-        serde_json::from_reader(decoder)
-            .context("parsing bulk request JSON")?
-    });
 
     let n_files = request.files.len();
     let n_deletes = request.delete_paths.len();
@@ -257,34 +64,26 @@ fn process_request_phase1(
     };
 
     // Signal batch start so the live status view shows Processing immediately.
-    if let Ok(mut guard) = status.lock() {
+    if let Ok(mut guard) = h.status.lock() {
         *guard = find_common::api::WorkerStatus::Processing {
             source: request.source.clone(),
             file: format!("(0/{n_files})"),
         };
     }
-    stats_watch.send_modify(|v| *v = v.wrapping_add(1));
+    h.stats_watch.send_modify(|v| *v = v.wrapping_add(1));
 
     tracing::debug!("{tag} start: {} files, {} deletes, {} renames", n_files, n_deletes, n_renames);
 
-    let db_path = data_dir.join("sources").join(format!("{}.db", request.source));
-    let mut conn = timed!(tag, "open db", { db::open(&db_path)? });
-
-    // Send the interrupt handle to the async side so it can unblock us if the
-    // request timeout fires.  Errors are ignored: if the receiver was dropped
-    // (timeout already fired before we opened the connection), this is a no-op.
-    let _ = interrupt_tx.send(conn.get_interrupt_handle());
-
-    // Process deletes (SQLite only — orphaned ZIP chunks cleaned up by compaction).
+    // Process deletes (SQLite only — orphaned chunks cleaned up by compaction).
     if !request.delete_paths.is_empty() {
-        if let Ok(mut guard) = status.lock() {
+        if let Ok(mut guard) = h.status.lock() {
             *guard = find_common::api::WorkerStatus::Processing {
                 source: request.source.clone(),
                 file: format!("(deleting {} files)", n_deletes),
             };
         }
         let delete_delta = timed!(tag, format!("delete {} paths", n_deletes), {
-            db::delete_files_phase1(&conn, &request.delete_paths)?
+            db::delete_files_phase1(&session.conn, &request.delete_paths)?
         });
         delta.files_delta -= delete_delta.files_removed;
         delta.size_delta  -= delete_delta.size_removed;
@@ -298,7 +97,7 @@ fn process_request_phase1(
     // Process renames after deletes, before upserts.
     if !request.rename_paths.is_empty() {
         timed!(tag, format!("rename {} paths", n_renames), {
-            db::rename_files(&conn, &request.rename_paths)?
+            db::rename_files(&session.conn, &request.rename_paths)?
         });
     }
 
@@ -307,10 +106,10 @@ fn process_request_phase1(
     let mut activity_added: Vec<String> = Vec::new();
     let mut activity_modified: Vec<String> = Vec::new();
 
-    // Bug fix: take ownership of the files vec before the loop so each file is
-    // consumed by value — no clone of lines for normalization and no clone when
-    // pushing to normalized_files.  request.files becomes empty here; all other
-    // request fields (source, delete_paths, etc.) remain accessible below.
+    // Take ownership of the files vec so each file is consumed by value — no
+    // clone of lines for normalization and no clone when pushing to
+    // normalized_files.  request.files becomes empty here; all other request
+    // fields (source, delete_paths, etc.) remain accessible below.
     let mut files_owned = std::mem::take(&mut request.files);
     let mut normalized_files: Vec<find_common::api::IndexFile> = Vec::with_capacity(files_owned.len());
 
@@ -325,7 +124,7 @@ fn process_request_phase1(
                 .filter(|(_, f)| f.kind.is_text_like())
                 .map(|(i, f)| (i, f.path.clone(), std::mem::take(&mut f.lines)))
                 .collect();
-        normalize::normalize_batch_indexed(&mut to_normalize, &cfg.normalization);
+        normalize::normalize_batch_indexed(&mut to_normalize, &h.cfg.normalization);
         for (i, _, lines) in to_normalize {
             files_owned[i].lines = lines;
         }
@@ -334,21 +133,11 @@ fn process_request_phase1(
 
     tracing::debug!("{tag} → index {} files", n_files);
     let index_loop_start = std::time::Instant::now();
-    // Batch phase1's per-file savepoints into one SQLite transaction every
-    // PHASE1_BATCH_SIZE files instead of committing after each one — each
-    // commit rewrites WAL frames and interior btree pages of the source DB,
-    // which on a multi-GB DB dominates write volume when many small files are
-    // indexed individually (see CHANGELOG). process_file_phase1 still uses a
-    // per-file savepoint internally, so one bad file only rolls back its own
-    // savepoint, not the rest of the batch already accumulated in this
-    // transaction.
-    let batched = !files_owned.is_empty();
-    if batched {
-        conn.execute_batch("BEGIN")?;
-    }
-    let mut since_commit = 0usize;
+    // process_file_phase1 uses a per-file savepoint internally, so one bad
+    // file only rolls back its own savepoint, not the rest of the work
+    // already accumulated in the session's transaction.
     for file in files_owned {
-        if let Ok(mut guard) = status.lock() {
+        if let Ok(mut guard) = h.status.lock() {
             *guard = find_common::api::WorkerStatus::Processing {
                 source: request.source.clone(),
                 file: file.path.clone(),
@@ -356,7 +145,7 @@ fn process_request_phase1(
         }
         let file_start = std::time::Instant::now();
 
-        match pipeline::process_file_phase1(&mut conn, &file, Some(content_store.as_ref())) {
+        match pipeline::process_file_phase1(&mut session.conn, &file, Some(h.content_store.as_ref())) {
             Ok(outcome) => {
                 successfully_indexed.push(file.path.clone());
                 if file.mtime != 0 && !is_composite(&file.path) {
@@ -392,22 +181,22 @@ fn process_request_phase1(
                 }
             }
             Err(e) => {
+                // Lock contention aborts the whole request (and group): the
+                // caller rolls back and leaves the gz in inbox for retry.
                 if is_db_locked(&e) {
-                    tracing::warn!("Failed to index {} (db locked, will retry): {e:#}", file.path);
-                } else {
-                    tracing::error!("Failed to index {}: {e:#}", file.path);
+                    return Err(e);
                 }
+                tracing::error!("Failed to index {}: {e:#}", file.path);
                 let (fallback, skip_inner) = if pipeline::is_outer_archive(&file.path, &file.kind) {
                     (pipeline::outer_archive_stub(&file), true)
                 } else {
                     (pipeline::filename_only_file(&file), false)
                 };
-                if let Err(e2) = pipeline::process_file_phase1_fallback(&mut conn, &fallback, skip_inner, Some(content_store.as_ref())) {
+                if let Err(e2) = pipeline::process_file_phase1_fallback(&mut session.conn, &fallback, skip_inner, Some(h.content_store.as_ref())) {
                     if is_db_locked(&e2) {
-                        tracing::warn!("Filename-only fallback also failed for {} (db locked, will retry): {e2:#}", file.path);
-                    } else {
-                        tracing::error!("Filename-only fallback also failed for {}: {e2:#}", file.path);
+                        return Err(e2);
                     }
+                    tracing::error!("Filename-only fallback also failed for {}: {e2:#}", file.path);
                 }
                 server_side_failures.push(IndexingFailure {
                     path: file.path.clone(),
@@ -418,15 +207,7 @@ fn process_request_phase1(
         warn_slow(file_start, 30, "process_file_phase1", &file.path);
         normalized_files.push(file); // moved, not cloned
 
-        since_commit += 1;
-        if since_commit >= PHASE1_BATCH_SIZE {
-            conn.execute_batch("COMMIT")?;
-            conn.execute_batch("BEGIN")?;
-            since_commit = 0;
-        }
-    }
-    if batched {
-        conn.execute_batch("COMMIT")?;
+        session.add_units_and_maybe_commit(1, h)?;
     }
     tracing::debug!("{tag} ← index {} files ({:.1}ms)", n_files, index_loop_start.elapsed().as_secs_f64() * 1000.0);
 
@@ -443,7 +224,7 @@ fn process_request_phase1(
         .collect();
     timed!(tag, "cleanup writes", {
         db::do_cleanup_writes(
-            &conn,
+            &session.conn,
             &successfully_indexed,
             &all_failures,
             now,
@@ -451,7 +232,9 @@ fn process_request_phase1(
         )?
     });
 
-    // Log activity and broadcast SSE events.
+    // Log activity and broadcast SSE events. (SSE fires slightly ahead of the
+    // covering COMMIT; events are transient UI hints, and a crash before the
+    // commit just means the request replays and the events are re-sent.)
     {
         let deleted: Vec<String> = request.delete_paths.iter()
             .filter(|p| !is_composite(p))
@@ -461,23 +244,32 @@ fn process_request_phase1(
             .filter(|r| !is_composite(&r.old_path) && !is_composite(&r.new_path))
             .map(|r| (r.old_path.clone(), r.new_path.clone()))
             .collect();
-        if let Err(e) = db::log_activity(&conn, now, &activity_added, &activity_modified, &deleted, &renamed, cfg.activity_log_max_entries) {
+        if let Err(e) = db::log_activity(&session.conn, now, &activity_added, &activity_modified, &deleted, &renamed, h.cfg.activity_log_max_entries) {
             tracing::warn!("Failed to write activity log: {e:#}");
         } else {
             let source = &request.source;
             for path in &activity_added {
-                let _ = recent_tx.send(RecentFile { source: source.clone(), path: path.clone(), indexed_at: now, action: RecentAction::Added,    new_path: None });
+                let _ = h.recent_tx.send(RecentFile { source: source.clone(), path: path.clone(), indexed_at: now, action: RecentAction::Added,    new_path: None });
             }
             for path in &activity_modified {
-                let _ = recent_tx.send(RecentFile { source: source.clone(), path: path.clone(), indexed_at: now, action: RecentAction::Modified, new_path: None });
+                let _ = h.recent_tx.send(RecentFile { source: source.clone(), path: path.clone(), indexed_at: now, action: RecentAction::Modified, new_path: None });
             }
             for path in &deleted {
-                let _ = recent_tx.send(RecentFile { source: source.clone(), path: path.clone(), indexed_at: now, action: RecentAction::Deleted,  new_path: None });
+                let _ = h.recent_tx.send(RecentFile { source: source.clone(), path: path.clone(), indexed_at: now, action: RecentAction::Deleted,  new_path: None });
             }
             for (old, new) in &renamed {
-                let _ = recent_tx.send(RecentFile { source: source.clone(), path: old.clone(),  indexed_at: now, action: RecentAction::Renamed,  new_path: Some(new.clone()) });
+                let _ = h.recent_tx.send(RecentFile { source: source.clone(), path: old.clone(),  indexed_at: now, action: RecentAction::Renamed,  new_path: Some(new.clone()) });
             }
         }
+    }
+
+    // Count non-file write batches toward the commit cadence so delete-only
+    // bursts also coalesce but still commit regularly.
+    let mut extra_units = 0usize;
+    if !request.delete_paths.is_empty() { extra_units += 1; }
+    if !request.rename_paths.is_empty() { extra_units += 1; }
+    if extra_units > 0 {
+        session.add_units_and_maybe_commit(extra_units, h)?;
     }
 
     let elapsed = request_start.elapsed();
@@ -503,37 +295,33 @@ fn process_request_phase1(
         );
     }
 
-    // Skip the archive phase entirely when there is nothing to write.
-    if normalized_files.is_empty() && request.rename_paths.is_empty() {
+    // Buffer the normalized to-archive payload; the session writes it after
+    // the covering COMMIT. Requests with nothing to archive skip the phase.
+    let archive_payload = if normalized_files.is_empty() && request.rename_paths.is_empty() {
         tracing::debug!("{tag} skipping archive phase (no chunks to write)");
-        return Ok(delta);
-    }
+        None
+    } else {
+        let payload = timed!(tag, "encode normalized gz", {
+            let normalized_request = BulkRequest {
+                source: request.source.clone(),
+                files: normalized_files,
+                delete_paths: request.delete_paths.clone(),
+                scan_timestamp: request.scan_timestamp,
+                indexing_failures: request.indexing_failures.clone(),
+                rename_paths: request.rename_paths.clone(),
+            };
+            let file_name = request_path.file_name()
+                .context("request path has no filename")?;
+            let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::default());
+            serde_json::to_writer(&mut encoder, &normalized_request)
+                .context("serializing normalized request")?;
+            (to_archive_dir.join(file_name), encoder.finish().context("finalizing normalized gz")?)
+        });
+        Some(payload)
+    };
 
-    // Write a normalized BulkRequest as a .gz to to-archive/.
-    timed!(tag, "write normalized gz", {
-        let normalized_request = BulkRequest {
-            source: request.source.clone(),
-            files: normalized_files,
-            delete_paths: request.delete_paths.clone(),
-            scan_timestamp: request.scan_timestamp,
-            indexing_failures: request.indexing_failures.clone(),
-            rename_paths: request.rename_paths.clone(),
-        };
-        let file_name = request_path.file_name()
-            .context("request path has no filename")?;
-        let to_archive_path = to_archive_dir.join(file_name);
-        let out = std::fs::File::create(&to_archive_path)
-            .context("creating to-archive file")?;
-        let mut encoder = GzEncoder::new(out, flate2::Compression::default());
-        // Stream directly into the encoder to avoid a separate Vec<u8> allocation.
-        // For large batches (e.g. a big archive), materialising the JSON separately
-        // would double peak memory: normalized_request + json Vec each at full size.
-        serde_json::to_writer(&mut encoder, &normalized_request)
-            .context("serializing normalized request")?;
-        encoder.finish().context("finalizing normalized gz")?
-    });
-
-    Ok(delta)
+    session.request_done(request_path.to_path_buf(), delta, archive_payload);
+    Ok(())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -541,8 +329,10 @@ fn process_request_phase1(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::{StatusHandle, WorkerConfig};
+    use super::super::group::PHASE1_BATCH_SIZE;
     use find_common::api::{BulkRequest, FileKind, IndexFile, IndexLine, PathRename, LINE_CONTENT_START};
-    use find_content_store::SqliteContentStore;
+    use find_content_store::{ContentStore, SqliteContentStore};
     use std::io::Write as _;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
@@ -551,8 +341,9 @@ mod tests {
         Arc::new(SqliteContentStore::open(data_dir, None, None, None).unwrap())
     }
 
-    /// Wrapper used in tests: opens a throw-away content store from data_dir so
-    /// test call-sites don't need to construct one explicitly.
+    /// Wrapper used in tests: runs one inbox gz through the group path
+    /// (group of one), with a throw-away content store from data_dir so test
+    /// call-sites don't need to construct one explicitly.
     fn call_phase1(
         data_dir: &std::path::Path,
         request_path: &std::path::Path,
@@ -561,10 +352,31 @@ mod tests {
         cfg: WorkerConfig,
         recent_tx: &tokio::sync::broadcast::Sender<RecentFile>,
         stats_watch: &Arc<tokio::sync::watch::Sender<u64>>,
-    ) -> Result<crate::stats_cache::SourceStatsDelta> {
-        let cs = make_content_store(data_dir);
-        let (interrupt_tx, _interrupt_rx) = tokio::sync::oneshot::channel();
-        process_request_phase1(interrupt_tx, data_dir, request_path, to_archive_dir, status, cfg, recent_tx, stats_watch, &cs)
+    ) -> Result<()> {
+        let failed_dir = data_dir.join("inbox/failed");
+        std::fs::create_dir_all(&failed_dir).unwrap();
+        let h = super::super::group::Phase1Handles {
+            status: status.clone(),
+            cfg,
+            recent_tx: recent_tx.clone(),
+            stats_watch: Arc::clone(stats_watch),
+            content_store: make_content_store(data_dir),
+            source_stats_cache: Arc::new(std::sync::RwLock::new(Default::default())),
+            archive_notify: Arc::new(tokio::sync::Notify::new()),
+        };
+        let ctx = super::super::group::GroupContext {
+            data_dir: data_dir.to_path_buf(),
+            paths: vec![request_path.to_path_buf()],
+            failed_dir,
+            to_archive_dir: to_archive_dir.to_path_buf(),
+        };
+        let out = super::super::group::process_group_phase1(
+            &ctx,
+            &super::super::group::GroupProgress::default(),
+            &h,
+        );
+        anyhow::ensure!(out.failed == 0 && out.retry == 0, "group reported failures: {out:?}");
+        Ok(())
     }
 
     fn make_worker_config() -> WorkerConfig {
@@ -1141,6 +953,23 @@ mod tests {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+/// Read and parse one inbox `.gz` into a `BulkRequest`.
+/// Returns the request and the compressed file size (for logging).
+///
+/// Streams directly from disk rather than reading the whole gz into a Vec<u8>
+/// and then decompressing into a String before parsing — this keeps only the
+/// parsed BulkRequest in memory, no intermediate buffers.
+pub(super) fn decode_request(request_path: &Path) -> Result<(BulkRequest, usize)> {
+    let compressed_bytes = std::fs::metadata(request_path)
+        .map(|m| m.len() as usize)
+        .unwrap_or(0);
+    let file = std::fs::File::open(request_path)?;
+    let decoder = GzDecoder::new(BufReader::new(file));
+    let request: BulkRequest =
+        serde_json::from_reader(decoder).context("parsing bulk request JSON")?;
+    Ok((request, compressed_bytes))
+}
+
 pub(super) fn is_db_locked(error: &anyhow::Error) -> bool {
     for cause in error.chain() {
         if let Some(rusqlite::Error::SqliteFailure(e, _)) = cause.downcast_ref::<rusqlite::Error>() {
@@ -1150,19 +979,4 @@ pub(super) fn is_db_locked(error: &anyhow::Error) -> bool {
         }
     }
     false
-}
-
-pub(super) async fn handle_failure(path: &Path, failed_dir: &Path, error: anyhow::Error) {
-    tracing::error!("Failed to process {}: {}", path.display(), error);
-
-    let failed_path = failed_dir.join(path.file_name().unwrap());
-    if let Err(e) = tokio::fs::rename(path, &failed_path).await {
-        tracing::error!(
-            "Failed to move {} to failed directory: {}",
-            path.display(),
-            e
-        );
-    } else {
-        tracing::warn!("Moved failed request to: {}", failed_path.display());
-    }
 }

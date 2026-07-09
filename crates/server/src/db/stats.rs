@@ -200,17 +200,19 @@ pub fn do_cleanup_writes(
         return Ok(());
     }
 
-    let tx = conn.unchecked_transaction()?;
+    // Only open an inner transaction when in autocommit mode; when the caller
+    // already holds one (group-coalesced phase 1), run inside it directly.
+    let tx = if conn.is_autocommit() { Some(conn.unchecked_transaction()?) } else { None };
 
     if !clear_paths.is_empty() {
-        let mut stmt = tx.prepare_cached("DELETE FROM indexing_errors WHERE path = ?1")?;
+        let mut stmt = conn.prepare_cached("DELETE FROM indexing_errors WHERE path = ?1")?;
         for path in clear_paths {
             stmt.execute(params![path])?;
         }
     }
 
     if !indexing_failures.is_empty() {
-        let mut stmt = tx.prepare_cached(
+        let mut stmt = conn.prepare_cached(
             "INSERT INTO indexing_errors (path, error, first_seen, last_seen, count)
              VALUES (?1, ?2, ?3, ?3, 1)
              ON CONFLICT(path) DO UPDATE SET
@@ -224,7 +226,7 @@ pub fn do_cleanup_writes(
     }
 
     if let Some(ts) = scan_timestamp {
-        tx.execute(
+        conn.execute(
             "INSERT INTO meta (key, value) VALUES ('last_scan', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![ts.to_string()],
@@ -232,16 +234,16 @@ pub fn do_cleanup_writes(
 
         // Snapshot current stats into scan_history within the same transaction.
         // Reading inside an open write transaction is valid in WAL mode.
-        let (total_files, total_size, by_kind) = get_stats(&tx)?;
+        let (total_files, total_size, by_kind) = get_stats(conn)?;
         let by_kind_json = serde_json::to_string(&by_kind).context("serialising by_kind")?;
-        tx.execute(
+        conn.execute(
             "INSERT INTO scan_history (scanned_at, total_files, total_size, by_kind)
              VALUES (?1, ?2, ?3, ?4)",
             params![ts, total_files as i64, total_size, by_kind_json],
         )?;
     }
 
-    tx.commit()?;
+    if let Some(tx) = tx { tx.commit()?; }
     Ok(())
 }
 
@@ -327,6 +329,19 @@ mod tests {
             Ok(CompactResult { units_scanned: 0, units_rewritten: 0, units_deleted: 0, chunks_removed: 0, bytes_freed: 0 })
         }
         fn storage_stats(&self) -> Option<(u64, u64)> { Some((0, 0)) }
+    }
+
+    // Transaction-nesting safety (group-coalesced phase 1, plan 093): called
+    // inside an already-open transaction by the group worker.
+    #[test]
+    fn do_cleanup_writes_works_inside_open_transaction() {
+        let conn = test_conn();
+        conn.execute_batch("BEGIN").unwrap();
+        do_cleanup_writes(&conn, &["x.txt".to_string()], &[], 1000, Some(999)).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        let last_scan: String = conn.query_row(
+            "SELECT value FROM meta WHERE key = 'last_scan'", [], |r| r.get(0)).unwrap();
+        assert_eq!(last_scan, "999");
     }
 
     #[test]
