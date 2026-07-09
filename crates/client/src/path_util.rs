@@ -123,10 +123,8 @@ pub fn include_dir_prefixes(patterns: &[String]) -> Option<std::collections::Has
             Some(0) => return None,     // wildcard at root — can't prune anything
             Some(i) => {
                 let before = &pat[..i];
-                match before.rfind('/') {
-                    None => return None, // wildcard in the first component — can't prune
-                    Some(slash) => &pat[..slash],
-                }
+                let slash = before.rfind('/')?; // wildcard in the first component — can't prune
+                &pat[..slash]
             }
         };
 

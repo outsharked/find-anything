@@ -9,12 +9,15 @@
 	let {
 		source,
 		activePath = null,
-		onOpen
+		onOpen,
+		liveRefreshIntervalMs = 1000
 	}: {
 		source: string;
 		/** Currently open file path — highlighted in the tree. */
 		activePath?: string | null;
 		onOpen?: (detail: { source: string; path: string; kind: string; archivePath?: string }) => void;
+		/** Minimum time between silent tree-row refreshes triggered by live index events. */
+		liveRefreshIntervalMs?: number;
 	} = $props();
 
 	let roots: DirEntry[] = $state([]);
@@ -78,7 +81,7 @@
 	{:else}
 		<ul class="tree-list">
 			{#each roots as entry (entry.path)}
-				<TreeRow {source} {entry} {activePath} depth={0} {onOpen} />
+				<TreeRow {source} {entry} {activePath} depth={0} {onOpen} {liveRefreshIntervalMs} />
 			{/each}
 		</ul>
 	{/if}
