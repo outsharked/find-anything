@@ -129,6 +129,7 @@ jobs:
             "find-extract-dispatch"
             "find-extract-dicom"
             "find-extract-pe"
+            "find-preview-dicom"
           )
 
           mkdir -p "dist/${ARTIFACT}"
