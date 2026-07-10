@@ -11,6 +11,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [0.8.1] - 2026-07-10
+
+### Fixed
+
+- **Release packaging: `find-extract-dicom` and `find-extract-pe` were missing from release tarballs** — `.github/workflows/release.yml`'s packaging step built the whole workspace but only copied a fixed `BINARIES` list into the tarball, and that list never included these two crates despite both having a `[[bin]]` target and being workspace members since their crates were added. PE extraction still worked because `find-extract-dispatch` (which *is* packaged) links `find-extract-pe` in directly as a library, but DICOM did not: `find-scan` looks for a standalone `find-extract-dicom` subprocess for its extensionless magic-byte detection path, so every release since DICOM support was added silently skipped all `.dcm` files with `extractor binary not found: find-extract-dicom`. Found while building find-anything-demo's `examples` source, whose `dicom/` category indexed zero of its 5 real DICOM test files against a v0.8.0 release build. ([#70](https://github.com/outsharked/find-anything/pull/70))
+
+---
+
 ## [0.8.0] - 2026-07-09
 
 ### Added
