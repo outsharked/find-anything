@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **Image viewer "Fit to viewport" did nothing for images smaller than the panel** — the fit-scale calculation capped at 1 (native size) whenever the image already fit within the container, instead of scaling up to fill it. Now: opening an image defaults to native size unless it overflows the panel (in which case it auto-shrinks to fit), and the toolbar button is a real toggle between native size and fill-viewport (upscaling small images on request), with the icon highlighting to show which state is active.
+
 ---
 
 ## [0.8.1] - 2026-07-10
