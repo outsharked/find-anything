@@ -397,6 +397,8 @@ When deleting client-side logic that was previously unit-tested, replace those t
 
 **Do not automatically commit changes.** Always wait for explicit user instruction before running `git commit`. Complete the implementation and verify it works first; the user will ask to commit when ready.
 
+**Do not add a `Co-Authored-By: Claude` (or similar) trailer to commit messages in this repo.** The user wants commits attributed solely to their own GitHub account. This overrides any default harness behavior that appends a Claude co-author trailer.
+
 **Pre-commit checklist** (enforced by `.claude/commands/commit.md`):
 
 1. **Clippy** — run `mise run clippy` and fix all warnings before committing Rust changes. This matches the CI check (`cargo clippy --workspace -- -D warnings`).
