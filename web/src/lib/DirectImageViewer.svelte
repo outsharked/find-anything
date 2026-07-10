@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import IconFitViewport from '$lib/icons/IconFitViewport.svelte';
 	import IconAdjust from '$lib/icons/IconAdjust.svelte';
+	import { computeFitScale as computeFitScalePure, shouldDefaultToFit as shouldDefaultToFitPure } from '$lib/directImageViewerLogic';
 
 	let { src, svgMode = false }: { src: string; svgMode?: boolean } = $props();
 
@@ -12,6 +13,11 @@
 	let offsetX = $state(0);
 	let offsetY = $state(0);
 	let fitScale = $state(1);
+	// Whether the toolbar "fit to viewport" toggle is in its "fitted" state
+	// (image scaled to fill the panel) vs. its "native size" state (scale 1).
+	// Manual zoom/pan actions clear this so the icon doesn't lie about the
+	// current scale.
+	let isFitted = $state(true);
 
 	let loaded = $state(false);
 	let loadError = $state(false);
@@ -105,39 +111,50 @@
 		applyTransform();
 	}
 
+	// Recomputed on demand (image load, container resize, explicit "fit" click)
+	// rather than cached once — a container resize after load would otherwise
+	// leave fitScale stale, making "Fit to viewport" reapply an outdated value.
+	function computeFitScale(): number {
+		if (!container || !img) return 1;
+		return computeFitScalePure(container.clientWidth, container.clientHeight, img.naturalWidth, img.naturalHeight);
+	}
+
+	// Default view on load / reset: fit (shrink) only if the image actually
+	// overflows the panel; otherwise native size, so small images (e.g. a RAW
+	// file's embedded thumbnail) aren't upscaled unless the user asks for it
+	// via the fit toggle.
+	function applyDefaultView() {
+		if (svgMode) {
+			isFitted = true;
+			scale = 1;
+			fitScale = 1;
+		} else if (container && img) {
+			fitScale = computeFitScale();
+			isFitted = shouldDefaultToFitPure(
+				container.clientWidth,
+				container.clientHeight,
+				img.naturalWidth,
+				img.naturalHeight
+			);
+			scale = isFitted ? fitScale : 1;
+		}
+		offsetX = 0;
+		offsetY = 0;
+		applyTransform();
+	}
+
 	function onImageLoad() {
 		clearSpinnerTimer();
 		showSpinner = false;
 		loaded = true;
 		loadError = false;
 		rotation = 0;
-		if (svgMode) {
-			scale = 1;
-			fitScale = 1;
-			offsetX = 0;
-			offsetY = 0;
-			applyTransform();
-			return;
-		}
-		if (!container || !img) return;
-		const vw = container.clientWidth;
-		const vh = container.clientHeight;
-		const nw = img.naturalWidth;
-		const nh = img.naturalHeight;
-
-		if (nw <= vw && nh <= vh) {
-			fitScale = 1;
-		} else {
-			fitScale = Math.min(vw / nw, vh / nh);
-		}
-		scale = fitScale;
-		offsetX = 0;
-		offsetY = 0;
-		applyTransform();
+		applyDefaultView();
 	}
 
 	function onWheel(e: WheelEvent) {
 		e.preventDefault();
+		isFitted = false;
 		const delta = e.deltaY > 0 ? 0.9 : 1.1;
 		scale = clamp(scale * delta, minScale, MAX_SCALE);
 		applyTransform();
@@ -167,10 +184,7 @@
 
 	function onDblClick(e: MouseEvent) {
 		if ((e.target as Element).closest('.toolbar, .adjust-panel')) return;
-		scale = fitScale;
-		offsetX = 0;
-		offsetY = 0;
-		applyTransform();
+		applyDefaultView();
 	}
 
 	// Re-apply transform when flip changes. applyTransform() also reads scale/
@@ -186,31 +200,58 @@
 	let minScale = $derived(Math.min(0.01, fitScale * 0.5));
 
 	function zoomIn() {
+		isFitted = false;
 		scale = clamp(scale * 1.25, minScale, MAX_SCALE);
 		applyTransform();
 	}
 
 	function zoomOut() {
+		isFitted = false;
 		scale = clamp(scale / 1.25, minScale, MAX_SCALE);
 		applyTransform();
 	}
 
-	function reset() {
-		scale = fitScale;
+	// Toolbar toggle: fit-to-viewport <-> native size.
+	function toggleFit() {
+		isFitted = !isFitted;
+		if (isFitted) {
+			if (!svgMode) fitScale = computeFitScale();
+			scale = fitScale;
+		} else {
+			scale = 1;
+		}
 		offsetX = 0;
 		offsetY = 0;
 		applyTransform();
 	}
+
+	let resizeObserver: ResizeObserver | undefined;
 
 	onMount(() => {
 		if (!container || !img) return;
 		container.addEventListener('wheel', onWheel, { passive: false });
 		if (img.complete && img.naturalWidth > 0) onImageLoad();
 		else if (img.complete && img.naturalWidth === 0) onError();
+
+		// Keep fitScale current across panel/window resizes. If the toggle is
+		// still in its "fitted" state, re-fit the image too so it keeps filling
+		// the viewport as it resizes.
+		resizeObserver = new ResizeObserver(() => {
+			if (!loaded || loadError || svgMode) return;
+			fitScale = computeFitScale();
+			if (isFitted) {
+				scale = fitScale;
+				offsetX = 0;
+				offsetY = 0;
+				applyTransform();
+			}
+		});
+		resizeObserver.observe(container);
 	});
 
 	onDestroy(() => {
 		if (container) container.removeEventListener('wheel', onWheel);
+		resizeObserver?.disconnect();
 		clearSpinnerTimer();
 	});
 </script>
@@ -245,7 +286,11 @@
 		<div class="toolbar">
 			<button onclick={(e) => { e.stopPropagation(); zoomIn(); }} title="Zoom in">+</button>
 			<button onclick={(e) => { e.stopPropagation(); zoomOut(); }} title="Zoom out">−</button>
-			<button onclick={(e) => { e.stopPropagation(); reset(); }} title="Fit to viewport">
+			<button
+				onclick={(e) => { e.stopPropagation(); toggleFit(); }}
+				title={isFitted ? 'Native size' : 'Fit to viewport'}
+				class:active={isFitted}
+			>
 				<IconFitViewport />
 			</button>
 			<button onclick={(e) => { e.stopPropagation(); rotateLeft(); }} title="Rotate left">↺</button>
