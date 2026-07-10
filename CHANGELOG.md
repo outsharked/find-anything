@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **`find-preview-dicom` was missing from release tarballs** — same class of bug as [#70](https://github.com/outsharked/find-anything/pull/70) (which added `find-extract-dicom`/`find-extract-pe` but missed this one): the release packaging `BINARIES` list in `.github/workflows/release.yml` never included `find-preview-dicom`, so the DICOM inline image viewer (`GET /api/v1/view` for `.dcm` files) failed with `failed to spawn find-preview-dicom: No such file or directory` in every release build, even though DICOM metadata extraction worked fine.
+
 ---
 
 ## [0.8.1] - 2026-07-10
