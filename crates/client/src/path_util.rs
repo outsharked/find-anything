@@ -137,3 +137,114 @@ pub fn include_dir_prefixes(patterns: &[String]) -> Option<std::collections::Has
     }
     Some(terminals)
 }
+
+/// Resolve the effective scan target for a `find-scan <PATH>` argument.
+///
+/// A `.index`/`.noindex` control file changes what's indexed in its own
+/// directory (an include filter or exclusion marker), so a scan targeting it
+/// must rescan an ancestor directory rather than indexing the control file's
+/// own content. `is_file` must reflect whether `abs` currently exists as a
+/// regular file (checked by the caller, since this function does no I/O).
+///
+/// The scan target is the *grandparent* of the control file — i.e. the parent
+/// of the directory the control file lives in — not that directory itself.
+/// `.noindex`-presence and `.index`-override loading are only evaluated by the
+/// walker for non-root entries (the walk root is always traversed
+/// unconditionally, so its own control files never apply to itself). Starting
+/// one level higher makes the control file's own directory a normal, prunable
+/// entry, so a newly added/changed/removed `.noindex` or `.index` there is
+/// actually re-applied.
+///
+/// Returns `(scan_target, was_control_file)`. Falls back to the control
+/// file's own directory when that directory has no parent (e.g. it's a
+/// filesystem root) — an unreachable scenario in practice, since source paths
+/// are never a bare root.
+pub fn resolve_scan_target(
+    abs: &std::path::Path,
+    is_file: bool,
+    index_file: &str,
+    noindex_file: &str,
+) -> (std::path::PathBuf, bool) {
+    if is_file {
+        let is_control = abs
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == index_file || n == noindex_file);
+        if is_control {
+            if let Some(control_dir) = abs.parent() {
+                let target = control_dir.parent().unwrap_or(control_dir);
+                return (target.to_path_buf(), true);
+            }
+        }
+    }
+    (abs.to_path_buf(), false)
+}
+
+#[cfg(test)]
+mod resolve_scan_target_tests {
+    use super::resolve_scan_target;
+    use std::path::PathBuf;
+
+    #[test]
+    fn noindex_file_resolves_to_grandparent() {
+        // /src/sub/.noindex affects whether *sub* is descended into, which is
+        // only evaluated when sub's *parent* (/src) walks it as a normal entry.
+        let (target, was_control) =
+            resolve_scan_target(&PathBuf::from("/src/sub/.noindex"), true, ".index", ".noindex");
+        assert_eq!(target, PathBuf::from("/src"));
+        assert!(was_control);
+    }
+
+    #[test]
+    fn index_file_resolves_to_grandparent() {
+        let (target, was_control) =
+            resolve_scan_target(&PathBuf::from("/src/sub/.index"), true, ".index", ".noindex");
+        assert_eq!(target, PathBuf::from("/src"));
+        assert!(was_control);
+    }
+
+    #[test]
+    fn custom_control_filenames_are_respected() {
+        let (target, was_control) =
+            resolve_scan_target(&PathBuf::from("/src/sub/SKIP"), true, "SETTINGS", "SKIP");
+        assert_eq!(target, PathBuf::from("/src"));
+        assert!(was_control);
+    }
+
+    #[test]
+    fn control_file_at_filesystem_root_falls_back_to_its_own_dir() {
+        // /.noindex: its directory is "/", which has no parent to walk from —
+        // fall back to scanning "/" itself (the pre-existing, imperfect
+        // depth-0 behaviour) rather than erroring or escaping above the root.
+        let (target, was_control) =
+            resolve_scan_target(&PathBuf::from("/.noindex"), true, ".index", ".noindex");
+        assert_eq!(target, PathBuf::from("/"));
+        assert!(was_control);
+    }
+
+    #[test]
+    fn one_level_below_root_resolves_to_root() {
+        let (target, was_control) =
+            resolve_scan_target(&PathBuf::from("/src/.noindex"), true, ".index", ".noindex");
+        assert_eq!(target, PathBuf::from("/"));
+        assert!(was_control);
+    }
+
+    #[test]
+    fn normal_file_is_unchanged() {
+        let (target, was_control) =
+            resolve_scan_target(&PathBuf::from("/src/sub/notes.txt"), true, ".index", ".noindex");
+        assert_eq!(target, PathBuf::from("/src/sub/notes.txt"));
+        assert!(!was_control);
+    }
+
+    #[test]
+    fn directory_argument_is_unchanged() {
+        // is_file = false, even though the name coincidentally matches — a
+        // directory named ".noindex" is not a control file.
+        let (target, was_control) =
+            resolve_scan_target(&PathBuf::from("/src/.noindex"), false, ".index", ".noindex");
+        assert_eq!(target, PathBuf::from("/src/.noindex"));
+        assert!(!was_control);
+    }
+}

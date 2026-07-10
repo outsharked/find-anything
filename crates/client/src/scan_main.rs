@@ -177,7 +177,12 @@ async fn main() -> Result<()> {
     };
 
     // Single-file mode: scan one specific file and exit.
-    if opts.dry_run && args.path.as_ref().is_some_and(|p| p.is_file()) {
+    if opts.dry_run
+        && args.path.as_ref().is_some_and(|p| {
+            p.is_file()
+                && !path_util::resolve_scan_target(p, true, &config.scan.index_file, &config.scan.noindex_file).1
+        })
+    {
         anyhow::bail!("--dry-run cannot be combined with a single-file argument");
     }
 
@@ -189,11 +194,15 @@ async fn main() -> Result<()> {
             "{} is not a file or directory", abs.display()
         );
 
-        // Find the source whose configured path is the longest prefix of `abs`.
+        let (scan_target, control_file) = path_util::resolve_scan_target(
+            &abs, abs.is_file(), &config.scan.index_file, &config.scan.noindex_file,
+        );
+
+        // Find the source whose configured path is the longest prefix of `scan_target`.
         let mut best: Option<(&find_common::config::SourceConfig, PathBuf, PathBuf)> = None;
         for source in &config.sources {
             let root_canon = std::fs::canonicalize(&source.path).unwrap_or_else(|_| PathBuf::from(&source.path));
-            if let Ok(rel) = abs.strip_prefix(&root_canon) {
+            if let Ok(rel) = scan_target.strip_prefix(&root_canon) {
                 let longer = best.as_ref()
                     .is_none_or(|(_, rc, _)| root_canon.as_os_str().len() > rc.as_os_str().len());
                 if longer {
@@ -208,29 +217,37 @@ async fn main() -> Result<()> {
                 .join(", ");
             anyhow::anyhow!(
                 "{} is not under any configured source path\nConfigured paths: {paths}",
-                abs.display()
+                scan_target.display()
             )
         })?;
 
-        if abs.is_file() {
+        if scan_target.is_file() {
             let rel_path = path_util::normalise_path_sep(&rel.to_string_lossy());
-            tracing::info!("Scanning single file: {} (source: {}, rel: {})", abs.display(), source.name, rel_path);
+            tracing::info!("Scanning single file: {} (source: {}, rel: {})", scan_target.display(), source.name, rel_path);
             let scan_source = ScanSource {
                 name: &source.name,
                 paths: std::slice::from_ref(&source.path),
                 include: &source.include,
                 subdir: None,
             };
-            scan::scan_single_file(&client, &scan_source, &rel_path, &abs, &config.scan, &opts).await?;
+            scan::scan_single_file(&client, &scan_source, &rel_path, &scan_target, &config.scan, &opts).await?;
         } else {
-            // Directory: rescan all files under it, ignoring mtime.
+            // Directory (or an ancestor of a changed control file): rescan all
+            // files under it, ignoring mtime.
             let rel_path = path_util::normalise_path_sep(&rel.to_string_lossy());
             let subdir = if rel_path.is_empty() { None } else { Some(rel_path.clone()) };
             let subdir_label = if rel_path.is_empty() { "(source root)" } else { &rel_path };
-            tracing::info!(
-                "Scanning directory: {} (source: {}, subdir: {})",
-                abs.display(), source.name, subdir_label
-            );
+            if control_file {
+                tracing::info!(
+                    "Control file changed ({}): rescanning {} (source: {}, subdir: {})",
+                    abs.display(), scan_target.display(), source.name, subdir_label
+                );
+            } else {
+                tracing::info!(
+                    "Scanning directory: {} (source: {}, subdir: {})",
+                    scan_target.display(), source.name, subdir_label
+                );
+            }
             let scan_source = ScanSource {
                 name: &source.name,
                 paths: std::slice::from_ref(&source.path),
