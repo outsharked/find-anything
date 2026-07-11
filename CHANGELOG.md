@@ -9,10 +9,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.8.2] - 2026-07-10
+
 ### Fixed
 
-- **`find-preview-dicom` was missing from release tarballs** — same class of bug as [#70](https://github.com/outsharked/find-anything/pull/70) (which added `find-extract-dicom`/`find-extract-pe` but missed this one): the release packaging `BINARIES` list in `.github/workflows/release.yml` never included `find-preview-dicom`, so the DICOM inline image viewer (`GET /api/v1/view` for `.dcm` files) failed with `failed to spawn find-preview-dicom: No such file or directory` in every release build, even though DICOM metadata extraction worked fine.
-- **Image viewer "Fit to viewport" did nothing for images smaller than the panel** — the fit-scale calculation capped at 1 (native size) whenever the image already fit within the container, instead of scaling up to fill it. Now: opening an image defaults to native size unless it overflows the panel (in which case it auto-shrinks to fit), and the toolbar button is a real toggle between native size and fill-viewport (upscaling small images on request), with the icon highlighting to show which state is active.
+- **`find-preview-dicom` was missing from release tarballs** — same class of bug as [#70](https://github.com/outsharked/find-anything/pull/70) (which added `find-extract-dicom`/`find-extract-pe` but missed this one): the release packaging `BINARIES` list in `.github/workflows/release.yml` never included `find-preview-dicom`, so the DICOM inline image viewer (`GET /api/v1/view` for `.dcm` files) failed with `failed to spawn find-preview-dicom: No such file or directory` in every release build, even though DICOM metadata extraction worked fine. ([#73](https://github.com/outsharked/find-anything/pull/73))
+- **Image viewer "Fit to viewport" did nothing for images smaller than the panel** — the fit-scale calculation capped at 1 (native size) whenever the image already fit within the container, instead of scaling up to fill it. Now: opening an image defaults to native size unless it overflows the panel (in which case it auto-shrinks to fit), and the toolbar button is a real toggle between native size and fill-viewport (upscaling small images on request), with the icon highlighting to show which state is active. ([#72](https://github.com/outsharked/find-anything/pull/72))
 
 ---
 
