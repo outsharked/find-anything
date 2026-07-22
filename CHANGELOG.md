@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **Long lines in markdown files rendered with jagged forced line breaks** — `FileViewer`'s markdown renderer reconstructs file content by joining the server's stored lines with `\n`, but the server intentionally wraps long lines at a length cap for the plain/code viewer (`NormalizationSettings.max_line_length`). Those wrap points are storage artifacts, not real paragraph breaks, but `marked.parse(..., { breaks: true })` turned every such `\n` into a literal `<br>` — so any sentence long enough to get storage-wrapped rendered as a jumble of short forced lines instead of flowing prose. Fixed by rendering with `breaks: false` (CommonMark default), which treats incidental single newlines as whitespace instead of hard breaks.
+
 ---
 
 ## [0.8.3] - 2026-07-22

@@ -329,8 +329,15 @@
 	let markdownTooLarge = $derived(isMarkdown && rawContent.length > $maxMarkdownRenderKb * 1024);
 
 	// Render markdown to HTML (skipped when file exceeds size cap).
+	// breaks:false (CommonMark default) is required, not optional: rawContent is
+	// reconstructed by joining stored lines with '\n', and the server intentionally
+	// wraps long lines at a length cap for the plain/code viewer (see
+	// NormalizationSettings.max_line_length) — those wrap points are storage
+	// artifacts, not the author's real line breaks. With breaks:true, marked turns
+	// every such '\n' into a literal <br>, so any sentence long enough to get
+	// storage-wrapped fragments into a jagged mess of forced short lines.
 	let renderedMarkdown = $derived(showFormatted && isMarkdown && !markdownTooLarge
-		? marked.parse(rawContent, { gfm: true, breaks: true })
+		? marked.parse(rawContent, { gfm: true, breaks: false })
 		: '');
 
 	function toggleWordWrap() {
