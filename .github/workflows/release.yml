@@ -159,7 +159,13 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://jrsoftware.org/download.php/is.exe" -OutFile "$env:TEMP\innosetup.exe"
+          # jrsoftware.org/download.php/is.exe now 302s to an HTML landing page
+          # (isdl.php) instead of serving the installer directly, so a plain
+          # Invoke-WebRequest silently downloaded HTML and "installed" garbage.
+          # Pull a specific version directly from jrsoftware's own GitHub
+          # releases instead — a stable, versioned binary URL rather than a
+          # scraping-prone marketing page. Bump the tag/filename together to update.
+          Invoke-WebRequest -Uri "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe" -OutFile "$env:TEMP\innosetup.exe"
           Start-Process -FilePath "$env:TEMP\innosetup.exe" -Args "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
           echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
