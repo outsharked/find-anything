@@ -1,8 +1,13 @@
 [tools]
 node = "24"
 pnpm = "10.29.3"
-"cargo:cargo-watch" = "latest"
-"cargo:cargo-llvm-cov" = "latest"
+# Pinned rather than "latest": resolving "latest" requires a live crates.io
+# index lookup on every `mise install`, which has caused CI failures when
+# that lookup times out. These are dev-only CLI tools (not shipped, not
+# security-sensitive) — bump opportunistically when touching this file, or
+# whenever `mise install` reports a newer version is available locally.
+"cargo:cargo-watch" = "8.5.3"
+"cargo:cargo-llvm-cov" = "0.8.7"
 
 [settings]
 experimental = true # Enables hook support
