@@ -277,9 +277,42 @@
 			fileView = { ...fileView, selection: newSelection };
 		}
 
+		// Links rendered from untrusted-ish {@html} content (e.g. markdown docs
+		// like about-this-demo.md) are plain <a href="/?view=file&..."> tags, not
+		// Svelte components. SvelteKit's own router intercepts same-origin clicks
+		// on them and performs a "soft" client-side navigation via pushState —
+		// which updates the address bar but never runs a load function or fires
+		// popstate, so nothing here ever re-parses the new query string and the
+		// view stays frozen (a reload works because that's a real page load, which
+		// hits the onMount parse below). Intercept in the capture phase — before
+		// SvelteKit's own bubble-phase listener sees the event — and drive the
+		// same URL-is-source-of-truth path popstate uses.
+		function handleContentLinkClick(e: MouseEvent) {
+			if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+			if (!(e.target instanceof Element)) return;
+			const anchor = e.target.closest('a');
+			if (!anchor || !anchor.closest('.markdown-content')) return;
+			const href = anchor.getAttribute('href');
+			if (!href) return;
+			let url: URL;
+			try {
+				url = new URL(href, location.href);
+			} catch {
+				return;
+			}
+			if (url.origin !== location.origin || url.pathname !== location.pathname) return;
+			e.preventDefault();
+			const restored = restoreFromParams(url.searchParams);
+			restored.fileSelection = parseHash(url.hash);
+			showTree = restored.showTree;
+			applyState(restored);
+			pushState();
+		}
+
 		window.addEventListener('keydown', handleKeydown, { capture: true });
 		window.addEventListener('popstate', handlePopstate);
 		window.addEventListener('hashchange', handleHashchange);
+		window.addEventListener('click', handleContentLinkClick, { capture: true });
 		// Scroll events as a secondary trigger: when the window is scrollable
 		// and the user scrolls near the sentinel, load more results.
 		mainContent.addEventListener('scroll', checkScroll, { passive: true });
@@ -288,6 +321,7 @@
 			window.removeEventListener('keydown', handleKeydown, { capture: true });
 			window.removeEventListener('popstate', handlePopstate);
 			window.removeEventListener('hashchange', handleHashchange);
+			window.removeEventListener('click', handleContentLinkClick, { capture: true });
 			mainContent.removeEventListener('scroll', checkScroll);
 		};
 	});
