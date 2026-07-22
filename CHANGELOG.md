@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **Links inside rendered markdown/RTF content (`{@html}`) did nothing on click** — SvelteKit's client-side router intercepts same-origin `<a>` clicks itself and performs a "soft" navigation via `pushState`, which updates the address bar but never fires `popstate` or a load function. This app's hand-rolled history system only re-parses the URL on `popstate` and on initial page load, so clicking a link like `[...](/?view=file&fsource=...&path=...)` inside a markdown doc changed the URL but left the view frozen; reloading the page worked because that's a real navigation. Fixed with a capture-phase `click` listener scoped to `.markdown-content` links that intercepts before SvelteKit's own listener and drives the same URL-is-source-of-truth path `popstate` uses.
+
 ---
 
 ## [0.8.2] - 2026-07-10
