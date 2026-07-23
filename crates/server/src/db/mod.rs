@@ -775,9 +775,24 @@ pub fn get_file_lines_paged(
         None => (LINE_CONTENT_START, line_count),
     };
 
-    for ln in content_start..content_end {
-        if let Some(content) = read_chunk_for_file(conn, content_store, file_id, ln as i64) {
-            lines.push(ContextLine { line_number: ln, content });
+    // Fetch the whole page in one ranged call instead of one get_lines() call
+    // per line — read_chunk_for_file() degenerates the range to (ln, ln), so a
+    // 2000-line page previously issued 2000 separate content-store round trips
+    // (each re-fetching file_hash too). At ~200-300ms/call that made opening a
+    // large paged file take minutes instead of the sub-second range fetch this
+    // was designed for (get_lines already returns every overlapping chunk in a
+    // single PK-indexed query — see content-store/src/store.rs).
+    if content_end > content_start {
+        if let Some(hash) = &file_hash {
+            let key = ContentKey::new(hash.as_str());
+            if let Ok(Some(fetched)) = content_store.get_lines(&key, content_start, content_end - 1) {
+                let mut fetched: HashMap<usize, String> = fetched.into_iter().collect();
+                for ln in content_start..content_end {
+                    if let Some(content) = fetched.remove(&ln) {
+                        lines.push(ContextLine { line_number: ln, content });
+                    }
+                }
+            }
         }
     }
 
