@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.8.4] - 2026-07-22
+
 ### Fixed
 
 - **Opening a large file could take minutes or appear to hang** — `GET /api/v1/file` (the paged file viewer's content endpoint) fetched each line of a page with its own `ContentStore.get_lines(key, ln, ln)` call instead of one ranged call for the whole page, even though `get_lines` was already designed to fetch a full range in a single PK-indexed query. A 2000-line page issued 2000 separate content-store round trips (each re-fetching `file_hash` too); at real-world per-call overhead that turned opening a large file into a multi-minute wait instead of the sub-second fetch it was designed for. Fixed by batching the whole page into one `get_lines(key, lo, hi)` call, matching the pattern `read_content_batch` already used elsewhere. Verified with a 100K-line file: the same request dropped from effectively unbounded (10+ minutes) to ~20ms.
