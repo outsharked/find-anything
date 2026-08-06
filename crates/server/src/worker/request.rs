@@ -24,6 +24,13 @@ use super::pipeline;
 
 // ── Group-coalesced per-request processing (plan 093) ──────────────────────────
 
+/// Number of delete_paths processed between commits within a single request.
+/// A request's delete_paths list can be far larger than a typical file batch
+/// (e.g. a directory tree that vanished between scans) — chunking keeps any
+/// one commit small and lets a request survive a group timeout with partial
+/// progress intact instead of losing the whole batch to rollback every retry.
+const DELETE_COMMIT_CHUNK: usize = 500;
+
 /// Process one decoded request against an open `SourceSession`.
 ///
 /// SQLite writes land in the session's open transaction; commit cadence is
@@ -75,23 +82,38 @@ pub(super) fn process_one_request(
     tracing::debug!("{tag} start: {} files, {} deletes, {} renames", n_files, n_deletes, n_renames);
 
     // Process deletes (SQLite only — orphaned chunks cleaned up by compaction).
+    //
+    // Chunked with a commit after each chunk (rather than one delete_files_phase1
+    // call + one commit for the whole batch) so a request with an unusually large
+    // delete_paths list — e.g. a directory tree that vanished between scans —
+    // makes durable progress instead of restarting from zero on every retry.
+    // delete_one_path_simple is a no-op for paths already gone, so replaying
+    // already-committed chunks on retry is safe.
     if !request.delete_paths.is_empty() {
-        if let Ok(mut guard) = h.status.lock() {
-            *guard = find_common::api::WorkerStatus::Processing {
-                source: request.source.clone(),
-                file: format!("(deleting {} files)", n_deletes),
-            };
-        }
-        let delete_delta = timed!(tag, format!("delete {} paths", n_deletes), {
-            db::delete_files_phase1(&session.conn, &request.delete_paths)?
+        let n_chunks = request.delete_paths.len().div_ceil(DELETE_COMMIT_CHUNK);
+        timed!(tag, format!("delete {} paths", n_deletes), {
+            for (chunk_i, chunk) in request.delete_paths.chunks(DELETE_COMMIT_CHUNK).enumerate() {
+                if let Ok(mut guard) = h.status.lock() {
+                    *guard = find_common::api::WorkerStatus::Processing {
+                        source: request.source.clone(),
+                        file: format!("(deleting {}/{n_deletes} files)", chunk_i * DELETE_COMMIT_CHUNK + chunk.len()),
+                    };
+                }
+                // The singleton-duplicate sweep is a full-table scan, so it's a
+                // per-request cost, not a per-chunk one — only run it on the
+                // final chunk (see delete_files_phase1's doc comment).
+                let run_cleanup = chunk_i + 1 == n_chunks;
+                let delete_delta = db::delete_files_phase1(&session.conn, chunk, run_cleanup)?;
+                delta.files_delta -= delete_delta.files_removed;
+                delta.size_delta  -= delete_delta.size_removed;
+                for (kind, (count, size)) in delete_delta.by_kind {
+                    let e = delta.kind_deltas.entry(kind).or_insert((0, 0));
+                    e.0 -= count;
+                    e.1 -= size;
+                }
+                session.add_units_and_maybe_commit(chunk.len(), h)?;
+            }
         });
-        delta.files_delta -= delete_delta.files_removed;
-        delta.size_delta  -= delete_delta.size_removed;
-        for (kind, (count, size)) in delete_delta.by_kind {
-            let e = delta.kind_deltas.entry(kind).or_insert((0, 0));
-            e.0 -= count;
-            e.1 -= size;
-        }
     }
 
     // Process renames after deletes, before upserts.
@@ -263,13 +285,11 @@ pub(super) fn process_one_request(
         }
     }
 
-    // Count non-file write batches toward the commit cadence so delete-only
-    // bursts also coalesce but still commit regularly.
-    let mut extra_units = 0usize;
-    if !request.delete_paths.is_empty() { extra_units += 1; }
-    if !request.rename_paths.is_empty() { extra_units += 1; }
-    if extra_units > 0 {
-        session.add_units_and_maybe_commit(extra_units, h)?;
+    // Count renames toward the commit cadence so rename-only bursts also
+    // coalesce but still commit regularly. Deletes already added their units
+    // per-chunk above.
+    if !request.rename_paths.is_empty() {
+        session.add_units_and_maybe_commit(1, h)?;
     }
 
     let elapsed = request_start.elapsed();
@@ -533,6 +553,66 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM files WHERE path = ?1", [&last_path], |r| r.get(0))
             .unwrap();
         assert_eq!(last_count, 1, "last file in the batch should be persisted");
+    }
+
+    /// Regression test for the chunked-delete-commit change: a single request
+    /// whose delete_paths crosses DELETE_COMMIT_CHUNK must still remove every
+    /// listed path — before, at, and after the internal commit boundary — and
+    /// must leave an unrelated file untouched.
+    #[test]
+    fn large_delete_batch_crossing_commit_chunk_removes_every_path() {
+        let (_tmp, data_dir, to_archive_dir, inbox_dir) = setup_dirs();
+        let (recent_tx, _rx) = tokio::sync::broadcast::channel::<RecentFile>(16);
+
+        let n_files = DELETE_COMMIT_CHUNK + 5; // crosses exactly one chunk boundary
+        let mut files: Vec<IndexFile> = (0..n_files)
+            .map(|i| make_index_file(&format!("bulk/file{i:04}.txt"), FileKind::Text))
+            .collect();
+        files.push(make_index_file("bulk/keep.txt", FileKind::Text));
+
+        let upsert_req = BulkRequest {
+            source: "deletesource".to_string(),
+            files,
+            delete_paths: vec![],
+            rename_paths: vec![],
+            scan_timestamp: Some(1_000_000),
+            indexing_failures: vec![],
+        };
+        let req_path1 = inbox_dir.join("req_seed.gz");
+        write_bulk_request_gz(&req_path1, &upsert_req);
+        call_phase1(
+            &data_dir, &req_path1, &to_archive_dir,
+            &make_status(), make_worker_config(), &recent_tx, &make_stats_watch(),
+        ).unwrap();
+
+        let db_path = data_dir.join("sources").join("deletesource.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM files WHERE path LIKE 'bulk/%'", [], |r| r.get(0)).unwrap();
+            assert_eq!(count, n_files as i64 + 1, "all seeded files should be present before delete");
+        }
+
+        let delete_paths: Vec<String> = (0..n_files).map(|i| format!("bulk/file{i:04}.txt")).collect();
+        let delete_req = BulkRequest {
+            source: "deletesource".to_string(),
+            files: vec![],
+            delete_paths,
+            rename_paths: vec![],
+            scan_timestamp: Some(1_000_001),
+            indexing_failures: vec![],
+        };
+        let req_path2 = inbox_dir.join("req_delete.gz");
+        write_bulk_request_gz(&req_path2, &delete_req);
+        call_phase1(
+            &data_dir, &req_path2, &to_archive_dir,
+            &make_status(), make_worker_config(), &recent_tx, &make_stats_watch(),
+        ).unwrap();
+
+        let conn = crate::db::open(&db_path).unwrap();
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM files WHERE path LIKE 'bulk/%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 1, "every deleted path should be gone, crossing the commit-chunk boundary");
+        let keep_count: i64 = conn.query_row("SELECT COUNT(*) FROM files WHERE path = 'bulk/keep.txt'", [], |r| r.get(0)).unwrap();
+        assert_eq!(keep_count, 1, "unrelated file not in delete_paths must survive");
     }
 
     #[test]

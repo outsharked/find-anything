@@ -151,6 +151,22 @@ pub fn build_index_files(
     result
 }
 
+/// Reject archive member sizes that can't be trusted as a byte count.
+///
+/// Archive format headers (tar in particular) can declare a size field that a
+/// malformed or adversarial archive sets to a value whose top bit is set —
+/// e.g. GNU tar's base-256 extension can produce a size just under `u64::MAX`.
+/// `IndexFile.size` is `i64` (to match SQLite's storage class), so casting such
+/// a value with `as i64` reinterprets the bit pattern as a large negative
+/// number. That negative size then corrupts the source's aggregate size stats
+/// (`SUM(size)` can overflow into a huge negative total, which downstream
+/// display code that casts back to `u64` renders as a wildly wrong figure).
+/// Values that don't fit in a non-negative `i64` are dropped to `None` rather
+/// than stored — better an unknown size than a poisoned one.
+fn sanitize_member_size(size: Option<u64>) -> Option<i64> {
+    size.and_then(|s| i64::try_from(s).ok())
+}
+
 /// Convert one archive member's lines (from streaming extraction) into IndexFiles.
 ///
 /// Unlike `build_index_files`, this is called once per top-level member callback
@@ -198,7 +214,7 @@ pub fn build_member_index_files(
         result.push(IndexFile {
             path: composite_path,
             mtime,
-            size: member_size.map(|s| s as i64),
+            size: sanitize_member_size(member_size),
             kind: member_kind,
             lines,
             extract_ms: None,
@@ -398,6 +414,25 @@ mod tests {
         let files = build_member_index_files("data.zip", 1000, None, lines, None);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].size, None);
+    }
+
+    #[test]
+    fn member_size_dropped_when_it_would_reinterpret_negative() {
+        // A malformed/adversarial tar header (e.g. GNU base-256 size encoding)
+        // can report a u64 whose top bit is set. `as i64` would silently wrap
+        // that into a large negative number, poisoning the source's aggregate
+        // size stats. It must be dropped to None instead of stored.
+        let lines = vec![line(Some("evil.txt"), LINE_CONTENT_START, "hello")];
+        let files = build_member_index_files("evil.tar", 1000, Some(u64::MAX), lines, None);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].size, None);
+    }
+
+    #[test]
+    fn member_size_kept_at_i64_max_boundary() {
+        let lines = vec![line(Some("notes.txt"), LINE_CONTENT_START, "hello")];
+        let files = build_member_index_files("data.zip", 1000, Some(i64::MAX as u64), lines, None);
+        assert_eq!(files[0].size, Some(i64::MAX));
     }
 
     #[test]

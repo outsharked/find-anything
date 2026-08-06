@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, functions::FunctionFlags, params};
 
 use find_common::api::{ContextLine, FileKind, FileRecord, IndexFile, PathRename, LINE_CONTENT_START};
-use find_common::path::{composite_like_prefix, is_composite};
+use find_common::path::{composite_range_bounds, is_composite};
 
 use find_content_store::{ContentKey, ContentStore};
 
@@ -483,9 +483,10 @@ pub fn delete_files(
         // Clear indexing errors for the outer path and all inner archive members
         // in the same transaction to avoid a second write on this connection.
         tx.execute("DELETE FROM indexing_errors WHERE path = ?1", params![path])?;
+        let (lo, hi) = composite_range_bounds(path);
         tx.execute(
-            "DELETE FROM indexing_errors WHERE path LIKE ?1",
-            params![composite_like_prefix(path)],
+            "DELETE FROM indexing_errors WHERE path >= ?1 AND path < ?2",
+            params![lo, hi],
         )?;
     }
 
@@ -509,10 +510,13 @@ fn delete_one_path_simple(tx: &Connection, path: &str) -> Result<()> {
 
     let Some(outer_id) = outer_id else { return Ok(()); };
 
-    // Delete inner archive members first.
+    // Delete inner archive members first. Range scan, not LIKE — see
+    // find_common::path module doc comment for why LIKE forces a full
+    // table scan on this schema.
+    let (lo, hi) = composite_range_bounds(path);
     tx.execute(
-        "DELETE FROM files WHERE path LIKE ?1",
-        params![composite_like_prefix(path)],
+        "DELETE FROM files WHERE path >= ?1 AND path < ?2",
+        params![lo, hi],
     )?;
 
     // Delete the outer file (CASCADE removes duplicates entries).
@@ -549,22 +553,46 @@ pub struct DeleteDelta {
 /// - Clears indexing errors for the deleted paths in the same transaction.
 /// - Returns a `DeleteDelta` capturing the stats of all deleted outer files
 ///   (composite archive-member paths are excluded from the delta).
-pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<DeleteDelta> {
+/// - `run_cleanup` controls whether the (full-table) singleton-duplicate
+///   sweep runs. It's a per-request cost, not a per-path one, so a caller
+///   chunking one request's `delete_paths` across several calls (to commit
+///   incrementally — see `DELETE_COMMIT_CHUNK` in `worker/request.rs`) should
+///   pass `true` only on the last chunk; repeating the full-table scan on
+///   every chunk turns an O(1)-per-request cost into O(chunks)-per-request,
+///   which dominated the batch's time budget on a large `duplicates` table.
+pub fn delete_files_phase1(conn: &Connection, paths: &[String], run_cleanup: bool) -> Result<DeleteDelta> {
     let mut delta = DeleteDelta { files_removed: 0, size_removed: 0, by_kind: HashMap::new() };
+    if paths.is_empty() {
+        return Ok(delta);
+    }
 
     // Only open an inner transaction when in autocommit mode; when the caller
     // already holds one (group-coalesced phase 1), run inside it directly.
     let tx = if conn.is_autocommit() { Some(conn.unchecked_transaction()?) } else { None };
 
-    for path in paths {
-        // Composite paths (archive members) don't appear in outer-file stats.
-        if !is_composite(path) {
-            let row: Option<(i64, String)> = conn.query_row(
-                "SELECT COALESCE(size,0), kind FROM files WHERE path = ?1",
-                params![path],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            ).optional()?;
-            if let Some((size, kind_str)) = row {
+    // Batched over the whole chunk (one round trip per query, not per path).
+    // With delete batches in the tens/hundreds of thousands — e.g. a
+    // directory tree that vanished between scans — the original per-path
+    // loop (up to 6 statements per path: 2 SELECTs, 3 DELETEs) dominated the
+    // time budget even when most paths were already gone, since a `SELECT`
+    // for a missing row still costs a full index probe. `paths.len()` is
+    // bounded by `DELETE_COMMIT_CHUNK` (500) in the caller, well under
+    // SQLite's default bound-parameter limit.
+    let exact_ph: String = (1..=paths.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+    let exact_params: Vec<&dyn rusqlite::ToSql> = paths.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+
+    // 1. Stats for the files about to be removed. Composite paths (archive
+    //    members) don't appear in outer-file stats, matching the per-path
+    //    loop this replaces.
+    {
+        let sql = format!("SELECT path, COALESCE(size,0), kind FROM files WHERE path IN ({exact_ph})");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(exact_params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+        })?;
+        for row in rows {
+            let (path, size, kind_str) = row?;
+            if !is_composite(&path) {
                 let kind = FileKind::from(kind_str.as_str());
                 delta.files_removed += 1;
                 delta.size_removed  += size;
@@ -573,16 +601,42 @@ pub fn delete_files_phase1(conn: &Connection, paths: &[String]) -> Result<Delete
                 e.1 += size;
             }
         }
-        delete_one_path_simple(conn, path)?;
-        conn.execute("DELETE FROM indexing_errors WHERE path = ?1", params![path])?;
-        conn.execute(
-            "DELETE FROM indexing_errors WHERE path LIKE ?1",
-            params![format!("{}::%", path)],
-        )?;
     }
 
-    // Clean up singleton duplicates.
-    cleanup_singleton_duplicates_tx(conn)?;
+    // Range bounds for "all composite children of path[i]", shared by steps
+    // 2 and 4b below. Range scan, not LIKE — see find_common::path's module
+    // doc comment: on this schema LIKE 'x::%' always forces a full table
+    // scan (measured ~50s/chunk here), while a compound-OR of ranges gets
+    // SQLite's MULTI-INDEX OR optimization (measured ~6ms for 500 terms).
+    let range_ph: String = (0..paths.len())
+        .map(|i| format!("(path >= ?{} AND path < ?{})", i * 2 + 1, i * 2 + 2))
+        .collect::<Vec<_>>().join(" OR ");
+    let mut range_params: Vec<String> = Vec::with_capacity(paths.len() * 2);
+    for path in paths {
+        let (lo, hi) = composite_range_bounds(path);
+        range_params.push(lo);
+        range_params.push(hi);
+    }
+    let range_params_refs: Vec<&dyn rusqlite::ToSql> =
+        range_params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+
+    // 2. Inner archive members: one compound-OR delete for the whole chunk
+    //    instead of one delete per path. Not gated on `kind == archive` —
+    //    iWork files (kind=document) can also have composite children — so
+    //    every path in the chunk still gets a range clause, same as the
+    //    unconditional per-path delete this replaces.
+    conn.execute(&format!("DELETE FROM files WHERE {range_ph}"), range_params_refs.as_slice())?;
+
+    // 3. The outer/listed paths themselves.
+    conn.execute(&format!("DELETE FROM files WHERE path IN ({exact_ph})"), exact_params.as_slice())?;
+
+    // 4. indexing_errors: exact matches, then any composite children.
+    conn.execute(&format!("DELETE FROM indexing_errors WHERE path IN ({exact_ph})"), exact_params.as_slice())?;
+    conn.execute(&format!("DELETE FROM indexing_errors WHERE {range_ph}"), range_params_refs.as_slice())?;
+
+    if run_cleanup {
+        cleanup_singleton_duplicates_tx(conn)?;
+    }
 
     if let Some(tx) = tx { tx.commit()?; }
     Ok(delta)
@@ -623,12 +677,13 @@ pub fn rename_files(conn: &Connection, renames: &[PathRename]) -> Result<()> {
             params![rename.new_path, rename.old_path],
         )?;
 
-        // Update archive member paths: old_path::member → new_path::member
-        let old_prefix = format!("{}::", rename.old_path);
+        // Update archive member paths: old_path::member → new_path::member.
+        // Range scan, not LIKE — see find_common::path's module doc comment.
+        let (old_lo, old_hi) = composite_range_bounds(&rename.old_path);
         let new_prefix = format!("{}::", rename.new_path);
         conn.execute(
-            "UPDATE files SET path = ?1 || substr(path, length(?2) + 1) WHERE path LIKE ?3",
-            params![new_prefix, old_prefix, format!("{}%", old_prefix)],
+            "UPDATE files SET path = ?1 || substr(path, length(?2) + 1) WHERE path >= ?2 AND path < ?3",
+            params![new_prefix, old_lo, old_hi],
         )?;
 
         // Update FTS entry for line_number=0 (filename search line).
@@ -943,7 +998,7 @@ mod tests {
         let conn = test_conn();
         insert_file(&conn, "doomed.txt", 1000, &["doomed.txt", "bye"]);
         conn.execute_batch("BEGIN").unwrap();
-        delete_files_phase1(&conn, &["doomed.txt".to_string()]).unwrap();
+        delete_files_phase1(&conn, &["doomed.txt".to_string()], true).unwrap();
         conn.execute_batch("COMMIT").unwrap();
         assert!(!file_exists(&conn, "doomed.txt"));
     }
@@ -980,7 +1035,7 @@ mod tests {
         let _fid = insert_file(&conn, "docs/readme.txt", 1000, &["docs/readme.txt", "hello world"]);
         assert!(file_exists(&conn, "docs/readme.txt"));
 
-        delete_files_phase1(&conn, &["docs/readme.txt".to_string()]).unwrap();
+        delete_files_phase1(&conn, &["docs/readme.txt".to_string()], true).unwrap();
 
         assert!(!file_exists(&conn, "docs/readme.txt"));
     }
@@ -989,7 +1044,7 @@ mod tests {
     fn test_delete_noop_missing() {
         let conn = test_conn();
         // Should not error when path doesn't exist.
-        delete_files_phase1(&conn, &["nonexistent.txt".to_string()]).unwrap();
+        delete_files_phase1(&conn, &["nonexistent.txt".to_string()], true).unwrap();
     }
 
     #[test]
@@ -1000,7 +1055,7 @@ mod tests {
         insert_file(&conn, "archive.zip::a.txt", 1000, &["archive.zip::a.txt", "content a"]);
         insert_file(&conn, "archive.zip::b.txt", 1000, &["archive.zip::b.txt", "content b"]);
 
-        delete_files_phase1(&conn, &["archive.zip".to_string()]).unwrap();
+        delete_files_phase1(&conn, &["archive.zip".to_string()], true).unwrap();
 
         assert!(!file_exists(&conn, "archive.zip"));
         assert!(!file_exists(&conn, "archive.zip::a.txt"));
@@ -1024,7 +1079,7 @@ mod tests {
         insert_file(&conn, "src/lib.rs", 1000, &["src/lib.rs", "unique_token_xyz"]);
         assert_eq!(fts_live_count(&conn, "unique_token_xyz"), 1);
 
-        delete_files_phase1(&conn, &["src/lib.rs".to_string()]).unwrap();
+        delete_files_phase1(&conn, &["src/lib.rs".to_string()], true).unwrap();
 
         // Lines are CASCADE deleted; FTS rowids are orphaned but JOIN returns nothing.
         assert_eq!(fts_live_count(&conn, "unique_token_xyz"), 0);

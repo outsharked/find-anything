@@ -36,6 +36,17 @@ pub fn get_stats(conn: &Connection) -> Result<(usize, i64, HashMap<FileKind, Kin
         by_kind.insert(FileKind::from(kind_str.as_str()), KindStats { count: count as usize, size, avg_extract_ms: avg_ms });
     }
 
+    // A single corrupt `files.size` value (e.g. a malformed archive header
+    // whose declared size doesn't fit i64) can send this sum negative, and
+    // display code that formats it as an unsigned byte count would then
+    // render a nonsensical multi-exabyte figure. Clamp defensively rather
+    // than propagate a value known to be wrong — the individual bad row(s)
+    // still need fixing, but this keeps the aggregate sane in the meantime.
+    if total_size < 0 {
+        tracing::warn!("get_stats: total_size summed negative ({total_size}) — a stored file size is corrupt; clamping to 0");
+        total_size = 0;
+    }
+
     Ok((total_files, total_size, by_kind))
 }
 
@@ -342,6 +353,27 @@ mod tests {
         let last_scan: String = conn.query_row(
             "SELECT value FROM meta WHERE key = 'last_scan'", [], |r| r.get(0)).unwrap();
         assert_eq!(last_scan, "999");
+    }
+
+    /// A single corrupt `size` value (e.g. an unsanitized malformed-archive
+    /// header that made it into the DB) must not make `get_stats` report a
+    /// negative total — display code downstream casts this to an unsigned
+    /// byte count, and a negative total renders as a nonsensical huge figure.
+    #[test]
+    fn get_stats_clamps_negative_total_size_to_zero() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO files (path, mtime, kind, size) VALUES ('normal.txt', 1000, 'text', 100)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO files (path, mtime, kind, size) VALUES ('corrupt.txt', 1000, 'text', ?1)",
+            params![i64::MIN],
+        ).unwrap();
+
+        let (total_files, total_size, _by_kind) = get_stats(&conn).unwrap();
+        assert_eq!(total_files, 2);
+        assert_eq!(total_size, 0, "negative sum must be clamped rather than propagated");
     }
 
     #[test]
