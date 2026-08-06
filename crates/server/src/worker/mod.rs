@@ -285,19 +285,22 @@ pub async fn start_inbox_worker(
             }
         };
 
-        let mut gz_files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+        // Ordered by filename, not filesystem mtime: `next_request_id` embeds
+        // a monotonic per-process sequence number, so lexicographic filename
+        // order reproduces true request-arrival order exactly. mtime can't:
+        // two requests written within the same mtime-granularity window are
+        // indistinguishable (or worse, silently reordered) by an mtime sort,
+        // which let a delete dispatch ahead of the upsert it was meant to
+        // follow — see `burst_with_interleaved_delete_applies_in_order`.
+        let mut gz_files: Vec<(u64, PathBuf)> = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if path.extension() == Some(OsStr::new("gz")) {
-                let meta = entry.metadata().await.ok();
-                let mtime = meta.as_ref()
-                    .and_then(|m| m.modified().ok())
-                    .unwrap_or(std::time::UNIX_EPOCH);
-                let size = meta.map(|m| m.len()).unwrap_or(0);
-                gz_files.push((mtime, size, path));
+                let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                gz_files.push((size, path));
             }
         }
-        gz_files.sort_unstable_by_key(|(mtime, _, _)| *mtime);
+        gz_files.sort_unstable_by(|(_, a), (_, b)| a.file_name().cmp(&b.file_name()));
 
         if inbox_paused.load(Ordering::Relaxed) {
             continue;
@@ -305,8 +308,7 @@ pub async fn start_inbox_worker(
 
         let candidates: Vec<(u64, PathBuf)> = gz_files
             .into_iter()
-            .filter(|(_, _, p)| !in_flight.contains(p))
-            .map(|(_, size, p)| (size, p))
+            .filter(|(_, p)| !in_flight.contains(p))
             .collect();
 
         let mut remaining = candidates.as_slice();
@@ -332,7 +334,7 @@ pub async fn start_inbox_worker(
     }
 }
 
-/// Take a bounded prefix of the pending inbox files (mtime order) as one
+/// Take a bounded prefix of the pending inbox files (filename/arrival order) as one
 /// dispatch group. Caps: `MAX_GROUP_REQUESTS` files or `MAX_GROUP_GZ_BYTES`
 /// of compressed input, whichever comes first — but always at least one
 /// file, so an oversized request degrades to a group of one (today's

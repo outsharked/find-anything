@@ -55,7 +55,8 @@ pub(super) struct Phase1Handles {
 #[derive(Clone)]
 pub(super) struct GroupContext {
     pub data_dir:       PathBuf,
-    /// Inbox `.gz` files in mtime order.
+    /// Inbox `.gz` files in filename order (== request-arrival order — see
+    /// `next_request_id` in `routes/bulk.rs`).
     pub paths:          Vec<PathBuf>,
     pub failed_dir:     PathBuf,
     pub to_archive_dir: PathBuf,
