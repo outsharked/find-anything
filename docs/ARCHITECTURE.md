@@ -107,7 +107,10 @@ Key invariants:
 - The bulk route handler only writes a `.gz` file to `data_dir/inbox/` and returns `202 Accepted`.
 - Within a `BulkRequest`, the worker processes **deletes first, then upserts** so renames work correctly.
 - **Group coalescing (plan 093):** the router dispatches inbox files in bounded *groups*
-  (≤ 32 files / ≤ 8 MiB compressed per group, mtime order). Consecutive same-source requests
+  (≤ 32 files / ≤ 8 MiB compressed per group, filename/arrival order — each inbox filename
+  embeds a monotonic sequence number from `routes/bulk.rs`, not filesystem mtime, since two
+  requests written within the same mtime-granularity window are otherwise indistinguishable
+  or even reorderable by an mtime sort). Consecutive same-source requests
   share one SQLite connection (`SourceSession` in worker/group.rs) with an open transaction
   committed every 25 write units *across* request boundaries — so a burst of single-file
   uploads doesn't pay one full commit per request. Groups only contain files already queued

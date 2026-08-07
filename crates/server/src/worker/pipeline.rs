@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 
 use find_common::api::{FileKind, IndexFile, IndexLine, LINE_PATH, LINE_METADATA};
-use find_common::path::{composite_like_prefix, is_composite};
+use find_common::path::{composite_range_bounds, is_composite};
 use find_content_store::{ContentKey, ContentStore};
 
 use crate::db::{encode_fts_rowid, MAX_LINES_PER_FILE};
@@ -51,14 +51,14 @@ pub(super) fn process_file_phase1_fallback(
     // If re-indexing an outer archive, stale inner members need deleting (SQL
     // only). Computed here but issued as the first statement inside the
     // savepoint below, alongside the upsert — the SELECT for existing_record
-    // just below matches this file's own path exactly, never a "path LIKE"
-    // inner-member row, so doing the delete after the read here doesn't
-    // change what that query sees. Orphaned chunks left in ZIPs are reclaimed
-    // by the periodic compaction pass.
-    let inner_delete_pattern = (!skip_inner_delete
+    // just below matches this file's own path exactly, never an inner-member
+    // row, so doing the delete after the read here doesn't change what that
+    // query sees. Orphaned chunks left in ZIPs are reclaimed by the periodic
+    // compaction pass.
+    let inner_delete_range = (!skip_inner_delete
         && is_outer_archive(&file.path, &file.kind)
         && file.mtime == 0)
-        .then(|| composite_like_prefix(&file.path));
+        .then(|| composite_range_bounds(&file.path));
 
     // Single query for the existing record: id, mtime, size, kind, file_hash, line_count.
     let existing_record: Option<(i64, i64, i64, String, Option<String>, i64)> = conn.query_row(
@@ -126,8 +126,8 @@ pub(super) fn process_file_phase1_fallback(
     let t_fts = std::time::Instant::now();
     let sp = conn.savepoint()?;
 
-    if let Some(like_pat) = &inner_delete_pattern {
-        sp.execute("DELETE FROM files WHERE path LIKE ?1", rusqlite::params![like_pat])?;
+    if let Some((lo, hi)) = &inner_delete_range {
+        sp.execute("DELETE FROM files WHERE path >= ?1 AND path < ?2", rusqlite::params![lo, hi])?;
     }
 
     let line_count = file.lines.len() as i64;
