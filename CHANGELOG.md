@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.8.5] - 2026-09-10
+
 ### Fixed
 
 - **Linux x86_64 and aarch64 release binaries couldn't run on older NAS distros** — both targets were built in CI with a plain `cargo build` on `ubuntu-24.04` runners, which links against a recent glibc (2.38/2.39) newer than what many NAS OSes ship (e.g. Synology DSM 7.4.1 on Apollo Lake hardware has glibc 2.36), so `find-watch`/`find-scan`/etc. failed to start at all (`GLIBC_2.38' not found`). armv7 already avoided this by building through `cross` (an older sysroot baseline), but x86_64 and aarch64 didn't. Fixed by building all three Linux targets through `cross` in `release.yml`, matching the armv7 pattern; verified the resulting x86_64 binary runs on DSM 7.4.1 (glibc 2.36).
