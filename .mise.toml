@@ -53,9 +53,26 @@ GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
 # "sccache" would need a PATH lookup the container doesn't have).
 RUSTC_WRAPPER = "{{exec(command='which sccache')}}"
 
+[tasks.build-arm64]
+description = "Build all binaries for aarch64 NAS using cross (matches CI, avoids glibc version mismatch)"
+run = [
+  "rm -rf web/build",
+  "pnpm --dir web run build",
+  "cross build --release --target aarch64-unknown-linux-gnu",
+]
+
+[tasks.build-arm64.env]
+GIT_HASH = "{{exec(command='git rev-parse --short HEAD')}}"
+GIT_TAG = "{{exec(command='git tag --points-at HEAD 2>/dev/null | head -1')}}"
+GIT_DIRTY = "{{exec(command='git status --porcelain 2>/dev/null | head -1')}}"
+# Absolute path to sccache, resolved per-machine at task run time (see Cross.toml —
+# it mounts and execs this path directly inside the container, since a bare
+# "sccache" would need a PATH lookup the container doesn't have).
+RUSTC_WRAPPER = "{{exec(command='which sccache')}}"
+
 [tasks.build-linux]
-description = "Build all Linux release artifacts: x86_64 server and ARM7 NAS binaries"
-depends = ["build", "build-arm"]
+description = "Build all Linux release artifacts: x86_64 server, ARM7 NAS, and aarch64 NAS binaries"
+depends = ["build", "build-arm", "build-arm64"]
 
 [tasks.build-win]
 description = "Cross-compile Windows binaries only (no installer) - this is for development"

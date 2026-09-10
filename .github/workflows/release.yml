@@ -48,10 +48,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: linux-x86_64
             ext: ""
+            use_cross: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: linux-aarch64
             ext: ""
+            use_cross: true
           - os: ubuntu-24.04
             target: armv7-unknown-linux-gnueabihf
             artifact_name: linux-armv7
