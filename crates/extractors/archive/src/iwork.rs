@@ -205,8 +205,8 @@ fn extract_tile_row_strings(data: &[u8]) -> Vec<String> {
     }
     if cell_buf.is_empty() || !offsets_raw.len().is_multiple_of(2) { return Vec::new(); }
     // cellOffsets is a tightly-packed array of uint16 LE byte offsets.
-    let offsets: Vec<usize> = offsets_raw.chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]) as usize)
+    let offsets: Vec<usize> = offsets_raw.as_chunks::<2>().0.iter()
+        .map(|c| u16::from_le_bytes(*c) as usize)
         .collect();
     let mut out = Vec::new();
     for (i, &start) in offsets.iter().enumerate() {

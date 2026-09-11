@@ -48,10 +48,18 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: linux-x86_64
             ext: ""
+            use_cross: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: linux-aarch64
             ext: ""
+            # NOT use_cross here, unlike x86_64/armv7 below: `cross` fails outright
+            # on a native aarch64 runner (tries to install an x86_64 host toolchain
+            # internally — "toolchain 'stable-x86_64-unknown-linux-gnu' may not be
+            # able to run on this system"). This target still links against this
+            # runner's newer glibc as a result, so it likely has the same
+            # too-new-GLIBC problem on old aarch64 NAS boxes that x86_64 had —
+            # tracked as a follow-up, not fixed here.
           - os: ubuntu-24.04
             target: armv7-unknown-linux-gnueabihf
             artifact_name: linux-armv7
