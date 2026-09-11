@@ -681,7 +681,19 @@ async fn handle_update(
             ).await {
                 subprocess::SubprocessOutcome::Ok(lines) => lines,
                 subprocess::SubprocessOutcome::BinaryMissing => return Ok(()),
-                subprocess::SubprocessOutcome::Failed => vec![],
+                // Unlike other routes, do NOT fall through to the shared upsert
+                // below (which used to run with `lines: vec![]`). That upsert
+                // writes the outer file's *real* mtime, and since archive
+                // members are separate rows keyed by composite path — not
+                // touched by this upsert at all — a failed re-extraction would
+                // leave every existing member permanently stale while making
+                // the outer file look freshly re-indexed. That hides the
+                // failure from every later mtime comparison (a full rescan
+                // included), so the archive never gets retried again. Bailing
+                // out here instead (like BinaryMissing already does) leaves
+                // the previously-stored mtime in place, so the file keeps
+                // looking "changed" until extraction actually succeeds.
+                subprocess::SubprocessOutcome::Failed => return Ok(()),
             }
         }
         subprocess::ExtractorRoute::Subprocess(ref binary) => {
