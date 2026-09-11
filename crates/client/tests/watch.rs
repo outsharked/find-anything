@@ -255,3 +255,88 @@ async fn w5_external_extractor_honoured_by_watch() {
 
     handle.abort();
 }
+
+// ── W8 — Failed archive re-extraction does not wedge the file ─────────────────
+
+fn build_test_zip(member_content: &str) -> Vec<u8> {
+    use std::io::Write;
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(cursor);
+    zip.start_file("member.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(member_content.as_bytes()).unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+#[ignore]
+#[tokio::test]
+async fn w8_failed_archive_reextraction_does_not_wedge_file() {
+    let env = TestEnv::new().await;
+
+    // Baseline: index a real zip with a working extractor.
+    let zip_path = env.write_file_bytes("archive.zip", &build_test_zip("version_a_wedge_test"));
+    env.run_scan().await;
+    assert!(
+        !env.search("version_a_wedge_test").await.is_empty(),
+        "baseline member content not indexed"
+    );
+    let stored_mtime_before = env
+        .list_files()
+        .await
+        .into_iter()
+        .find(|f| f.path == "archive.zip")
+        .expect("archive.zip indexed")
+        .mtime;
+
+    // Point extractor_dir at a find-extract-archive stand-in that always
+    // fails, so any watch-triggered re-extraction of this zip fails too.
+    let broken_dir = tempfile::TempDir::new().unwrap();
+    let broken_bin = broken_dir.path().join(if cfg!(windows) { "find-extract-archive.exe" } else { "find-extract-archive" });
+    std::fs::write(&broken_bin, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&broken_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let broken_dir_path = broken_dir.path().to_string_lossy().to_string();
+    let config = env.client_config_with(|watch| {
+        watch.extractor_dir = Some(broken_dir_path.clone());
+    });
+
+    let handle = start_watcher_with_config(config).await;
+
+    // Edit the zip — new mtime, new content — triggering handle_update's
+    // Archive route, which will fail extraction via the broken binary above.
+    let new_mtime = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    std::fs::write(&zip_path, build_test_zip("version_b_wedge_test")).unwrap();
+    filetime::set_file_mtime(&zip_path, filetime::FileTime::from_system_time(new_mtime))
+        .expect("set mtime");
+    settle(&env).await;
+
+    handle.abort();
+
+    // The bug: a failed re-extraction used to still upsert the outer file's
+    // real (new) mtime, making it look already up to date forever. Assert
+    // the stored mtime is unchanged from before the failed attempt, so a
+    // later scan will still see this file as needing re-indexing.
+    let stored_mtime_after = env
+        .list_files()
+        .await
+        .into_iter()
+        .find(|f| f.path == "archive.zip")
+        .expect("archive.zip still indexed after failed re-extraction")
+        .mtime;
+    assert_eq!(
+        stored_mtime_before, stored_mtime_after,
+        "outer file's stored mtime advanced despite failed extraction — \
+         the archive would never be retried by a later scan"
+    );
+
+    // Self-heals: rescanning with a working extractor now must pick up the
+    // real edit, since the stored mtime still looks stale.
+    env.run_scan().await;
+    assert!(
+        !env.search("version_b_wedge_test").await.is_empty(),
+        "archive did not recover its new content after a working rescan"
+    );
+}
