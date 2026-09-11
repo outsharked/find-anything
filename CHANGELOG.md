@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.8.6] - 2026-09-11
+
 ### Fixed
 
 - **`find-watch` could permanently wedge an archive's search index after any failed re-extraction, with no error visible in the log** — unlike a full `find-scan`, which re-indexes an updated archive by first sending a `mtime=0` sentinel (so an interrupted run is naturally retried) and only marking it complete once every member has been resubmitted, `find-watch`'s `handle_update` used a single blocking extraction call and, on failure, still upserted the outer file with its *real* new mtime and no members. That made the archive look freshly re-indexed to every later mtime comparison — including a subsequent full rescan — so a transient extraction failure (or a persistently unextractable archive) silently froze that file's search results at their last successful state forever, with old archive members never refreshed or deleted. Fixed by leaving the extraction-failed case to fall through to the same early return as a missing extractor binary: nothing is submitted, so the previously-stored mtime stays in place and the file keeps looking "changed" until extraction actually succeeds. Separately, the failure warning itself (`extract_via_subprocess`) was being silently dropped by `find-watch.service`'s `RUST_LOG=find_watch=info` — that log call lives in the `find_client` library crate, a different tracing target than the `find_watch` binary crate the filter named, so `warn!`/`error!` from all client-library extraction code was invisible regardless of this fix. `RUST_LOG` now also enables `find_client=info`.
