@@ -22,7 +22,8 @@ use find_common::api::{
 use crate::{AppState, CachedUpdateCheck};
 use crate::db;
 
-use super::{check_auth, run_blocking, source_db_path};
+use super::{check_scope, run_blocking, source_db_path};
+use find_common::api::Scope;
 
 const GITHUB_REPO: &str = "jamietre/find-anything";
 const UPDATE_CACHE_TTL: Duration = Duration::from_secs(3600);
@@ -33,7 +34,7 @@ pub async fn inbox_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -107,7 +108,7 @@ pub async fn inbox_clear(
     headers: HeaderMap,
     Query(query): Query<InboxDeleteQuery>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -149,7 +150,7 @@ pub async fn inbox_retry(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -182,7 +183,7 @@ pub async fn inbox_pause(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -218,7 +219,7 @@ pub async fn inbox_resume(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -241,7 +242,7 @@ pub async fn inbox_show(
     headers: HeaderMap,
     Query(query): Query<InboxShowQuery>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -407,7 +408,7 @@ pub async fn update_check(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -456,7 +457,7 @@ pub async fn update_apply(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -590,7 +591,7 @@ pub async fn compact(
     headers: HeaderMap,
     Query(query): Query<CompactQuery>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -629,7 +630,7 @@ pub async fn delete_source(
     headers: HeaderMap,
     Query(query): Query<DeleteSourceQuery>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Admin) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 

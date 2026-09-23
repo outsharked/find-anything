@@ -15,6 +15,7 @@ pub mod constants;
 pub mod links;
 pub mod search;
 pub mod stats;
+pub mod tokens;
 pub mod tree;
 
 #[allow(unused_imports)]

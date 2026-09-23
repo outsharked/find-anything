@@ -191,7 +191,9 @@ if [ -f "$CONFIG_FILE" ]; then
 fi
 
 echo "Client configuration"
-echo "  find-anything server URL and token (from your server's server.toml)."
+echo "  find-anything server URL and an invite code (or token) for this machine."
+echo "  Create an invite on the server with:"
+echo "    find-admin invite create --name <this-machine> --scope update-index"
 echo ""
 
 while true; do
@@ -219,12 +221,57 @@ while true; do
   fi
 done
 
-printf "Bearer token (from server.toml): "
+printf "Invite code (or bearer token): "
 read -r TOKEN </dev/tty
 
 if [ -z "$TOKEN" ]; then
-  echo "Token cannot be empty." >&2
+  echo "An invite code or token is required." >&2
   exit 1
+fi
+
+# An invite code is exactly 8 letters/digits once dashes and spaces are removed
+# (e.g. ABCD-EFGH). Anything else is treated as a raw bearer token.
+INVITE_CLEAN="$(printf '%s' "$TOKEN" | tr -d ' -' | tr 'a-z' 'A-Z')"
+if printf '%s' "$INVITE_CLEAN" | grep -Eq '^[0-9A-Z]{8}$' && [ "${TOKEN#fa_}" = "$TOKEN" ]; then
+  printf "Redeeming invite code... "
+  REDEEM_RESP="$(curl -sS --max-time 15 -w '\n%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d "{\"code\":\"$INVITE_CLEAN\"}" \
+    "${SERVER_URL}/api/v1/auth/redeem" 2>/dev/null || true)"
+  REDEEM_STATUS="$(printf '%s' "$REDEEM_RESP" | tail -n1)"
+  REDEEM_BODY="$(printf '%s' "$REDEEM_RESP" | sed '$d')"
+  case "$REDEEM_STATUS" in
+    200)
+      TOKEN="$(printf '%s' "$REDEEM_BODY" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+      REDEEM_NAME="$(printf '%s' "$REDEEM_BODY" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
+      REDEEM_SCOPE="$(printf '%s' "$REDEEM_BODY" | sed -n 's/.*"scope":"\([^"]*\)".*/\1/p')"
+      if [ -z "$TOKEN" ]; then
+        echo "failed" >&2
+        echo "Unexpected response from server." >&2
+        exit 1
+      fi
+      echo "OK (enrolled as '$REDEEM_NAME', scope: $REDEEM_SCOPE)"
+      ;;
+    401)
+      echo "not a valid invite"
+      echo "  Treating the input as a bearer token instead."
+      ;;
+    429)
+      echo "failed" >&2
+      echo "Too many failed attempts — wait a minute and try again." >&2
+      exit 1
+      ;;
+    409)
+      echo "failed" >&2
+      echo "A token with this invite's name already exists — ask the admin for a new invite." >&2
+      exit 1
+      ;;
+    *)
+      echo "failed" >&2
+      echo "Could not redeem the invite (HTTP ${REDEEM_STATUS:-no response}). Is the server up to date?" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 DEFAULT_SOURCE_NAME="$(hostname | cut -d. -f1)"

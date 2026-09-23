@@ -48,7 +48,7 @@ find-server
 [server]
 bind     = "0.0.0.0:8765"              # Address and port to listen on
 data_dir = "/var/lib/find-anything"    # Where SQLite DBs and content ZIPs are stored
-token    = "change-me"                 # Bearer token required by all API calls
+token    = "change-me"                 # Root admin token (full access). Clients should use invites — see `find-admin invite`
 
 [search]
 default_limit       = 50    # Default result count per search request
@@ -175,6 +175,57 @@ find-admin [OPTIONS] <COMMAND>
 | ----------------- | ------------------------------------------------------------------- |
 | `--config <PATH>` | Client config file (default: `~/.config/find-anything/client.toml`) |
 | `--json`          | Print raw JSON instead of human-readable output                     |
+
+---
+
+### find-admin invite
+
+Manage one-time invite codes that let a new client obtain its own access token.
+Requires an admin token (the root token in your client config works).
+
+```sh
+find-admin invite create --name <token-name> --scope <read|update-index|admin> \
+                         [--ttl 15m] [--expires-in 30d]
+find-admin invite list
+find-admin invite revoke <id>
+```
+
+- `--name` — name of the token the invite produces (shown in `token list` and the server log); must be unique.
+- `--scope` — `read` (search/browse), `update-index` (also `/bulk`, `/upload`) or `admin` (everything). Fixed by you; the redeemer cannot change it.
+- `--ttl` — how long the *invite* stays redeemable (default `15m`; suffixes `s m h d w`).
+- `--expires-in` — optional lifetime of the resulting *token* (default: never).
+
+The code is printed once, in the form `7K3M-9P2Q`; it is case-insensitive and
+the dash is optional. Failed redemption attempts are rate-limited.
+
+---
+
+### find-admin redeem
+
+Exchange an invite code for a token and save it into `client.toml`. Works on a
+machine that has no config yet (the file is created, mode `0600`).
+
+```sh
+find-admin redeem 7K3M-9P2Q --url http://server:8765
+find-admin --config /etc/find-anything/client.toml redeem 7K3M-9P2Q   # reuse existing server.url
+```
+
+An existing config is edited in place: only `[server] token` (and `url` if
+`--url` is given) change; comments and `[[sources]]` are preserved.
+
+---
+
+### find-admin token
+
+List and revoke access tokens (admin token required).
+
+```sh
+find-admin token list             # name, scope, created, expires, last used
+find-admin token revoke <name>    # takes effect immediately, no restart
+```
+
+Token values are never shown after creation. The root token in `server.toml` is
+not listed and cannot be revoked here — rotate it by editing `server.toml`.
 
 ---
 

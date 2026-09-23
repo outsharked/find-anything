@@ -9,9 +9,10 @@
 	import CommandPalette from '$lib/CommandPalette.svelte';
 	import GoToLineDialog from '$lib/GoToLineDialog.svelte';
 	import MultiSourceTree from '$lib/MultiSourceTree.svelte';
-	import { search, listSources, getSettings, activateSession, AuthError } from '$lib/api';
+	import { search, listSources, getSettings, activateSession, redeemInvite, AuthError, RedeemError } from '$lib/api';
 	import type { SearchResult, SourceInfo } from '$lib/api';
-	import { getToken, setToken } from '$lib/token';
+	import { getToken, setToken, clearToken } from '$lib/token';
+	import { planConnect, redeemErrorMessage } from '$lib/authLogic';
 	import { startLiveUpdates, liveEvent } from '$lib/liveUpdates';
 	import { contextWindow, maxMarkdownRenderKb, fileViewPageSize, tabWidth, publicUrl } from '$lib/settingsStore';
 	import { formatHash, parseHash } from '$lib/lineSelection';
@@ -111,15 +112,45 @@
 		if (!getToken()) showTokenSetup = true;
 	}
 
-	function saveToken() {
-		if (!tokenInput.trim()) return;
-		setToken(tokenInput.trim());
-		tokenInput = '';
-		showTokenSetup = false;
-		// Set the session cookie so browser-native requests (e.g. <img src>) work.
-		activateSession();
-		// Re-run initial data load now that we have a token.
-		initialLoad();
+	let connecting = $state(false);
+	let connectError = $state('');
+
+	/** Accept either an invite code (redeemed for a token) or a raw token. */
+	async function saveToken() {
+		const input = tokenInput.trim();
+		if (!input || connecting) return;
+		connecting = true;
+		connectError = '';
+		try {
+			const plan = planConnect(input);
+			if (plan.kind === 'invite') {
+				try {
+					setToken((await redeemInvite(plan.code)).token);
+				} catch (e) {
+					if (!(e instanceof RedeemError)) throw e;
+					// An 8-character static token looks like an invite code; on a
+					// rejected redemption, see whether it works as a token.
+					let usable = false;
+					if (e.status === 401) {
+						setToken(input);
+						try { await listSources(); usable = true; } catch { clearToken(); }
+					}
+					if (!usable) { connectError = redeemErrorMessage(e.status); return; }
+				}
+			} else {
+				setToken(plan.token);
+			}
+			tokenInput = '';
+			showTokenSetup = false;
+			// Set the session cookie so browser-native requests (e.g. <img src>) work.
+			activateSession();
+			// Re-run initial data load now that we have a token.
+			initialLoad();
+		} catch {
+			connectError = 'Could not reach the server.';
+		} finally {
+			connecting = false;
+		}
 	}
 
 	async function initialLoad() {
@@ -773,14 +804,21 @@
 	<div class="token-overlay" onclick={(e) => { if (e.target === e.currentTarget) { /* no-op */ } }}>
 		<div class="token-dialog">
 			<h2>Connect to find-server</h2>
-			<p>Enter the bearer token from your <code>server.toml</code> to connect.</p>
+			<p>
+				Enter an invite code (create one with <code>find-admin invite create</code>),
+				or paste the admin token from your <code>server.toml</code>.
+			</p>
 			<input
 				type="password"
-				placeholder="Paste your token here"
+				placeholder="Invite code or token"
+				autocomplete="off"
 				bind:value={tokenInput}
 				onkeydown={(e) => e.key === 'Enter' && saveToken()}
 			/>
-			<button onclick={saveToken} disabled={!tokenInput.trim()}>Connect</button>
+			{#if connectError}<p class="token-error" role="alert">{connectError}</p>{/if}
+			<button onclick={saveToken} disabled={!tokenInput.trim() || connecting}>
+				{connecting ? 'Connecting…' : 'Connect'}
+			</button>
 		</div>
 	</div>
 {/if}
@@ -894,6 +932,12 @@
 		font-size: 14px;
 		color: var(--text-muted, #999);
 		line-height: 1.5;
+	}
+
+	.token-dialog .token-error {
+		color: var(--error, #c0392b);
+		margin: 0.5rem 0 0;
+		font-size: 0.85rem;
 	}
 
 	.token-dialog input {

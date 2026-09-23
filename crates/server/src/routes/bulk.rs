@@ -10,7 +10,8 @@ use axum::{
 
 use crate::AppState;
 
-use super::check_auth;
+use super::check_scope;
+use find_common::api::Scope;
 
 // ── POST /api/v1/bulk ─────────────────────────────────────────────────────────
 
@@ -42,7 +43,7 @@ pub async fn bulk(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) { return s.into_response(); }
+    if let Err(s) = check_scope(&state, &headers, Scope::UpdateIndex) { return s.into_response(); }
 
     let is_gzip = headers
         .get(header::CONTENT_ENCODING)

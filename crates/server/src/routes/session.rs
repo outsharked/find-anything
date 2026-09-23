@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::AppState;
 
-use super::check_auth;
+use super::{bearer_token, resolve_token};
 
 #[derive(Deserialize)]
 pub struct SessionRequest {
@@ -21,24 +21,23 @@ pub struct SessionRequest {
 ///
 /// Validates the provided token and sets an HttpOnly session cookie so that
 /// browser-native requests (e.g. `<img src>`) can be authenticated without
-/// custom headers.
+/// custom headers. The cookie holds the token that was *presented*, so the
+/// session inherits that token's scope.
 pub async fn create_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<SessionRequest>,
 ) -> impl IntoResponse {
     // Accept the token from the JSON body, or fall back to the Authorization header.
-    let token_valid = if let Some(ref t) = body.token {
-        *t == state.config.server.token
-    } else {
-        check_auth(&state, &headers).is_ok()
-    };
+    let presented = body.token.as_deref().or_else(|| bearer_token(&headers));
 
-    if !token_valid {
+    if resolve_token(&state, presented).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    let token = body.token.as_deref().unwrap_or(&state.config.server.token);
+    // Only reachable with an empty presented value when the server is open
+    // (empty root token), in which case the cookie value is never checked.
+    let token = presented.unwrap_or("");
     let cookie = format!(
         "find_session={token}; HttpOnly; SameSite=Strict; Path=/"
     );

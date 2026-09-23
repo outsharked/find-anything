@@ -15,7 +15,8 @@ use rusqlite::OptionalExtension;
 
 use crate::{db, AppState};
 
-use super::{check_auth, check_link_code_auth, composite_path, run_blocking, source_db_path};
+use super::{check_scope, check_link_code_auth, composite_path, run_blocking, source_db_path};
+use find_common::api::Scope;
 
 // ── GET /api/v1/file?source=X&path=Y[&archive_path=Z][&link_code=C] ──────────
 //
@@ -43,7 +44,7 @@ pub async fn get_file(
     Query(params): Query<FileParams>,
 ) -> impl IntoResponse {
     if params.link_code.is_none() {
-        if let Err(s) = check_auth(&state, &headers) {
+        if let Err(s) = check_scope(&state, &headers, Scope::Read) {
             return (s, Json(serde_json::Value::Null)).into_response();
         }
     }
@@ -162,7 +163,7 @@ pub async fn list_files(
     headers: HeaderMap,
     Query(params): Query<FilesParams>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) { return (s, Json(serde_json::Value::Null)).into_response(); }
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) { return (s, Json(serde_json::Value::Null)).into_response(); }
 
     let db_path = match source_db_path(&state, &params.source) {
         Ok(p) => p,

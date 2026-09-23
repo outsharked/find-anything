@@ -14,7 +14,8 @@ use find_common::api::{UploadInitRequest, UploadInitResponse, UploadPatchRespons
 
 use crate::upload::{index_upload, part_path, part_size, read_meta, touch_meta, uploads_dir, write_meta, UploadMeta};
 use crate::AppState;
-use crate::routes::check_auth;
+use crate::routes::check_scope;
+use find_common::api::Scope;
 
 /// `POST /api/v1/upload` — initiate a resumable upload.
 pub async fn upload_init(
@@ -22,7 +23,7 @@ pub async fn upload_init(
     headers: HeaderMap,
     Json(req): Json<UploadInitRequest>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::UpdateIndex) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -69,7 +70,7 @@ pub async fn upload_patch(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::UpdateIndex) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -118,7 +119,7 @@ pub async fn upload_patch(
     if received >= meta.total_size {
         let data_dir = state.data_dir.clone();
         let server_url = format!("http://127.0.0.1:{}", port_from_bind(&state.config.server.bind));
-        let token = state.config.server.token.clone();
+        let token = state.internal_token.clone();
         let server_scan = state.config.scan.clone();
         let meta_clone = meta.clone();
         let id_clone = id.clone();
@@ -136,7 +137,7 @@ pub async fn upload_status(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::UpdateIndex) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 

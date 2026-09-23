@@ -322,7 +322,7 @@ begin
 
   // ── Page 1: Server connection ──────────────────────────────────────────────
   ServerPage := CreateCustomPage(wpSelectDir, 'Client Configuration',
-    'Enter the URL and token for your find-anything server.');
+    'Enter the URL for your find-anything server and an invite code (or token).');
 
   // All Top values passed through ScaleY() so the layout is DPI-aware.
   // Base positions assume 96 DPI / default font; ScaleY adjusts for larger fonts.
@@ -368,7 +368,7 @@ begin
   ServerUrlEdit.Width := ServerPage.SurfaceWidth;
 
   LabelToken := TLabel.Create(ServerPage);
-  LabelToken.Caption := 'Bearer Token:';
+  LabelToken.Caption := 'Invite code (or bearer token):';
   LabelToken.Parent := ServerPage.Surface;
   LabelToken.Top := ScaleY(116);
   LabelToken.Left := 0;
@@ -438,9 +438,85 @@ begin
   Result := False;
 end;
 
+// ── Invite codes ──────────────────────────────────────────────────────────────
+// An invite code (e.g. ABCD-EFGH, from `find-admin invite create` on the server)
+// is exactly 8 letters/digits once dashes and spaces are removed. Anything else
+// is treated as a raw bearer token.
+
+function LooksLikeInviteCode(const Input: string; var Canonical: string): Boolean;
+var
+  I: Integer;
+  C: string;
+begin
+  Canonical := '';
+  for I := 1 to Length(Input) do
+  begin
+    C := Uppercase(Input[I]);
+    if (C <> '-') and (C <> ' ') then
+      Canonical := Canonical + C;
+  end;
+  Result := Length(Canonical) = 8;
+  if Result then
+    for I := 1 to 8 do
+      if not (((Canonical[I] >= '0') and (Canonical[I] <= '9')) or
+              ((Canonical[I] >= 'A') and (Canonical[I] <= 'Z'))) then
+        Result := False;
+end;
+
+// Exchange an invite code for a token. Returns True and sets Token on success.
+// Err is 'invalid' when the server rejected the code (caller may then treat the
+// input as a raw token), otherwise a human-readable message.
+function RedeemInvite(ServerUrl, Code: string; var Token, Err: string): Boolean;
+var
+  Http: Variant;
+  Body: string;
+  P, Q, Status: Integer;
+begin
+  Result := False;
+  Token := '';
+  Err := '';
+  while (ServerUrl <> '') and (ServerUrl[Length(ServerUrl)] = '/') do
+    Delete(ServerUrl, Length(ServerUrl), 1);
+  try
+    Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
+    Http.Open('POST', ServerUrl + '/api/v1/auth/redeem', False);
+    Http.SetRequestHeader('Content-Type', 'application/json');
+    Http.Send('{"code":"' + Code + '"}');
+    Status := Http.Status;
+    case Status of
+      200:
+        begin
+          Body := Http.ResponseText;
+          P := Pos('"token":"', Body);
+          if P > 0 then
+          begin
+            Delete(Body, 1, P + Length('"token":"') - 1);
+            Q := Pos('"', Body);
+            if Q > 1 then
+            begin
+              Token := Copy(Body, 1, Q - 1);
+              Result := True;
+            end;
+          end;
+          if not Result then
+            Err := 'Unexpected response from the server.';
+        end;
+      401: Err := 'invalid';
+      429: Err := 'Too many failed attempts. Wait a minute and try again.';
+      409: Err := 'A token with this invite''s name already exists. Ask the admin for a new invite.';
+    else
+      Err := 'The server returned HTTP ' + IntToStr(Status) + '. Is find-server up to date?';
+    end;
+  except
+    Err := 'Could not reach the server: ' + GetExceptionMessage;
+  end;
+end;
+
 // ── Validate inputs before leaving pages ─────────────────────────────────────
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  InviteCode, RedeemedToken, RedeemErr: string;
 begin
   Result := True;
 
@@ -454,9 +530,23 @@ begin
     end;
     if Trim(TokenEdit.Text) = '' then
     begin
-      MsgBox('Please enter the bearer token.', mbError, MB_OK);
+      MsgBox('Please enter an invite code or bearer token.', mbError, MB_OK);
       Result := False;
       Exit;
+    end;
+    // Exchange an invite code for a token. On success the field holds the
+    // token, so going Back and Next again does not redeem twice.
+    if LooksLikeInviteCode(Trim(TokenEdit.Text), InviteCode) then
+    begin
+      if RedeemInvite(Trim(ServerUrlEdit.Text), InviteCode, RedeemedToken, RedeemErr) then
+        TokenEdit.Text := RedeemedToken
+      else if RedeemErr <> 'invalid' then
+      begin
+        MsgBox('Could not redeem the invite: ' + RedeemErr, mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+      // 'invalid': not a known invite; keep the text and use it as a raw token.
     end;
     if Trim(SourceNameEdit.Text) = '' then
     begin

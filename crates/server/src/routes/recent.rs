@@ -17,7 +17,8 @@ use find_common::api::{RecentAction, RecentFile, RecentResponse};
 
 use crate::{db, AppState};
 
-use super::check_auth;
+use super::check_scope;
+use find_common::api::Scope;
 
 // ── GET /api/v1/recent ────────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ pub async fn get_recent(
     headers: HeaderMap,
     Query(query): Query<RecentQuery>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -181,7 +182,7 @@ pub async fn stream_recent(
     headers: HeaderMap,
     Query(query): Query<RecentQuery>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, "Unauthorized").into_response();
     }
 

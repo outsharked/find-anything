@@ -25,6 +25,39 @@ impl TestServer {
 
     /// Spawn a TestServer with additional TOML config appended (e.g. source path config).
     pub async fn spawn_with_extra_config(extra: &str) -> Self {
+        Self::spawn_inner(TEST_TOKEN, extra).await
+    }
+
+    /// Spawn a TestServer with an empty root token (authentication disabled).
+    /// `client` carries no Authorization header.
+    pub async fn spawn_open() -> Self {
+        Self::spawn_inner("", "").await
+    }
+
+    /// A fresh client that presents `token` as a bearer credential
+    /// (no cookie store, no redirects).
+    pub fn client_with_token(&self, token: &str) -> reqwest::Client {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        reqwest::Client::builder()
+            .default_headers(headers)
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client")
+    }
+
+    /// A fresh client that presents no credentials at all.
+    pub fn anonymous_client(&self) -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client")
+    }
+
+    async fn spawn_inner(root_token: &str, extra: &str) -> Self {
         let data_dir = tempfile::TempDir::new().expect("tempdir");
         let data_path = data_dir.path().to_str().unwrap().to_string();
 
@@ -34,7 +67,7 @@ impl TestServer {
         let addr = listener.local_addr().expect("local_addr");
 
         let config_toml = format!(
-            "[server]\ndata_dir = \"{data_path}\"\ntoken = \"{TEST_TOKEN}\"\nbind = \"{addr}\"\n{extra}"
+            "[server]\ndata_dir = \"{data_path}\"\ntoken = \"{root_token}\"\nbind = \"{addr}\"\n{extra}"
         );
         let (config, _) = parse_server_config(&config_toml).expect("parse config");
 
@@ -51,10 +84,12 @@ impl TestServer {
         });
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {TEST_TOKEN}")).unwrap(),
-        );
+        if !root_token.is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {root_token}")).unwrap(),
+            );
+        }
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .timeout(Duration::from_secs(30))

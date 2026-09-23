@@ -13,7 +13,8 @@ use find_common::api::{SourceInfo, TreeExpandResponse, TreeResponse};
 use crate::AppState;
 
 use crate::db;
-use super::{check_auth, run_blocking, source_db_path};
+use super::{check_scope, run_blocking, source_db_path};
+use find_common::api::Scope;
 
 // ── GET /api/v1/sources ───────────────────────────────────────────────────────
 
@@ -21,7 +22,7 @@ pub async fn list_sources(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
     let sources_dir = state.data_dir.join("sources");
@@ -59,7 +60,7 @@ pub async fn list_dir(
     headers: HeaderMap,
     Query(params): Query<TreeParams>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -94,7 +95,7 @@ pub async fn expand_tree(
     headers: HeaderMap,
     Query(params): Query<TreeExpandParams>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 

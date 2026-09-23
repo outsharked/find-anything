@@ -450,7 +450,9 @@ running extractors inline:
 2. Server writes a minimal `<temp_root>.toml` with the source name, temp root
    path, and scan settings.
 3. Server spawns `find-scan --config <temp.toml> <abs_path>` and awaits completion.
-4. find-scan submits the result via the normal `/api/v1/bulk` path.
+4. find-scan submits the result via the normal `/api/v1/bulk` path, authenticating
+   with `AppState.internal_token` — a random `update-index` token generated at
+   startup and held only in memory (never in config or `tokens.db`).
 5. A Drop guard cleans up the temp dir and TOML unconditionally on exit.
 
 **Config responsibility split:**
@@ -461,13 +463,49 @@ running extractors inline:
 
 ---
 
+## Authentication and Access Tokens
+
+Every non-public route calls `check_scope(&state, &headers, Scope::X)`
+(`routes/auth.rs`), which returns the caller's `Principal { name, scope }`:
+missing/invalid/expired/revoked credential → `401`, valid but insufficient scope
+→ `403`. Scopes are hierarchical: `admin` ⊇ `update-index` ⊇ `read`.
+
+| Scope | Routes |
+|-------|--------|
+| `read` | search, file, files, context, tree, sources, raw, view, stats, recent, errors, settings, metrics, `POST /links` |
+| `update-index` | `POST /bulk`, `POST/PATCH/HEAD /upload` |
+| `admin` | everything under `/api/v1/admin/*` (incl. invite/token management, compaction, source delete, self-update) |
+| none | `GET /links/{code}`, `POST /auth/redeem`, `/auth/session` |
+
+A credential is `Authorization: Bearer <token>` or the `find_session` cookie
+(which holds whichever token created the session, so it inherits that scope).
+`resolve_token` checks, in order:
+
+1. **Root admin token** — `[server] token` in `server.toml`; `admin` scope, constant-time
+   compare, not revocable via the API. Empty = authentication disabled (anonymous admin).
+2. **Internal token** — in-memory `update-index` token for the server's own `find-scan`.
+3. **Named tokens** — `data_dir/tokens.db` (`db/tokens.rs`, `TokenStore`): only BLAKE3
+   hashes are stored; a 30 s in-memory cache means normal requests never touch SQLite;
+   revoking deletes the row and clears the cache, so it is immediate.
+
+**Invites.** `find-admin invite create` → `POST /api/v1/admin/invites` stores a
+hashed 8-character Crockford-base32 code (15 min default TTL) together with the
+name/scope the admin chose. `POST /api/v1/auth/redeem {code}` (unauthenticated)
+consumes it atomically (`DELETE … RETURNING` inside an immediate transaction) and
+mints a 256-bit `fa_…` token, also setting the session cookie. Only *failed*
+redemptions are rate-limited (per peer IP + a global cap; `X-Forwarded-For` is
+deliberately not trusted).
+
+---
+
 ## Server Routes
 
 The server's HTTP handlers live in `crates/server/src/routes/`, split by concern:
 
 | File | Endpoints |
 |------|-----------|
-| `routes/mod.rs` | Shared helpers (`check_auth`, `source_db_path`, `compact_lines`); `GET /api/v1/metrics` |
+| `routes/mod.rs` | Shared helpers (`source_db_path`, `compact_lines`); `GET /api/v1/metrics` |
+| `routes/auth.rs` | `check_scope`/`resolve_token`, `POST /api/v1/auth/redeem`, `GET/POST /api/v1/admin/invites`, `DELETE /api/v1/admin/invites/{id}`, `GET /api/v1/admin/tokens`, `DELETE /api/v1/admin/tokens/{name}` |
 | `routes/search.rs` | `GET /api/v1/search` — fuzzy / exact / regex modes, multi-source parallel query |
 | `routes/context.rs` | `GET /api/v1/context`, `POST /api/v1/context-batch` |
 | `routes/file.rs` | `GET /api/v1/file`, `GET /api/v1/files` |
@@ -482,7 +520,7 @@ The server's HTTP handlers live in `crates/server/src/routes/`, split by concern
 | `routes/stats.rs` | `GET /api/v1/stats`, `GET /api/v1/stats/stream` |
 | `routes/errors.rs` | `GET /api/v1/errors` |
 | `routes/recent.rs` | `GET /api/v1/recent`, `GET /api/v1/recent/stream` |
-| `routes/session.rs` | `POST /api/v1/auth/session`, `DELETE /api/v1/auth/session` |
+| `routes/session.rs` | `POST /api/v1/auth/session` (cookie holds the *presented* token), `DELETE /api/v1/auth/session` |
 
 ---
 
@@ -576,6 +614,10 @@ into query params. `restoreFromParams` reconstructs `AppState` from `URLSearchPa
 ---
 
 ## Key Invariants
+
+- **Every route handler must call `check_scope` with the correct minimum scope** (or be
+  deliberately public). A new admin-only endpoint that only checks `Scope::Read` is a
+  privilege-escalation bug. Token and invite secrets are only ever stored hashed.
 
 - **`line_number = 0`** rows are metadata. Every such row carries a bracketed prefix
   tag (`[PATH]`, `[EXIF:…]`, `[TAG:…]`, `[VIDEO:…]`, `[DICOM:…]`, `[PE:…]`, `[IMAGE:…]`,

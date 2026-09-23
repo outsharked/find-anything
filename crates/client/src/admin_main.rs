@@ -2,10 +2,11 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use colored::Colorize;
 
-use find_common::api::{RecentAction, WorkerQueueSlot, WorkerStatus};
+use find_common::api::{CreateInviteRequest, RecentAction, Scope, WorkerQueueSlot, WorkerStatus};
 use find_common::config::{default_config_path, parse_client_config};
 
 mod api;
+mod redeem;
 
 #[derive(Parser)]
 #[command(name = "find-admin", about = "Administrative utilities for find-anything", version)]
@@ -84,6 +85,20 @@ enum Command {
         #[arg(long, short = 'f')]
         follow: bool,
     },
+    /// Manage one-time invite codes that let a new client obtain an access token
+    #[command(subcommand)]
+    Invite(InviteCommand),
+    /// Manage access tokens
+    #[command(subcommand)]
+    Token(TokenCommand),
+    /// Exchange an invite code for an access token and save it to client.toml
+    Redeem {
+        /// The invite code (e.g. ABCD-EFGH)
+        code: String,
+        /// Server URL. Defaults to `server.url` from the existing client.toml.
+        #[arg(long)]
+        url: Option<String>,
+    },
     /// Delete all indexed data for a source (DB + content chunks)
     DeleteSource {
         /// Name of the source to delete
@@ -92,6 +107,109 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum InviteCommand {
+    /// Create an invite (admin token required)
+    Create {
+        /// Name for the token this invite produces (e.g. synology1-scanner)
+        #[arg(long)]
+        name: String,
+        /// Scope of the resulting token: read, update-index or admin
+        #[arg(long)]
+        scope: Scope,
+        /// How long the invite stays redeemable, e.g. 15m, 2h (default: 15m)
+        #[arg(long, value_parser = parse_duration_secs)]
+        ttl: Option<u64>,
+        /// Lifetime of the resulting token, e.g. 30d (default: never expires)
+        #[arg(long, value_parser = parse_duration_secs)]
+        expires_in: Option<u64>,
+    },
+    /// List pending invites
+    List,
+    /// Revoke a pending invite by id
+    Revoke { id: i64 },
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    /// List access tokens
+    List,
+    /// Revoke (delete) an access token by name; takes effect immediately
+    Revoke { name: String },
+}
+
+/// Parse `90`, `30s`, `15m`, `2h`, `7d` or `2w` into seconds.
+fn parse_duration_secs(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last() {
+        Some('s') => (&s[..s.len() - 1], 1),
+        Some('m') => (&s[..s.len() - 1], 60),
+        Some('h') => (&s[..s.len() - 1], 3600),
+        Some('d') => (&s[..s.len() - 1], 86_400),
+        Some('w') => (&s[..s.len() - 1], 604_800),
+        Some(c) if c.is_ascii_digit() => (s, 1),
+        _ => return Err(format!("invalid duration {s:?} (use e.g. 90, 15m, 2h, 7d)")),
+    };
+    let n: u64 = num
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid duration {s:?} (use e.g. 90, 15m, 2h, 7d)"))?;
+    n.checked_mul(mult).ok_or_else(|| format!("duration {s:?} is too large"))
+}
+
+fn format_ts(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|utc| chrono::DateTime::<chrono::Local>::from(utc).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| ts.to_string())
+}
+
+/// `find-admin redeem`: works before any client.toml exists, so it runs ahead
+/// of normal config loading.
+async fn run_redeem(config_path: &str, code: &str, url: Option<&str>, json: bool) -> Result<()> {
+    let existing = match std::fs::read_to_string(config_path) {
+        Ok(s) => Some(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("reading config: {config_path}")),
+    };
+    let url = url
+        .map(str::to_string)
+        .or_else(|| existing.as_deref().and_then(redeem::existing_url))
+        .context("no server URL — pass --url <server url>")?;
+
+    let resp = api::ApiClient::redeem(&url, code).await?;
+    let new_text = redeem::apply_token(existing.as_deref(), Some(&url), &resp.token)?;
+
+    if let Some(parent) = std::path::Path::new(config_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    std::fs::write(config_path, new_text)
+        .with_context(|| format!("writing config: {config_path}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The file now holds a credential; keep it owner-only.
+        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    if json {
+        // Never echo the token itself — it is already in the config file.
+        println!("{}", serde_json::json!({
+            "name": resp.name, "scope": resp.scope,
+            "expires_at": resp.expires_at, "config": config_path,
+        }));
+    } else {
+        println!("Enrolled as '{}' (scope: {}).", resp.name, resp.scope);
+        if let Some(exp) = resp.expires_at {
+            println!("Token expires {}.", format_ts(exp));
+        }
+        println!("Token saved to {config_path}");
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -104,6 +222,11 @@ async fn main() -> Result<()> {
     let args = Args::from_arg_matches(&Args::command().version(find_common::tool_version!()).get_matches()).unwrap_or_else(|e| e.exit());
 
     let config_path = args.config.clone().unwrap_or_else(default_config_path);
+
+    if let Command::Redeem { code, url } = &args.command {
+        return run_redeem(&config_path, code, url.as_deref(), args.json).await;
+    }
+
     let config_str = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading config: {config_path}"))?;
     let (config, config_warnings) = parse_client_config(&config_str)?;
@@ -116,6 +239,84 @@ async fn main() -> Result<()> {
     }
 
     match args.command {
+        Command::Redeem { .. } => unreachable!("handled before config loading"),
+
+        Command::Invite(cmd) => {
+            let client = api::ApiClient::new(&config.server.url, &config.server.token);
+            match cmd {
+                InviteCommand::Create { name, scope, ttl, expires_in } => {
+                    let resp = client
+                        .create_invite(&CreateInviteRequest {
+                            name: name.clone(),
+                            scope,
+                            ttl_secs: ttl,
+                            token_ttl_secs: expires_in,
+                        })
+                        .await
+                        .context("creating invite")?;
+                    if args.json {
+                        println!("{}", serde_json::to_string_pretty(&resp)?);
+                    } else {
+                        println!("Invite code:  {}", resp.code.bold());
+                        println!(
+                            "Token '{name}' (scope: {scope}); code valid until {} and usable once.",
+                            format_ts(resp.expires_at)
+                        );
+                        println!();
+                        println!("On the client machine run:");
+                        println!("  find-admin redeem {} --url {}", resp.code, config.server.url);
+                    }
+                }
+                InviteCommand::List => {
+                    let invites = client.list_invites().await.context("listing invites")?;
+                    if args.json {
+                        println!("{}", serde_json::to_string_pretty(&invites)?);
+                    } else if invites.is_empty() {
+                        println!("No pending invites.");
+                    } else {
+                        println!("{:<5} {:<24} {:<13} EXPIRES", "ID", "NAME", "SCOPE");
+                        for i in &invites {
+                            println!("{:<5} {:<24} {:<13} {}", i.id, i.name, i.scope.as_str(), format_ts(i.expires_at));
+                        }
+                    }
+                }
+                InviteCommand::Revoke { id } => {
+                    client.revoke_invite(id).await?;
+                    println!("Revoked invite {id}.");
+                }
+            }
+        }
+
+        Command::Token(cmd) => {
+            let client = api::ApiClient::new(&config.server.url, &config.server.token);
+            match cmd {
+                TokenCommand::List => {
+                    let tokens = client.list_tokens().await.context("listing tokens")?;
+                    if args.json {
+                        println!("{}", serde_json::to_string_pretty(&tokens)?);
+                    } else if tokens.is_empty() {
+                        println!("No access tokens. (The root token in server.toml is not listed.)");
+                    } else {
+                        println!("{:<24} {:<13} {:<17} {:<17} LAST USED", "NAME", "SCOPE", "CREATED", "EXPIRES");
+                        for t in &tokens {
+                            println!(
+                                "{:<24} {:<13} {:<17} {:<17} {}",
+                                t.name,
+                                t.scope.as_str(),
+                                format_ts(t.created_at),
+                                t.expires_at.map_or("never".to_string(), format_ts),
+                                t.last_used_at.map_or("never".to_string(), format_ts),
+                            );
+                        }
+                    }
+                }
+                TokenCommand::Revoke { name } => {
+                    client.revoke_token(&name).await?;
+                    println!("Revoked token '{name}'.");
+                }
+            }
+        }
+
         Command::Config => {
             if args.json {
                 let json = serde_json::to_string_pretty(&config)
@@ -632,4 +833,24 @@ fn chrono_age_secs(unix_ts: i64) -> u64 {
         .unwrap_or_default()
         .as_secs() as i64;
     (now - unix_ts).max(0) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_duration_secs;
+
+    #[test]
+    fn duration_parsing() {
+        assert_eq!(parse_duration_secs("90"), Ok(90));
+        assert_eq!(parse_duration_secs("30s"), Ok(30));
+        assert_eq!(parse_duration_secs("15m"), Ok(900));
+        assert_eq!(parse_duration_secs("2h"), Ok(7200));
+        assert_eq!(parse_duration_secs("7d"), Ok(604_800));
+        assert_eq!(parse_duration_secs("2w"), Ok(1_209_600));
+        assert!(parse_duration_secs("").is_err());
+        assert!(parse_duration_secs("m").is_err());
+        assert!(parse_duration_secs("-5m").is_err());
+        assert!(parse_duration_secs("abc").is_err());
+        assert!(parse_duration_secs("99999999999999999999d").is_err());
+    }
 }

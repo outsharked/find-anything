@@ -14,7 +14,8 @@ use find_common::api::{
 
 use crate::{db, AppState};
 
-use super::{check_auth, compact_lines, composite_path, run_blocking, source_db_path};
+use super::{check_scope, compact_lines, composite_path, run_blocking, source_db_path};
+use find_common::api::Scope;
 
 // ── GET /api/v1/context ───────────────────────────────────────────────────────
 
@@ -34,7 +35,7 @@ pub async fn get_context(
     headers: HeaderMap,
     Query(params): Query<ContextParams>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) { return (s, Json(serde_json::Value::Null)).into_response(); }
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) { return (s, Json(serde_json::Value::Null)).into_response(); }
 
     let db_path = match source_db_path(&state, &params.source) {
         Ok(p) => p,
@@ -65,7 +66,7 @@ pub async fn context_batch(
     headers: HeaderMap,
     Json(req): Json<ContextBatchRequest>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 

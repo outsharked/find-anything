@@ -75,7 +75,12 @@ impl TestServer {
         let app = build_router(state);
 
         tokio::spawn(async move {
-            serve(listener, app).await.expect("serve");
+            serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .expect("serve");
         });
 
         let mut headers = HeaderMap::new();

@@ -14,7 +14,8 @@ use find_common::api::{CreateLinkRequest, CreateLinkResponse, ResolveLinkRespons
 
 use crate::{db, AppState};
 
-use super::{check_auth, composite_path, run_blocking, source_db_path};
+use super::{check_scope, composite_path, run_blocking, source_db_path};
+use find_common::api::Scope;
 
 const RATE_LIMIT_REQUESTS: u32 = 60;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
@@ -27,7 +28,7 @@ pub async fn post_link(
     headers: HeaderMap,
     Json(body): Json<CreateLinkRequest>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 

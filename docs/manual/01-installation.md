@@ -18,9 +18,18 @@ The script will ask for:
 - **Service mode** — `system` (root, `/etc/find-anything/`) or `user` (`~/.config/find-anything/`)
 - **Bind address** — the address and port `find-server` will listen on (e.g. `0.0.0.0:8765`)
 - **Data directory** — where the index and content archives are stored
-- **Bearer token** — auto-generated; copy it for use in your client config
+- **Admin token** — auto-generated root credential, stored in `server.toml`
 
-After installation it writes an annotated `server.toml`, installs the systemd service, enables and starts it, then prints the token.
+After installation it writes an annotated `server.toml`, installs the systemd service, enables and starts it, then prints the admin token.
+
+To connect clients, create a one-time invite for each (valid 15 minutes, single use):
+
+```sh
+find-admin invite create --name synology1 --scope update-index
+# Invite code:  7K3M-9P2Q
+```
+
+Scopes are `read` (search and browse), `update-index` (adds indexing/uploads — what scanners need) and `admin` (everything). Keep the admin token on the server; clients should use invites.
 
 **Install a specific version:**
 ```sh
@@ -46,7 +55,7 @@ The script will ask for:
 
 - **Install directory** — default `~/.local/bin`
 - **Server URL** — the URL of your `find-server` (e.g. `http://192.168.1.10:8765`)
-- **Bearer token** — the token printed by the server install
+- **Invite code** — from `find-admin invite create` on the server (a raw token also works)
 - **Directories to watch** — the paths you want indexed
 
 It then writes `client.toml`, installs the `find-watch` systemd user service, enables it, and prints the `find-scan` command to run for the initial index.
@@ -70,7 +79,7 @@ Download the installer from [GitHub Releases](https://github.com/jamietre/find-a
 
 The setup wizard asks for:
 
-- Server URL and bearer token
+- Server URL and invite code (or bearer token)
 - Directories to watch
 
 It then registers `find-watch` as a Windows service (auto-starts on login), runs the initial scan, and creates a Start Menu shortcut.

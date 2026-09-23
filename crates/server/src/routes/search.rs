@@ -20,7 +20,8 @@ struct ScoredResult {
     file_id: i64,
 }
 
-use super::{check_auth, source_db_path};
+use super::{check_scope, source_db_path};
+use find_common::api::Scope;
 
 // ── GET /api/v1/search ────────────────────────────────────────────────────────
 
@@ -235,7 +236,7 @@ pub async fn search(
     headers: HeaderMap,
     params: SearchParams,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) { return (s, Json(serde_json::Value::Null)).into_response(); }
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) { return (s, Json(serde_json::Value::Null)).into_response(); }
 
     let sources_dir = state.data_dir.join("sources");
     let fts_limit = state.config.search.fts_candidate_limit;

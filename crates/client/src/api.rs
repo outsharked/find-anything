@@ -6,8 +6,9 @@ use reqwest::Client;
 use std::io::Write;
 
 use find_common::api::{
-    AppSettingsResponse, BulkRequest, CompactResponse, ContextResponse, FileRecord,
-    InboxDeleteResponse, InboxPauseResponse, InboxResumeResponse, InboxRetryResponse,
+    AppSettingsResponse, BulkRequest, CompactResponse, ContextResponse, CreateInviteRequest,
+    CreateInviteResponse, FileRecord, InboxDeleteResponse, InviteInfo, InvitesResponse,
+    RedeemRequest, RedeemResponse, TokenInfo, TokensResponse, InboxPauseResponse, InboxResumeResponse, InboxRetryResponse,
     InboxShowResponse, InboxStatusResponse, RecentFile, RecentResponse, SearchResponse,
     SourceDeleteResponse, SourceInfo, StatsResponse, StatsStreamEvent, UploadInitRequest,
     UploadInitResponse, UploadPatchResponse, UploadScanHints, UploadStatusResponse,
@@ -454,6 +455,136 @@ impl ApiClient {
             .json::<UploadStatusResponse>()
             .await
             .context("parsing upload status response")
+    }
+
+    /// POST /api/v1/auth/redeem — exchange an invite code for a token.
+    /// Unauthenticated, so this is an associated function (no token needed).
+    pub async fn redeem(base_url: &str, code: &str) -> Result<RedeemResponse> {
+        let url = format!("{}/api/v1/auth/redeem", base_url.trim_end_matches('/'));
+        let resp = Client::new()
+            .post(url)
+            .json(&RedeemRequest { code: code.to_string() })
+            .send()
+            .await
+            .context("POST /api/v1/auth/redeem")?;
+        match resp.status() {
+            reqwest::StatusCode::UNAUTHORIZED => {
+                anyhow::bail!("invalid, expired or already-used invite code")
+            }
+            reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                anyhow::bail!("too many failed attempts — wait a minute and try again")
+            }
+            reqwest::StatusCode::CONFLICT => {
+                anyhow::bail!("a token with this invite's name already exists — ask the admin for a new invite")
+            }
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED => {
+                anyhow::bail!("this server does not support invite codes — upgrade find-server")
+            }
+            _ => {}
+        }
+        resp.error_for_status()
+            .context("redeem status")?
+            .json::<RedeemResponse>()
+            .await
+            .context("parsing redeem response")
+    }
+
+    /// POST /api/v1/admin/invites
+    pub async fn create_invite(&self, req: &CreateInviteRequest) -> Result<CreateInviteResponse> {
+        let resp = self
+            .client
+            .post(self.url("/api/v1/admin/invites"))
+            .bearer_auth(&self.token)
+            .json(req)
+            .send()
+            .await
+            .context("POST /api/v1/admin/invites")?;
+        match resp.status() {
+            reqwest::StatusCode::CONFLICT => {
+                anyhow::bail!("a token or pending invite named '{}' already exists", req.name)
+            }
+            reqwest::StatusCode::BAD_REQUEST => anyhow::bail!("invalid invite name"),
+            reqwest::StatusCode::FORBIDDEN => {
+                anyhow::bail!("this client's token is not an admin token")
+            }
+            _ => {}
+        }
+        resp.error_for_status()
+            .context("create invite status")?
+            .json::<CreateInviteResponse>()
+            .await
+            .context("parsing create invite response")
+    }
+
+    /// GET /api/v1/admin/invites
+    pub async fn list_invites(&self) -> Result<Vec<InviteInfo>> {
+        Ok(self
+            .client
+            .get(self.url("/api/v1/admin/invites"))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("GET /api/v1/admin/invites")?
+            .error_for_status()
+            .context("list invites status")?
+            .json::<InvitesResponse>()
+            .await
+            .context("parsing invites response")?
+            .invites)
+    }
+
+    /// DELETE /api/v1/admin/invites/{id}
+    pub async fn revoke_invite(&self, id: i64) -> Result<()> {
+        let resp = self
+            .client
+            .delete(self.url(&format!("/api/v1/admin/invites/{id}")))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("DELETE /api/v1/admin/invites")?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("no pending invite with id {id}");
+        }
+        resp.error_for_status().context("revoke invite status")?;
+        Ok(())
+    }
+
+    /// GET /api/v1/admin/tokens
+    pub async fn list_tokens(&self) -> Result<Vec<TokenInfo>> {
+        Ok(self
+            .client
+            .get(self.url("/api/v1/admin/tokens"))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("GET /api/v1/admin/tokens")?
+            .error_for_status()
+            .context("list tokens status")?
+            .json::<TokensResponse>()
+            .await
+            .context("parsing tokens response")?
+            .tokens)
+    }
+
+    /// DELETE /api/v1/admin/tokens/{name}
+    pub async fn revoke_token(&self, name: &str) -> Result<()> {
+        let mut url = reqwest::Url::parse(&self.url("/api/v1/admin/tokens"))
+            .context("building tokens URL")?;
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("server URL cannot be a base"))?
+            .push(name);
+        let resp = self
+            .client
+            .delete(url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("DELETE /api/v1/admin/tokens")?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("no token named '{name}'");
+        }
+        resp.error_for_status().context("revoke token status")?;
+        Ok(())
     }
 
     /// Check that this client meets the server's minimum version requirement.

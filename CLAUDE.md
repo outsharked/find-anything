@@ -231,6 +231,27 @@ running extractors inline:
 **Upload routes body limit:** `upload_routes` uses `.layer(DefaultBodyLimit::disable())`
 so large file chunks (>2 MB) are accepted without 413 errors.
 
+### Authentication and access tokens (plan 094)
+
+Auth is scoped: `admin` ⊇ `update-index` ⊇ `read` (`find_common::api::Scope`). Every
+handler calls `check_scope(&state, &headers, Scope::X)` (`routes/auth.rs`) —
+**always pick the minimum scope the route needs; a new admin-only endpoint that checks
+`Scope::Read` is a privilege-escalation bug.** 401 = no/bad credential, 403 = valid
+token, insufficient scope.
+
+- Credentials, in order: root admin token (`[server] token` in `server.toml`, admin,
+  not revocable via API, empty = auth disabled), the in-memory `AppState.internal_token`
+  (`update-index`; used by the upload → `find-scan` delegation), then named tokens in
+  `data_dir/tokens.db` (`db/tokens.rs`; only BLAKE3 hashes stored; 30 s resolve cache
+  invalidated on revoke).
+- New clients enroll via one-time **invites**: `find-admin invite create` →
+  `find-admin redeem <code>` / web connect dialog / installers → `POST /api/v1/auth/redeem`.
+  Scope and name are fixed by the admin at invite creation. Failed redeems are
+  rate-limited (peer IP + global; `X-Forwarded-For` is deliberately not trusted).
+- `POST /auth/session` stores the *presented* token in the cookie (never the root token).
+- The `find-upload` delegation section above says find-scan submits via `/api/v1/bulk`;
+  it authenticates with the internal token, not the configured one.
+
 ### Key invariants and non-obvious details
 
 - **`line_number = 0`** is always the file's own relative path, indexed so
@@ -294,6 +315,8 @@ so large file chunks (>2 MB) are accepted without 413 errors.
 | `crates/server/src/worker/request.rs` | Phase 1 per-request processing (deletes, renames, upserts, FTS) |
 | `crates/server/src/worker/archive_batch.rs` | Phase 2: reads to-archive/ gz, stores blobs in content_store |
 | `crates/server/src/db.rs` | All SQLite operations |
+| `crates/server/src/routes/auth.rs` | `check_scope`, token resolution, redeem + invite/token admin routes |
+| `crates/server/src/db/tokens.rs` | `tokens.db`: hashed tokens, invites, `TokenStore` (resolve cache) |
 | `crates/server/src/routes/mod.rs` | HTTP route helpers + shared auth/path utilities |
 | `crates/server/src/routes/tree.rs` | `GET /api/v1/tree`, `GET /api/v1/tree/expand` |
 | `crates/server/src/schema_v2.sql` | DB schema |

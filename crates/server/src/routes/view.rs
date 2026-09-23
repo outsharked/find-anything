@@ -13,7 +13,8 @@ use find_common::path::split_composite;
 use rusqlite::OptionalExtension as _;
 
 use crate::AppState;
-use super::{check_auth, source_db_path};
+use super::{check_scope, source_db_path};
+use find_common::api::Scope;
 
 #[derive(Deserialize)]
 pub struct ViewParams {
@@ -39,7 +40,7 @@ pub async fn get_view(
     headers: HeaderMap,
     Query(params): Query<ViewParams>,
 ) -> Response {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return s.into_response();
     }
 

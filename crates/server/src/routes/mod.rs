@@ -1,4 +1,5 @@
 mod admin;
+mod auth;
 mod bulk;
 mod context;
 mod errors;
@@ -15,6 +16,11 @@ pub mod upload;
 mod view;
 
 pub use admin::{compact, delete_source, inbox_clear, inbox_pause, inbox_resume, inbox_retry, inbox_show, inbox_status, update_check, update_apply};
+pub use auth::{
+    create_invite, list_invites, list_tokens, redeem_invite, revoke_invite, revoke_token,
+    RedeemLimiter,
+};
+pub(super) use auth::{bearer_token, check_scope, resolve_token};
 pub use bulk::bulk;
 pub use context::{context_batch, get_context};
 pub use errors::get_errors;
@@ -40,6 +46,8 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+
+use find_common::api::Scope;
 
 use crate::AppState;
 
@@ -105,34 +113,6 @@ where
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
-}
-
-pub(super) fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    // Empty token = no authentication required (e.g. public demo instances).
-    if state.config.server.token.is_empty() {
-        return Ok(());
-    }
-    // 1. Check Authorization: Bearer header (existing API clients).
-    if headers
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|t| t == state.config.server.token)
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
-    // 2. Check find_session cookie (browser-native requests like <img src>).
-    if let Some(Ok(cookies)) = headers.get("cookie").map(|v| v.to_str()) {
-        for part in cookies.split(';') {
-            if let Some(val) = part.trim().strip_prefix("find_session=") {
-                if val == state.config.server.token {
-                    return Ok(());
-                }
-            }
-        }
-    }
-    Err(StatusCode::UNAUTHORIZED)
 }
 
 /// Validate a `link_code` as an alternative credential for read-only file access.
@@ -236,7 +216,7 @@ pub async fn get_metrics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 

@@ -866,6 +866,169 @@ pub struct UploadPatchResponse {
     pub received: u64,
 }
 
+// ── Access tokens and invites (plan 094) ──────────────────────────────────────
+
+/// Access scope of a token. Hierarchical: `Admin` ⊇ `UpdateIndex` ⊇ `Read`,
+/// so a token is allowed on a route when `token.scope >= route.required`.
+///
+/// No `#[serde(other)]` — an unrecognised scope must be an error, never silently
+/// downgraded or upgraded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Scope {
+    Read,
+    UpdateIndex,
+    Admin,
+}
+
+impl Scope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Read        => "read",
+            Self::UpdateIndex => "update-index",
+            Self::Admin       => "admin",
+        }
+    }
+
+    /// True if a token with this scope may access a route requiring `required`.
+    pub fn allows(&self, required: Scope) -> bool {
+        *self >= required
+    }
+}
+
+impl std::fmt::Display for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Scope {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "read"         => Ok(Self::Read),
+            "update-index" => Ok(Self::UpdateIndex),
+            "admin"        => Ok(Self::Admin),
+            other => Err(format!(
+                "unknown scope {other:?} (expected read, update-index or admin)"
+            )),
+        }
+    }
+}
+
+/// `POST /api/v1/admin/invites` request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateInviteRequest {
+    /// Name given to the token created when the invite is redeemed. Must be
+    /// unique among existing tokens.
+    pub name: String,
+    /// Scope of the resulting token — fixed by the admin, not the redeemer.
+    pub scope: Scope,
+    /// Lifetime of the invite in seconds. `None` = server default (15 minutes).
+    #[serde(default)]
+    pub ttl_secs: Option<u64>,
+    /// Lifetime of the resulting token in seconds. `None` = never expires.
+    #[serde(default)]
+    pub token_ttl_secs: Option<u64>,
+}
+
+/// `POST /api/v1/admin/invites` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateInviteResponse {
+    /// The one-time invite code, formatted `XXXX-XXXX`. Shown exactly once.
+    pub code: String,
+    /// Unix timestamp at which the invite stops being redeemable.
+    pub expires_at: i64,
+}
+
+/// One pending invite in `GET /api/v1/admin/invites`. The code itself is
+/// never returned (only its hash is stored).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteInfo {
+    pub id: i64,
+    pub name: String,
+    pub scope: Scope,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+/// `GET /api/v1/admin/invites` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvitesResponse {
+    pub invites: Vec<InviteInfo>,
+}
+
+/// `POST /api/v1/auth/redeem` request (no authentication required).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedeemRequest {
+    pub code: String,
+}
+
+/// `POST /api/v1/auth/redeem` response. The token is shown exactly once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedeemResponse {
+    pub token: String,
+    pub name: String,
+    pub scope: Scope,
+    /// Unix timestamp at which the token expires; `None` = never.
+    pub expires_at: Option<i64>,
+}
+
+/// One token in `GET /api/v1/admin/tokens`. Never includes the token value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenInfo {
+    pub name: String,
+    pub scope: Scope,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    /// Last time the token authenticated a request (approximate: updated at
+    /// most about once a minute).
+    pub last_used_at: Option<i64>,
+}
+
+/// `GET /api/v1/admin/tokens` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokensResponse {
+    pub tokens: Vec<TokenInfo>,
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn scope_is_hierarchical() {
+        assert!(Scope::Admin.allows(Scope::Read));
+        assert!(Scope::Admin.allows(Scope::UpdateIndex));
+        assert!(Scope::Admin.allows(Scope::Admin));
+        assert!(Scope::UpdateIndex.allows(Scope::Read));
+        assert!(Scope::UpdateIndex.allows(Scope::UpdateIndex));
+        assert!(!Scope::UpdateIndex.allows(Scope::Admin));
+        assert!(Scope::Read.allows(Scope::Read));
+        assert!(!Scope::Read.allows(Scope::UpdateIndex));
+        assert!(!Scope::Read.allows(Scope::Admin));
+    }
+
+    #[test]
+    fn scope_serde_and_str_round_trip() {
+        for (variant, wire) in [
+            (Scope::Read,        "\"read\""),
+            (Scope::UpdateIndex, "\"update-index\""),
+            (Scope::Admin,       "\"admin\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<Scope>(wire).unwrap(), variant);
+            assert_eq!(variant.as_str().parse::<Scope>().unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn scope_unknown_string_is_error() {
+        assert!(serde_json::from_str::<Scope>("\"root\"").is_err());
+        assert!("root".parse::<Scope>().is_err());
+    }
+}
+
 #[cfg(test)]
 mod file_kind_tests {
     use super::*;

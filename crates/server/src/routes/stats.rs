@@ -17,7 +17,8 @@ use find_common::api::{SourceStats, SourceStreamSnapshot, StatsResponse, StatsSt
 
 use crate::{db, AppState};
 
-use super::check_auth;
+use super::check_scope;
+use find_common::api::Scope;
 
 // ── GET /api/v1/stats ─────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ pub async fn get_stats(
     headers: HeaderMap,
     Query(query): Query<StatsQuery>,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, Json(serde_json::Value::Null)).into_response();
     }
 
@@ -231,7 +232,7 @@ pub async fn stream_stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return (s, "Unauthorized").into_response();
     }
 

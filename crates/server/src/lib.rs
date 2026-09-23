@@ -96,6 +96,14 @@ pub struct AppState {
     pub stats_watch: Arc<tokio::sync::watch::Sender<u64>>,
     /// In-memory rate limiter for `GET /api/v1/links/:code`: maps IP → (count, window_start).
     pub link_rate_limiter: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, std::time::Instant)>>,
+    /// Named, scoped access tokens and pending invites (`tokens.db`).
+    pub tokens: db::tokens::TokenStore,
+    /// Random `update-index` token generated at startup and held only in memory.
+    /// Used by the server's own `find-scan` subprocess (upload delegation) to
+    /// submit to `/api/v1/bulk`; never written to config or `tokens.db`.
+    pub internal_token: String,
+    /// Failed-redeem limiter for `POST /api/v1/auth/redeem`.
+    pub redeem_limiter: std::sync::Mutex<routes::RedeemLimiter>,
 }
 
 // ── Server initialisation ──────────────────────────────────────────────────────
@@ -155,6 +163,9 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         tracing::warn!("Failed to open links.db (share links will be unavailable): {e:#}");
     }
 
+    let tokens = db::tokens::TokenStore::open(&data_dir).context("opening tokens.db")?;
+    let internal_token = db::tokens::generate_token().context("generating internal token")?;
+
     let state = Arc::new(AppState {
         config,
         data_dir: data_dir.clone(),
@@ -169,6 +180,9 @@ pub async fn create_app_state(config: ServerAppConfig) -> Result<Arc<AppState>> 
         recent_tx,
         stats_watch: Arc::clone(&stats_watch),
         link_rate_limiter: std::sync::Mutex::new(std::collections::HashMap::new()),
+        tokens,
+        internal_token,
+        redeem_limiter: std::sync::Mutex::new(routes::RedeemLimiter::default()),
     });
 
     if let Err(e) = worker::recover_stranded_requests(&data_dir).await {
@@ -284,6 +298,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/links",          post(routes::post_link))
         .route("/api/v1/links/{code}",   get(routes::get_link))
         .route("/api/v1/auth/session",   post(routes::create_session).delete(routes::delete_session))
+        .route("/api/v1/auth/redeem",    post(routes::redeem_invite))
+        .route("/api/v1/admin/invites",        post(routes::create_invite).get(routes::list_invites))
+        .route("/api/v1/admin/invites/{id}",   delete(routes::revoke_invite))
+        .route("/api/v1/admin/tokens",         get(routes::list_tokens))
+        .route("/api/v1/admin/tokens/{name}",  delete(routes::revoke_token))
         .route("/api/v1/admin/compact",        post(routes::compact))
         .route("/api/v1/admin/source",         delete(routes::delete_source))
         .route("/api/v1/admin/inbox",          get(routes::inbox_status).delete(routes::inbox_clear))

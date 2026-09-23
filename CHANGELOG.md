@@ -9,6 +9,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **Scoped, named, revocable access tokens with invite enrollment** ([#86](https://github.com/outsharked/find-anything/issues/86), plan 094) — the server's single shared bearer token no longer has to be handed to every client. Tokens now have a name (visible in the server log), a scope, an optional expiry, and can be revoked instantly without restarting the server or touching other clients. Three hierarchical scopes: `read` (search, browse, view, share links) ⊂ `update-index` (adds `/bulk` and `/upload`) ⊂ `admin` (adds everything under `/api/v1/admin/*`, including compaction, source deletion and self-update). A valid token used outside its scope now gets `403` rather than `401`. New clients are enrolled with a short, single-use, 15-minute **invite code**: `find-admin invite create --name synology1 --scope update-index` on the server prints e.g. `7K3M-9P2Q`, and the new machine runs `find-admin redeem 7K3M-9P2Q --url http://server:8765` (which writes the token into `client.toml` with `0600` permissions), or enters the code in the web UI's connect dialog or in `install.sh` / the Windows installer. The scope and name are fixed by the admin when the invite is created, never by the redeemer. `find-admin token list|revoke` and `find-admin invite list|revoke` manage what exists. Only BLAKE3 hashes of tokens and codes are stored (`data_dir/tokens.db`); plaintext is shown once. Failed redemptions are rate-limited per IP and globally.
+- The `token` in `server.toml` keeps working unchanged as the root admin credential (it cannot be revoked through the API). An empty `token` still disables authentication entirely. No client change is needed for existing deployments, so `MIN_CLIENT_VERSION` is not bumped.
+
+### Changed
+
+- `POST /api/v1/auth/session` now stores the token that was *presented* in the session cookie instead of always storing the server's configured token, so a browser session inherits the scope of the token that created it.
+- The server's own `find-scan` subprocess (used for `find-upload` extraction) now authenticates to `/api/v1/bulk` with a random in-memory `update-index` token generated at startup, rather than the configured admin token.
+
 ---
 
 ## [0.8.6] - 2026-09-11

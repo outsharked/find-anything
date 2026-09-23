@@ -100,6 +100,31 @@ async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
 	return resp;
 }
 
+export interface RedeemResponse {
+	token: string;
+	name: string;
+	scope: 'read' | 'update-index' | 'admin';
+	expires_at: number | null;
+}
+
+export class RedeemError extends Error {
+	constructor(public status: number) { super(`redeem failed: ${status}`); }
+}
+
+/**
+ * Exchange a one-time invite code for an access token. Unauthenticated; the
+ * server also sets the HttpOnly find_session cookie on success.
+ */
+export async function redeemInvite(code: string): Promise<RedeemResponse> {
+	const resp = await fetch('/api/v1/auth/redeem', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ code })
+	});
+	if (!resp.ok) throw new RedeemError(resp.status);
+	return resp.json();
+}
+
 /**
  * Sets the find_session cookie so browser-native requests (e.g. <img src>)
  * can be authenticated without custom headers. Best-effort: header auth still

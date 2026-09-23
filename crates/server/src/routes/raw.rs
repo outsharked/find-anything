@@ -29,7 +29,8 @@ use find_common::path::split_composite;
 
 use crate::AppState;
 
-use super::{check_auth, check_link_code_auth};
+use super::{check_scope, check_link_code_auth};
+use find_common::api::Scope;
 
 /// Log a file-access failure with context that helps distinguish between
 /// "mount not available" and "file genuinely missing on the client".
@@ -100,7 +101,7 @@ pub async fn get_raw(
         if let Err(s) = auth {
             return s.into_response();
         }
-    } else if let Err(s) = check_auth(&state, &headers) {
+    } else if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return s.into_response();
     }
 
@@ -485,7 +486,7 @@ pub async fn get_raw_path(
     headers: HeaderMap,
     AxumPath((source, path)): AxumPath<(String, String)>,
 ) -> Response {
-    if let Err(s) = check_auth(&state, &headers) {
+    if let Err(s) = check_scope(&state, &headers, Scope::Read) {
         return s.into_response();
     }
 
