@@ -4,6 +4,43 @@
 
 ---
 
+## Client registration (the short version)
+
+Every client needs an access token, but you never copy the server's own admin
+token around. Instead, the admin mints a short-lived, single-use **invite
+code**, and each client redeems it for its own token:
+
+1. **On the server**, pick a name for the new client and the least privilege
+   it needs (`read` for browsing only, `update-index` for a scanner/watcher,
+   `admin` for another admin):
+   ```sh
+   find-admin invite create --name laptop --scope update-index
+   # Invite code:  7K3M-9P2Q   (valid 15 minutes, single use)
+   ```
+2. **On the new client**, redeem it — this writes (or creates) `client.toml`
+   for you:
+   ```sh
+   find-admin redeem 7K3M-9P2Q --url http://server-host:8765
+   ```
+   For the **web UI**, open it, and when it asks to connect, paste the same
+   code into the connect dialog (or Settings → Admin → *Invite a New Client*
+   if you're already signed in as an admin and want to create the invite
+   from the browser instead of the CLI). The installers (`install.sh`, the
+   Windows installer) ask for this same code during setup.
+3. **Later, to disconnect a client**, revoke its token by name — this takes
+   effect immediately, no restart:
+   ```sh
+   find-admin token revoke laptop
+   ```
+   List everything currently registered with `find-admin token list` /
+   `find-admin invite list` (or the same panel in the web UI).
+
+That's the whole flow. The rest of this page covers OS-specific install
+steps; see [Configuration → `token`](02-configuration.md#server-config-servertoml)
+for how scopes work and why the server's own `token` is different from these.
+
+---
+
 ## Server (Linux & macOS)
 
 Run this on the machine that will host the central index:
@@ -20,16 +57,7 @@ The script will ask for:
 - **Data directory** — where the index and content archives are stored
 - **Admin token** — auto-generated root credential, stored in `server.toml`
 
-After installation it writes an annotated `server.toml`, installs the systemd service, enables and starts it, then prints the admin token.
-
-To connect clients, create a one-time invite for each (valid 15 minutes, single use):
-
-```sh
-find-admin invite create --name synology1 --scope update-index
-# Invite code:  7K3M-9P2Q
-```
-
-Scopes are `read` (search and browse), `update-index` (adds indexing/uploads — what scanners need) and `admin` (everything). Keep the admin token on the server; clients should use invites.
+After installation it writes an annotated `server.toml`, installs the systemd service, enables and starts it, then prints the admin token. Keep that token on the server — see [Client registration](#client-registration-the-short-version) above for how to connect each client with its own invite instead.
 
 **Install a specific version:**
 ```sh

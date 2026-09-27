@@ -121,7 +121,7 @@ Download the installer from [GitHub Releases](https://github.com/jamietre/find-a
 ```sh
 git clone https://github.com/jamietre/find-anything
 cd find-anything
-cp examples/server.toml server.toml   # edit: set token and data_dir
+cp examples/server.toml server.toml   # edit: set a strong admin token and data_dir
 docker compose up -d
 ```
 
@@ -185,14 +185,24 @@ EOF
 find-server --config server.toml
 ```
 
-### 2. Create a client config
+### 2. Register a client
+
+The `token` above is the server's root admin credential — don't hand it to
+every machine. Instead, mint a one-time invite (valid 15 minutes) and redeem
+it from the client machine, which writes `client.toml` for you:
+
+```sh
+# On the server:
+find-admin invite create --name home --scope update-index
+# Invite code:  7K3M-9P2Q
+
+# On the client machine:
+find-admin redeem 7K3M-9P2Q --url http://server-host:8080
+```
+
+Then add your sources and scan settings to the `client.toml` it just wrote:
 
 ```toml
-# client.toml
-[server]
-url   = "http://127.0.0.1:8080"
-token = "change-me"
-
 [[sources]]
 name  = "home"
 path = "/home/alice"
@@ -202,6 +212,11 @@ include = ["documents/**", "projects/**"]
 exclude = ["**/.git/**", "**/node_modules/**", "**/target/**"]
 max_content_size_mb = 10
 ```
+
+(Or write the whole file by hand, pasting the admin token directly into
+`token` — fine for a quick local test, not recommended for a real
+deployment. See [Client registration](docs/manual/01-installation.md#client-registration-the-short-version)
+for the full flow, scopes, and revoking a client later.)
 
 ### 3. Run an initial scan
 
@@ -294,7 +309,7 @@ find-scan
 [server]
 bind     = "127.0.0.1:8080"         # address to listen on
 data_dir = "/var/lib/find-anything"  # index and archive storage
-token    = "your-token"              # bearer token for all API requests
+token    = "your-token"              # root admin credential — see Client registration below
 
 [search]
 default_limit       = 50
@@ -302,12 +317,21 @@ max_limit           = 500
 fts_candidate_limit = 2000           # FTS5 rows passed to the re-scorer
 ```
 
+**Client registration:** `token` is the un-revocable root admin credential,
+not something to copy to every client. Named, scoped tokens (`read` /
+`update-index` / `admin`) are created per client via a one-time invite code —
+`find-admin invite create --name <label> --scope update-index` on the server,
+then `find-admin redeem <code> --url <server-url>` on the client (or the web
+UI's connect dialog, which accepts the same code). Revoke a client instantly
+with `find-admin token revoke <name>`, no restart needed. Full details:
+[Client registration](docs/manual/01-installation.md#client-registration-the-short-version).
+
 ### Client (`client.toml`)
 
 ```toml
 [server]
 url   = "http://host:8080"
-token = "your-token"
+token = "your-token"   # written automatically by `find-admin redeem <code>`
 
 [[sources]]
 name     = "home"

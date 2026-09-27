@@ -42,6 +42,42 @@ source: code
 
 **`find-admin check`** pings the server and verifies the token is accepted. Useful for confirming that a new client installation can reach the server before running `find-scan`.
 
+### Managing access tokens
+
+See [Client registration](01-installation.md#client-registration-the-short-version) for the quick-start version. Full command reference:
+
+```sh
+# Create an invite for a new client (single use, expires quickly)
+find-admin invite create --name synology1 --scope update-index
+find-admin invite create --name laptop    --scope read           # browsing only
+find-admin invite create --name ops       --scope admin --ttl 5m # shorter-lived invite
+
+# Optionally cap how long the resulting token itself lasts
+find-admin invite create --name contractor --scope read --expires-in 30d
+
+# List pending invites / redeem one from the client machine
+find-admin invite list
+find-admin redeem <code> --url http://server-host:8765
+
+# List and revoke tokens — revocation takes effect immediately, no restart
+find-admin token list
+find-admin token revoke <name>
+
+# Revoke an invite that hasn't been redeemed yet
+find-admin invite revoke <id>
+```
+
+Scopes are hierarchical: `admin` ⊇ `update-index` ⊇ `read`. Use the lowest
+scope that works for what the client actually does — a search-only client
+only ever needs `read`. The web UI's **Settings → Admin** panel exposes the
+same invite/token creation, listing, and revocation for admins who'd rather
+not use the CLI.
+
+The token in `server.toml` is the one exception: it's the root admin
+credential, generated at install time, and isn't listed or revocable through
+`find-admin` — rotate it by editing `server.toml` directly and restarting the
+server.
+
 ### Rescan and deletion
 
 ```sh

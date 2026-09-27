@@ -383,9 +383,14 @@ content-hash caching to avoid re-OCR.
 
 ### Multi-user & Authentication
 
-- Per-user accounts, token rotation, role-based access control (read-only/admin),
-  audit logging.
-- Encryption of data archives (and index?)
+- [x] Scoped, named, revocable access tokens (plan 094) — hierarchical
+  `read` / `update-index` / `admin` scopes, one-time invite codes for
+  enrolling new clients (`find-admin invite create` → `find-admin redeem`,
+  the web UI's connect dialog, or the installers), instant revocation with
+  no restart. The `token` in `server.toml` remains as the un-revocable root
+  admin credential.
+- Still open: per-user accounts (today's tokens identify a *client*, not a
+  person), audit logging, encryption of data archives (and index?)
 
 ### Advanced Integrations
 

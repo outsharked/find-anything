@@ -30,7 +30,15 @@ context_window      = 1     # Lines of context shown either side of each match
 
 **`bind`** — Use `127.0.0.1:8765` to accept only local connections, or `0.0.0.0:8765` to accept connections from other machines on the network. The server has no TLS — put it behind a reverse proxy (nginx, Caddy) if you need HTTPS.
 
-**`token`** — A shared secret presented as an HTTP `Authorization: Bearer <token>` header. All clients (web UI, CLI, `find-scan`, `find-watch`) must use the same token. Generate a strong value with `openssl rand -hex 32`.
+**`token`** — The server's **root admin credential**, presented as an HTTP `Authorization: Bearer <token>` header. It is not a shared secret every client should carry — it has full `admin` scope, is generated once at install time, and can only be changed by editing this file (there's no API to revoke it). Generate a strong value with `openssl rand -hex 32`.
+
+Individual clients don't use this token directly. Each gets its own **named,
+scoped** token (`read`, `update-index`, or `admin`) via a one-time invite code
+— see [Client registration](01-installation.md#client-registration-the-short-version).
+A client's token can be revoked instantly (`find-admin token revoke <name>`)
+without affecting any other client or requiring a server restart. An empty
+`token` here disables authentication entirely (open access to anyone who can
+reach `bind`) — only appropriate for a trusted local/loopback setup.
 
 **`fts_candidate_limit`** — Higher values improve recall and ranking quality but increase CPU per query. Raise this if searches feel like they're missing relevant results.
 
@@ -49,7 +57,8 @@ All client tools (`find-scan`, `find-watch`, `find-anything`, `find-admin`) read
 ```toml
 [server]
 url   = "http://192.168.1.10:8765"   # find-server base URL
-token = "change-me"                  # Must match the server token
+token = "change-me"                  # Written automatically by `find-admin redeem <code>`;
+                                      # see Client registration in 01-installation.md
 
 [[sources]]
 name  = "home"
