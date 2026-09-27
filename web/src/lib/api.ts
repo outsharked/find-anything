@@ -87,6 +87,11 @@ export class AuthError extends Error {
 	constructor() { super('Unauthorized'); }
 }
 
+/** The current token authenticated, but lacks the scope an admin-only call needs. */
+export class ForbiddenError extends Error {
+	constructor() { super('Forbidden'); }
+}
+
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
 	return { Authorization: `Bearer ${getToken()}`, ...extra };
 }
@@ -97,13 +102,17 @@ async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
 		headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) }
 	});
 	if (resp.status === 401) throw new AuthError();
+	if (resp.status === 403) throw new ForbiddenError();
 	return resp;
 }
+
+/** Access scope of a token — matches `find_common::api::Scope` on the server. */
+export type Scope = 'read' | 'update-index' | 'admin';
 
 export interface RedeemResponse {
 	token: string;
 	name: string;
-	scope: 'read' | 'update-index' | 'admin';
+	scope: Scope;
 	expires_at: number | null;
 }
 
@@ -486,6 +495,73 @@ export async function retryFailedInbox(): Promise<{ retried: number }> {
 	const resp = await apiFetch('/api/v1/admin/inbox/retry', { method: 'POST' });
 	if (!resp.ok) throw new Error(`retryFailedInbox: ${resp.status} ${resp.statusText}`);
 	return resp.json();
+}
+
+// ── Access tokens & invites (admin) ────────────────────────────────────────────
+
+export interface CreateInviteRequest {
+	name: string;
+	scope: Scope;
+	/** Invite lifetime in seconds. Omit for the server default (15 minutes). */
+	ttl_secs?: number;
+	/** Lifetime of the resulting token in seconds. Omit for no expiry. */
+	token_ttl_secs?: number;
+}
+
+export interface CreateInviteResponse {
+	/** Shown exactly once — the server never returns it again. */
+	code: string;
+	expires_at: number;
+}
+
+export interface InviteInfo {
+	id: number;
+	name: string;
+	scope: Scope;
+	created_at: number;
+	expires_at: number;
+}
+
+export interface TokenInfo {
+	name: string;
+	scope: Scope;
+	created_at: number;
+	expires_at: number | null;
+	last_used_at: number | null;
+}
+
+export async function createInvite(req: CreateInviteRequest): Promise<CreateInviteResponse> {
+	const resp = await apiFetch('/api/v1/admin/invites', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(req)
+	});
+	if (resp.status === 409) throw new Error(`a token or invite named '${req.name}' already exists`);
+	if (resp.status === 400) throw new Error('invalid invite name');
+	if (!resp.ok) throw new Error(`createInvite: ${resp.status} ${resp.statusText}`);
+	return resp.json();
+}
+
+export async function listInvites(): Promise<InviteInfo[]> {
+	const resp = await apiFetch('/api/v1/admin/invites');
+	if (!resp.ok) throw new Error(`listInvites: ${resp.status} ${resp.statusText}`);
+	return (await resp.json()).invites;
+}
+
+export async function revokeInvite(id: number): Promise<void> {
+	const resp = await apiFetch(`/api/v1/admin/invites/${id}`, { method: 'DELETE' });
+	if (!resp.ok && resp.status !== 404) throw new Error(`revokeInvite: ${resp.status} ${resp.statusText}`);
+}
+
+export async function listTokens(): Promise<TokenInfo[]> {
+	const resp = await apiFetch('/api/v1/admin/tokens');
+	if (!resp.ok) throw new Error(`listTokens: ${resp.status} ${resp.statusText}`);
+	return (await resp.json()).tokens;
+}
+
+export async function revokeToken(name: string): Promise<void> {
+	const resp = await apiFetch(`/api/v1/admin/tokens/${encodeURIComponent(name)}`, { method: 'DELETE' });
+	if (!resp.ok && resp.status !== 404) throw new Error(`revokeToken: ${resp.status} ${resp.statusText}`);
 }
 
 // ── Self-update ───────────────────────────────────────────────────────────────

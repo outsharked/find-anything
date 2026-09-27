@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { getSettings, getUpdateCheck, applyUpdate } from '$lib/api';
+	import { getSettings, getUpdateCheck, applyUpdate, clearSession } from '$lib/api';
+	import { clearToken } from '$lib/token';
 	import { onMount } from 'svelte';
 
 	let serverVersion = $state('');
@@ -72,6 +73,26 @@
 			} catch { /* server still down */ }
 		}
 	}
+
+	let disconnecting = $state(false);
+
+	/**
+	 * Forgets this browser's access token: clears the session cookie
+	 * server-side and the token held in localStorage, then reloads so the
+	 * connect dialog (invite code / token) appears again. There's no
+	 * separate "account" to log out of — this just drops the one credential
+	 * this browser is holding.
+	 */
+	async function disconnect() {
+		if (!confirm('Disconnect this browser? You’ll need an invite code (or the admin token) to reconnect.')) return;
+		disconnecting = true;
+		try {
+			await clearSession();
+		} finally {
+			clearToken();
+			location.href = '/';
+		}
+	}
 </script>
 
 <div class="about">
@@ -105,6 +126,13 @@
 		{:else if checkState === 'error'}
 			<span class="status err">{errorMsg || 'Could not reach GitHub'}</span>
 		{/if}
+	</div>
+
+	<div class="row">
+		<span class="label">Connection</span>
+		<button class="disconnect-btn" onclick={disconnect} disabled={disconnecting}>
+			{disconnecting ? 'Disconnecting…' : 'Disconnect this browser'}
+		</button>
 	</div>
 </div>
 
@@ -179,5 +207,24 @@
 
 	.apply-btn:hover {
 		background: rgba(240, 136, 62, 0.12);
+	}
+
+	.disconnect-btn {
+		font-size: 13px;
+		padding: 5px 12px;
+		border-radius: 5px;
+		border: 1px solid var(--border);
+		background: var(--bg-secondary);
+		color: var(--text);
+		cursor: pointer;
+	}
+
+	.disconnect-btn:hover:not(:disabled) {
+		background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+	}
+
+	.disconnect-btn:disabled {
+		opacity: 0.5;
+		cursor: default;
 	}
 </style>

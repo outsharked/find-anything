@@ -114,6 +114,9 @@
 
 	let connecting = $state(false);
 	let connectError = $state('');
+	// Visible by default so a pasted invite code can be checked at a glance;
+	// a raw admin token can still be masked via the toggle below.
+	let tokenInputVisible = $state(true);
 
 	/** Accept either an invite code (redeemed for a token) or a raw token. */
 	async function saveToken() {
@@ -808,13 +811,25 @@
 				Enter an invite code (create one with <code>find-admin invite create</code>),
 				or paste the admin token from your <code>server.toml</code>.
 			</p>
-			<input
-				type="password"
-				placeholder="Invite code or token"
-				autocomplete="off"
-				bind:value={tokenInput}
-				onkeydown={(e) => e.key === 'Enter' && saveToken()}
-			/>
+			<div class="token-input-row">
+				<input
+					type={tokenInputVisible ? 'text' : 'password'}
+					placeholder="Invite code or token"
+					autocomplete="off"
+					spellcheck="false"
+					bind:value={tokenInput}
+					onkeydown={(e) => e.key === 'Enter' && saveToken()}
+				/>
+				<button
+					type="button"
+					class="token-visibility-toggle"
+					onclick={() => (tokenInputVisible = !tokenInputVisible)}
+					title={tokenInputVisible ? 'Hide input' : 'Show input'}
+					aria-label={tokenInputVisible ? 'Hide input' : 'Show input'}
+				>
+					{tokenInputVisible ? '🙈' : '👁'}
+				</button>
+			</div>
 			{#if connectError}<p class="token-error" role="alert">{connectError}</p>{/if}
 			<button onclick={saveToken} disabled={!tokenInput.trim() || connecting}>
 				{connecting ? 'Connecting…' : 'Connect'}
@@ -940,8 +955,15 @@
 		font-size: 0.85rem;
 	}
 
+	.token-input-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
 	.token-dialog input {
 		width: 100%;
+		min-width: 0;
 		padding: 10px 12px;
 		border: 1px solid var(--border, #333);
 		border-radius: 6px;
@@ -952,9 +974,32 @@
 		box-sizing: border-box;
 	}
 
+	.token-input-row input {
+		flex: 1;
+	}
+
 	.token-dialog input:focus {
 		outline: 2px solid var(--accent, #4a9eff);
 		outline-offset: -1px;
+	}
+
+	.token-dialog .token-visibility-toggle {
+		flex-shrink: 0;
+		align-self: auto;
+		width: 38px;
+		height: 38px;
+		padding: 0;
+		background: var(--bg-input, #2a2a2a);
+		color: inherit;
+		border: 1px solid var(--border, #333);
+		border-radius: 6px;
+		font-size: 16px;
+		line-height: 1;
+		cursor: pointer;
+	}
+
+	.token-dialog .token-visibility-toggle:hover {
+		background: var(--bg-hover, rgba(255, 255, 255, 0.08));
 	}
 
 	.token-dialog button {
