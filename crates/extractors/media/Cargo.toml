@@ -22,7 +22,7 @@ tracing = { workspace = true }
 kamadak-exif = "0.6"
 
 # Audio metadata (tags + technical stream info)
-symphonia = { version = "0.5", default-features = false, features = [
+symphonia = { version = "0.6", default-features = false, features = [
     "mp3",     # MP3
     "flac",    # FLAC
     "ogg",     # OGG container (Vorbis, Opus)
@@ -30,6 +30,8 @@ symphonia = { version = "0.5", default-features = false, features = [
     "wav",     # WAV (also enables pcm)
     "isomp4",  # M4A / MP4 container
     "aac",     # AAC codec
+    "id3v2",   # ID3v2 tags (opt-in since 0.6; MP3/etc.)
+    "id3v1",   # ID3v1 tags
 ] }
 
 # Video metadata
