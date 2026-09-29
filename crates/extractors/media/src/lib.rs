@@ -405,11 +405,10 @@ pub fn is_image_ext(ext: &str) -> bool {
 // ============================================================================
 
 fn extract_audio(path: &Path, label: &str) -> anyhow::Result<Vec<IndexLine>> {
-    use symphonia::core::codecs::CODEC_TYPE_NULL;
-    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
 
     let file = match File::open(path) {
         Ok(f) => f,
@@ -422,64 +421,80 @@ fn extract_audio(path: &Path, label: &str) -> anyhow::Result<Vec<IndexLine>> {
         hint.with_extension(ext);
     }
 
-    let probed = match symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+    let mut format = match symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
     {
-        Ok(p) => p,
+        Ok(f) => f,
         Err(e) => {
             warn!("audio probe failed for '{}': {e}", label);
             return Ok(vec![]);
         }
     };
 
-    let mut format = probed.format;
-    let mut probed_meta = probed.metadata;
     let mut parts: Vec<String> = Vec::new();
 
     // ── Tags ──────────────────────────────────────────────────────────────────
-    // Pre-container metadata (e.g. ID3v2 prepended to MP3) lives in probed_meta;
-    // container-native metadata (Vorbis comments in FLAC/OGG, MP4 atoms) lives
-    // in format.metadata(). Check both and merge.
-    if let Some(meta) = probed_meta.get() {
-        if let Some(rev) = meta.current() {
-            collect_audio_tags(rev.tags(), &mut parts);
-        }
-    }
+    // symphonia 0.6 exposes both pre-container metadata (ID3v1/ID3v2 around an
+    // MP3) and container-native metadata (Vorbis comments, MP4 atoms) as
+    // separate revisions in the format reader's metadata log, oldest first.
+    // Read them all; when a tag key appears in several revisions the newest one
+    // wins (e.g. ID3v2 over the 30-char-truncated ID3v1 copy).
+    let mut revisions: Vec<Vec<(&'static str, String)>> = Vec::new();
     {
-        let meta = format.metadata();
-        if let Some(rev) = meta.current() {
-            collect_audio_tags(rev.tags(), &mut parts);
+        let mut meta = format.metadata();
+        loop {
+            if let Some(rev) = meta.current() {
+                revisions.push(collect_audio_tags(&rev.media.tags));
+            }
+            if meta.is_latest() {
+                break;
+            }
+            meta.pop();
         }
     }
+    let mut seen_keys: Vec<&'static str> = Vec::new();
+    for rev_tags in revisions.iter().rev() {
+        let mut rev_keys: Vec<&'static str> = Vec::new();
+        for (key, value) in rev_tags {
+            if seen_keys.contains(key) {
+                continue;
+            }
+            parts.push(tag_part(key, value));
+            if !rev_keys.contains(key) {
+                rev_keys.push(key);
+            }
+        }
+        seen_keys.extend(rev_keys);
+    }
 
-    // ── Technical metadata from the first real audio track ────────────────────
-    if let Some(track) = format.tracks().iter().find(|t| t.codec_params.codec != CODEC_TYPE_NULL) {
-        let params = &track.codec_params;
+    // ── Technical metadata from the first audio track ─────────────────────────
+    if let Some(track) = format.default_track(TrackType::Audio) {
+        if let Some(params) = track.codec_params.as_ref().and_then(|p| p.audio()) {
+            let codec = audio_codec_name(params.codec);
+            if !codec.is_empty() {
+                parts.push(audio_part("codec", codec));
+            }
 
-        let codec = audio_codec_name(params.codec);
-        if !codec.is_empty() {
-            parts.push(audio_part("codec", codec));
+            if let Some(sr) = params.sample_rate {
+                parts.push(audio_part("sample_rate", &format!("{sr} Hz")));
+            }
+
+            if let Some(ch) = &params.channels {
+                let label = match ch.count() {
+                    1 => "1 (mono)".to_string(),
+                    2 => "2 (stereo)".to_string(),
+                    n => n.to_string(),
+                };
+                parts.push(audio_part("channels", &label));
+            }
+
+            if let Some(bps) = params.bits_per_sample {
+                parts.push(audio_part("bit_depth", &format!("{bps} bit")));
+            }
         }
 
-        if let Some(sr) = params.sample_rate {
-            parts.push(audio_part("sample_rate", &format!("{sr} Hz")));
-        }
-
-        if let Some(ch) = params.channels {
-            let label = match ch.count() {
-                1 => "1 (mono)".to_string(),
-                2 => "2 (stereo)".to_string(),
-                n => n.to_string(),
-            };
-            parts.push(audio_part("channels", &label));
-        }
-
-        if let Some(bps) = params.bits_per_sample {
-            parts.push(audio_part("bit_depth", &format!("{bps} bit")));
-        }
-
-        if let (Some(n_frames), Some(tb)) = (params.n_frames, params.time_base) {
-            let secs = (n_frames * tb.numer as u64) / tb.denom as u64;
+        if let (Some(n_frames), Some(tb)) = (track.num_frames, track.time_base) {
+            let secs = (n_frames * tb.numer.get() as u64) / tb.denom.get() as u64;
             if secs > 0 {
                 parts.push(audio_part("duration", &format!("{}:{:02}", secs / 60, secs % 60)));
             }
@@ -497,61 +512,74 @@ fn extract_audio(path: &Path, label: &str) -> anyhow::Result<Vec<IndexLine>> {
     }])
 }
 
-fn collect_audio_tags(tags: &[symphonia::core::meta::Tag], parts: &mut Vec<String>) {
-    use symphonia::core::meta::{StandardTagKey, Value};
+fn collect_audio_tags(tags: &[symphonia::core::meta::Tag]) -> Vec<(&'static str, String)> {
+    use symphonia::core::meta::{RawValue, StandardTag};
+    let mut out = Vec::new();
     for tag in tags {
-        let key = if let Some(std_key) = tag.std_key {
-            match std_key {
-                StandardTagKey::TrackTitle  => "title",
-                StandardTagKey::Artist      => "artist",
-                StandardTagKey::AlbumArtist => "album_artist",
-                StandardTagKey::Album       => "album",
-                StandardTagKey::Date        => "year",
-                StandardTagKey::Genre       => "genre",
-                StandardTagKey::Comment     => "comment",
-                StandardTagKey::Composer    => "composer",
-                StandardTagKey::TrackNumber => "track",
-                StandardTagKey::DiscNumber  => "disc",
-                _ => continue,
-            }
-        } else {
+        let key = match tag.std.as_ref() {
+            Some(StandardTag::TrackTitle(_))  => "title",
+            Some(StandardTag::Artist(_))      => "artist",
+            Some(StandardTag::AlbumArtist(_)) => "album_artist",
+            Some(StandardTag::Album(_))       => "album",
+            // 0.6 splits the old `Date` into recording/release variants; MP4 `©day`
+            // is a ReleaseDate, ID3 `TDRC` a RecordingDate.
+            Some(StandardTag::RecordingDate(_))
+            | Some(StandardTag::RecordingYear(_))
+            | Some(StandardTag::ReleaseDate(_))
+            | Some(StandardTag::ReleaseYear(_))
+            | Some(StandardTag::OriginalRecordingDate(_)) => "year",
+            Some(StandardTag::Genre(_))       => "genre",
+            Some(StandardTag::Comment(_))     => "comment",
+            Some(StandardTag::Composer(_))    => "composer",
+            // MP4 `©wrt` (composer) is classified as Writer in 0.6; restrict to that
+            // raw key so ID3 lyricist/writer frames aren't mislabelled.
+            Some(StandardTag::Writer(_)) if tag.raw.key == "©wrt" => "composer",
+            Some(StandardTag::TrackNumber(_)) => "track",
+            Some(StandardTag::DiscNumber(_))  => "disc",
+            _ => continue,
+        };
+        // Use the raw tag value (as written in the file, e.g. track "01").
+        let value = match &tag.raw.value {
+            RawValue::String(s)       => s.trim().to_string(),
+            RawValue::StringList(l)   => l.iter().map(|s| s.trim()).collect::<Vec<_>>().join("/"),
+            RawValue::UnsignedInt(n)  => n.to_string(),
+            RawValue::SignedInt(n)    => n.to_string(),
+            RawValue::Float(f)        => format!("{f}"),
+            RawValue::Boolean(b)      => b.to_string(),
+            _                         => continue, // skip binary (album art) and flags
+        };
+        // Several date variants can coexist (e.g. TDRC + TDRL); index one year.
+        if key == "year" && out.iter().any(|(k, _)| *k == "year") {
             continue;
-        };
-        let value = match &tag.value {
-            Value::String(s)      => s.trim().to_string(),
-            Value::UnsignedInt(n) => n.to_string(),
-            Value::SignedInt(n)   => n.to_string(),
-            Value::Float(f)       => format!("{f}"),
-            Value::Boolean(b)     => b.to_string(),
-            _                     => continue, // skip binary (album art) and flags
-        };
+        }
         if !value.is_empty() {
-            parts.push(tag_part(key, &value));
+            out.push((key, value));
         }
     }
+    out
 }
 
-fn audio_codec_name(codec: symphonia::core::codecs::CodecType) -> &'static str {
-    use symphonia::core::codecs::*;
+fn audio_codec_name(codec: symphonia::core::codecs::audio::AudioCodecId) -> &'static str {
+    use symphonia::core::codecs::audio::well_known::*;
     match codec {
-        CODEC_TYPE_MP3       => "MP3",
-        CODEC_TYPE_FLAC      => "FLAC",
-        CODEC_TYPE_VORBIS    => "Vorbis",
-        CODEC_TYPE_AAC       => "AAC",
-        CODEC_TYPE_ALAC      => "ALAC",
-        CODEC_TYPE_PCM_S8    => "PCM",
-        CODEC_TYPE_PCM_U8    => "PCM",
-        CODEC_TYPE_PCM_S16LE => "PCM",
-        CODEC_TYPE_PCM_S16BE => "PCM",
-        CODEC_TYPE_PCM_S24LE => "PCM",
-        CODEC_TYPE_PCM_S24BE => "PCM",
-        CODEC_TYPE_PCM_S32LE => "PCM",
-        CODEC_TYPE_PCM_S32BE => "PCM",
-        CODEC_TYPE_PCM_F32LE => "PCM",
-        CODEC_TYPE_PCM_F32BE => "PCM",
-        CODEC_TYPE_PCM_F64LE => "PCM",
-        CODEC_TYPE_PCM_F64BE => "PCM",
-        _                    => "",
+        CODEC_ID_MP3       => "MP3",
+        CODEC_ID_FLAC      => "FLAC",
+        CODEC_ID_VORBIS    => "Vorbis",
+        CODEC_ID_AAC       => "AAC",
+        CODEC_ID_ALAC      => "ALAC",
+        CODEC_ID_PCM_S8    => "PCM",
+        CODEC_ID_PCM_U8    => "PCM",
+        CODEC_ID_PCM_S16LE => "PCM",
+        CODEC_ID_PCM_S16BE => "PCM",
+        CODEC_ID_PCM_S24LE => "PCM",
+        CODEC_ID_PCM_S24BE => "PCM",
+        CODEC_ID_PCM_S32LE => "PCM",
+        CODEC_ID_PCM_S32BE => "PCM",
+        CODEC_ID_PCM_F32LE => "PCM",
+        CODEC_ID_PCM_F32BE => "PCM",
+        CODEC_ID_PCM_F64LE => "PCM",
+        CODEC_ID_PCM_F64BE => "PCM",
+        _                  => "",
     }
 }
 
@@ -730,6 +758,17 @@ mod tests {
     /// title, artist, album, year.  Generated with `flac` 1.4.3.
     static FLAC_TAGGED: &[u8] = include_bytes!("../testdata/tagged.flac");
 
+    /// 2s mono 44.1 kHz sine, Vorbis in OGG, tags: title, artist, album, date.
+    /// `ffmpeg -f lavfi -i sine=frequency=440:duration=2 -ac 1 -ar 44100 -c:a libvorbis
+    /// -metadata title="Test OGG" -metadata artist="OGG Artist" -metadata album="Ogg Album"
+    /// -metadata date=2023 tagged.ogg`
+    static OGG_TAGGED: &[u8] = include_bytes!("../testdata/tagged.ogg");
+
+    /// 2s mono 44.1 kHz sine, AAC in M4A, tags: title, artist, album, date, composer.
+    /// `ffmpeg -f lavfi -i sine=frequency=440:duration=2 -ac 1 -ar 44100 -c:a aac
+    /// -metadata title="Test M4A" ... tagged.m4a`
+    static M4A_TAGGED: &[u8] = include_bytes!("../testdata/tagged.m4a");
+
     /// Tiny real MP4 (64x48, ~1.88s, h264/yuv420p, 25fps), exercising the
     /// nom-exif ISOBMFF parsing path (extract_video_nom_exif). Generated with:
     /// `ffmpeg -f lavfi -i color=c=blue:s=64x48:d=2 -c:v libx264 -pix_fmt yuv420p
@@ -821,6 +860,43 @@ mod tests {
         assert!(content.contains("[TAG:album_artist]"));
         // Stream info
         assert!(content.contains("[AUDIO:codec] MP3"));
+        assert!(content.contains("[AUDIO:sample_rate] 44100 Hz"));
+        assert!(content.contains("[AUDIO:channels] 1 (mono)"));
+        // Full values from ID3v2, not the 30-char-truncated ID3v1 copy of the
+        // same fields that the fixture also carries.
+        assert!(content.contains("[TAG:title] This is a wonderful title isn't it? [TAG:"), "content: {content}");
+        assert!(content.contains("[TAG:track] 01"), "raw track string preserved: {content}");
+        assert!(!content.contains("isn' [TAG"), "ID3v1 truncation leaked: {content}");
+        assert_eq!(content.matches("[TAG:title]").count(), 1, "one title, not one per revision: {content}");
+    }
+
+    #[test]
+    fn ogg_vorbis_extracts_tags_and_stream_info() {
+        let f = write_fixture(OGG_TAGGED, ".ogg");
+        let lines = extract_audio(f.path(), "").unwrap();
+        assert_eq!(lines.len(), 1, "audio produces one metadata line");
+        let content = &lines[0].content;
+        assert!(content.contains("[TAG:title] Test OGG"),    "content: {content}");
+        assert!(content.contains("[TAG:artist] OGG Artist"));
+        assert!(content.contains("[TAG:album] Ogg Album"));
+        assert!(content.contains("[TAG:year] 2023"));
+        assert!(content.contains("[AUDIO:codec] Vorbis"));
+        assert!(content.contains("[AUDIO:sample_rate] 44100 Hz"));
+        assert!(content.contains("[AUDIO:channels] 1 (mono)"));
+    }
+
+    #[test]
+    fn m4a_aac_extracts_tags_and_stream_info() {
+        let f = write_fixture(M4A_TAGGED, ".m4a");
+        let lines = extract_audio(f.path(), "").unwrap();
+        assert_eq!(lines.len(), 1, "audio produces one metadata line");
+        let content = &lines[0].content;
+        assert!(content.contains("[TAG:title] Test M4A"),    "content: {content}");
+        assert!(content.contains("[TAG:artist] M4A Artist"));
+        assert!(content.contains("[TAG:album] M4A Album"));
+        assert!(content.contains("[TAG:composer] M4A Composer"));
+        assert!(content.contains("[TAG:year] 2022"));
+        assert!(content.contains("[AUDIO:codec] AAC"));
         assert!(content.contains("[AUDIO:sample_rate] 44100 Hz"));
         assert!(content.contains("[AUDIO:channels] 1 (mono)"));
     }

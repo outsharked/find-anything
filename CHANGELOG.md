@@ -11,6 +11,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- **Audio metadata** now uses `symphonia` 0.6 (a rewrite of its probe/metadata/codec API). Extracted tags and stream info are unchanged for MP3, FLAC, OGG and M4A. ID3v1/ID3v2 support is now enabled explicitly (it is opt-in in 0.6), and tags are merged across metadata revisions with the newest winning, so the truncated ID3v1 copy never overrides ID3v2.
+
+### Changed
+
 - **PDF extraction** now uses the `pdf-extract` fork at v0.12.1 (lopdf 0.42): upstream's font cache and per-page cache fix, merged with the fork's panic hardening for malformed PDFs, and a new regression suite covering it (also closes a few remaining panics on corrupt Type1/ToUnicode data).
 - Routine compatible dependency updates (`cargo update`, lockfile only).
 
