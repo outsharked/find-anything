@@ -17,5 +17,5 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 
 zip = "8"
-quick-xml = "0.41"
+quick-xml = "0.42"
 tempfile = "3"

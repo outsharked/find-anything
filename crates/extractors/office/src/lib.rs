@@ -100,7 +100,7 @@ fn resolve_ref(e: &quick_xml::events::BytesRef) -> Option<String> {
     if let Ok(Some(ch)) = e.resolve_char_ref() {
         return Some(ch.to_string());
     }
-    e.decode().ok().and_then(|name| quick_xml::escape::resolve_predefined_entity(&name).map(String::from))
+    quick_xml::escape::resolve_predefined_entity(e).map(String::from)
 }
 
 /// Extract dc:title and dc:creator from docProps/core.xml, concatenated into a
@@ -116,15 +116,15 @@ fn parse_docx_metadata(xml: &str) -> Option<IndexLine> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 current_field = match e.name().as_ref() {
-                    b"dc:title" => Some("title"),
-                    b"dc:creator" => Some("author"),
+                    "dc:title" => Some("title"),
+                    "dc:creator" => Some("author"),
                     _ => None,
                 };
                 field_buf.clear();
             }
             Ok(Event::Text(e)) => {
                 if current_field.is_some() {
-                    if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
+                    if let Some(text) = quick_xml::escape::unescape(&e).ok().map(|s| s.into_owned()) {
                         field_buf.push_str(&text);
                     }
                 }
@@ -173,13 +173,13 @@ fn parse_docx_paragraphs(xml: &str) -> Vec<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match e.name().as_ref() {
-                b"w:t" => in_t = true,
-                b"w:p" => current_para.clear(),
+                "w:t" => in_t = true,
+                "w:p" => current_para.clear(),
                 _ => {}
             },
             Ok(Event::End(e)) => match e.name().as_ref() {
-                b"w:t" => in_t = false,
-                b"w:p" => {
+                "w:t" => in_t = false,
+                "w:p" => {
                     let text = current_para.trim().to_string();
                     if !text.is_empty() {
                         paragraphs.push(text);
@@ -189,7 +189,7 @@ fn parse_docx_paragraphs(xml: &str) -> Vec<String> {
                 _ => {}
             },
             Ok(Event::Text(e)) if in_t => {
-                if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
+                if let Some(text) = quick_xml::escape::unescape(&e).ok().map(|s| s.into_owned()) {
                     current_para.push_str(&text);
                 }
             }
@@ -337,12 +337,12 @@ fn parse_pptx_paragraphs(xml: &str) -> Vec<String> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().as_ref() == b"a:t" => {
+            Ok(Event::Start(e)) if e.name().as_ref() == "a:t" => {
                 in_t = true;
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
-                b"a:t" => in_t = false,
-                b"a:p" => {
+                "a:t" => in_t = false,
+                "a:p" => {
                     let text = current_para.trim().to_string();
                     if !text.is_empty() {
                         paragraphs.push(text);
@@ -352,7 +352,7 @@ fn parse_pptx_paragraphs(xml: &str) -> Vec<String> {
                 _ => {}
             },
             Ok(Event::Text(e)) if in_t => {
-                if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
+                if let Some(text) = quick_xml::escape::unescape(&e).ok().map(|s| s.into_owned()) {
                     current_para.push_str(&text);
                 }
             }

@@ -95,9 +95,9 @@ fn find_opf_path(xml: &str) -> anyhow::Result<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Empty(e)) | Ok(Event::Start(e))
-                if e.local_name().as_ref() == b"rootfile" =>
+                if e.local_name().as_ref() == "rootfile" =>
             {
-                if let Some(path) = get_attr(&e, b"full-path") {
+                if let Some(path) = get_attr(&e, "full-path") {
                     return Ok(path);
                 }
             }
@@ -134,18 +134,18 @@ fn parse_opf(xml: &str, opf_dir: &str) -> (Vec<IndexLine>, Vec<String>) {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 match e.local_name().as_ref() {
-                    b"manifest" => in_manifest = true,
-                    b"spine" => in_spine = true,
-                    b"title" => current_field = Some("title"),
-                    b"creator" => current_field = Some("creator"),
-                    b"publisher" => current_field = Some("publisher"),
-                    b"language" => current_field = Some("language"),
+                    "manifest" => in_manifest = true,
+                    "spine" => in_spine = true,
+                    "title" => current_field = Some("title"),
+                    "creator" => current_field = Some("creator"),
+                    "publisher" => current_field = Some("publisher"),
+                    "language" => current_field = Some("language"),
                     _ => {}
                 }
             }
             Ok(Event::End(e)) => match e.local_name().as_ref() {
-                b"manifest" => in_manifest = false,
-                b"spine" => in_spine = false,
+                "manifest" => in_manifest = false,
+                "spine" => in_spine = false,
                 _ => {
                     if let Some(field) = current_field.take() {
                         let text = field_buf.trim().to_string();
@@ -157,9 +157,9 @@ fn parse_opf(xml: &str, opf_dir: &str) -> (Vec<IndexLine>, Vec<String>) {
                 }
             },
             Ok(Event::Empty(e)) => {
-                if in_manifest && e.local_name().as_ref() == b"item" {
+                if in_manifest && e.local_name().as_ref() == "item" {
                     if let (Some(id), Some(href)) =
-                        (get_attr(&e, b"id"), get_attr(&e, b"href"))
+                        (get_attr(&e, "id"), get_attr(&e, "href"))
                     {
                         let full = if opf_dir.is_empty() {
                             href
@@ -168,15 +168,15 @@ fn parse_opf(xml: &str, opf_dir: &str) -> (Vec<IndexLine>, Vec<String>) {
                         };
                         manifest.insert(id, full);
                     }
-                } else if in_spine && e.local_name().as_ref() == b"itemref" {
-                    if let Some(idref) = get_attr(&e, b"idref") {
+                } else if in_spine && e.local_name().as_ref() == "itemref" {
+                    if let Some(idref) = get_attr(&e, "idref") {
                         spine_idrefs.push(idref);
                     }
                 }
             }
             Ok(Event::Text(e)) => {
                 if current_field.is_some() {
-                    if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
+                    if let Some(text) = quick_xml::escape::unescape(&e).ok().map(|s| s.into_owned()) {
                         field_buf.push_str(&text);
                     }
                 }
@@ -215,15 +215,15 @@ fn parse_opf(xml: &str, opf_dir: &str) -> (Vec<IndexLine>, Vec<String>) {
 // ── XHTML content ─────────────────────────────────────────────────────────────
 
 /// Block elements whose closing tag triggers a line flush.
-const BLOCK_ELEMENTS: &[&[u8]] = &[
-    b"h1", b"h2", b"h3", b"h4", b"h5", b"h6",
-    b"p", b"li", b"dt", b"dd",
-    b"td", b"th",
-    b"pre", b"blockquote", b"figcaption",
+const BLOCK_ELEMENTS: &[&str] = &[
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "p", "li", "dt", "dd",
+    "td", "th",
+    "pre", "blockquote", "figcaption",
 ];
 
 /// Elements whose content is skipped entirely (invisible to users).
-const SKIP_ELEMENTS: &[&[u8]] = &[b"script", b"style", b"head"];
+const SKIP_ELEMENTS: &[&str] = &["script", "style", "head"];
 
 /// Walk XHTML and return non-empty paragraph strings.
 fn extract_xhtml_text(xml: &str) -> Vec<String> {
@@ -251,7 +251,7 @@ fn extract_xhtml_text(xml: &str) -> Vec<String> {
                 }
             }
             Ok(Event::Text(e)) if skip_depth == 0 => {
-                if let Some(text) = e.decode().ok().and_then(|d| quick_xml::escape::unescape(&d).ok().map(|s| s.into_owned())) {
+                if let Some(text) = quick_xml::escape::unescape(&e).ok().map(|s| s.into_owned()) {
                     current.push_str(&text);
                 }
             }
@@ -271,11 +271,11 @@ fn extract_xhtml_text(xml: &str) -> Vec<String> {
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 
-fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option<String> {
+fn get_attr(e: &quick_xml::events::BytesStart, name: &str) -> Option<String> {
     e.attributes()
         .filter_map(|a| a.ok())
         .find(|a| a.key.as_ref() == name)
-        .map(|a| String::from_utf8_lossy(&a.value).into_owned())
+        .map(|a| a.value.clone().into_owned())
 }
 
 /// Resolve a `GeneralRef` event (a `&entity;` or `&#nn;` reference that quick-xml
@@ -284,7 +284,7 @@ fn resolve_ref(e: &quick_xml::events::BytesRef) -> Option<String> {
     if let Ok(Some(ch)) = e.resolve_char_ref() {
         return Some(ch.to_string());
     }
-    e.decode().ok().and_then(|name| quick_xml::escape::resolve_predefined_entity(&name).map(String::from))
+    quick_xml::escape::resolve_predefined_entity(e).map(String::from)
 }
 
 #[cfg(test)]
