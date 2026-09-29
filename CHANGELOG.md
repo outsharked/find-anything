@@ -15,6 +15,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Dependency updates: `quick-xml` 0.42 (epub and office extractors migrated to its `&str` API), `calamine` 0.36, `sevenz-rust2` 0.23, `infer` 0.22.
 - **PDF extraction** now uses the `pdf-extract` fork at v0.12.1 (lopdf 0.42): upstream's font cache and per-page cache fix, merged with the fork's panic hardening for malformed PDFs, and a new regression suite covering it (also closes a few remaining panics on corrupt Type1/ToUnicode data).
 - Routine compatible dependency updates (`cargo update`, lockfile only).
+- Web dependency updates: `svelte` 5.57, `@sveltejs/kit` 2.70, `vite` 8.3, `vite-plugin-svelte` 7.3, `svelte-check`, `highlight.js` 11.12, `chrono-node` 2.10, `pdfjs-dist` 6.3.
 
 ---
 
