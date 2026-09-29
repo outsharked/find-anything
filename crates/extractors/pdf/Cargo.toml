@@ -17,4 +17,4 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 
 tracing = { workspace = true }
-pdf-extract = { git = "https://github.com/jamietre/pdf-extract", rev = "7312171" }
+pdf-extract = { git = "https://github.com/jamietre/pdf-extract", rev = "c820922" }
