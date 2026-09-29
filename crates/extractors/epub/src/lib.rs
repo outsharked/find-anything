@@ -284,7 +284,7 @@ fn resolve_ref(e: &quick_xml::events::BytesRef) -> Option<String> {
     if let Ok(Some(ch)) = e.resolve_char_ref() {
         return Some(ch.to_string());
     }
-    quick_xml::escape::resolve_predefined_entity(&e).map(String::from)
+    quick_xml::escape::resolve_predefined_entity(e).map(String::from)
 }
 
 #[cfg(test)]
