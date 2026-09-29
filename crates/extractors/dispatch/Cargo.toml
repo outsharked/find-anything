@@ -26,4 +26,4 @@ anyhow               = { workspace = true }
 tracing              = { workspace = true }
 tracing-subscriber   = { workspace = true }
 serde_json           = { workspace = true }
-infer                = "0.19"
+infer                = "0.22"
