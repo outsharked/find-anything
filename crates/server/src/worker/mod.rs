@@ -244,8 +244,18 @@ pub async fn start_inbox_worker(
                     }
                 }
 
-                // When the queue drains, rebuild stats so files_pending_content updates.
-                if any_processed {
+                // When the queue drains, rebuild stats so files_pending_content updates —
+                // but at most once per POST_ARCHIVE_REBUILD_MIN_AGE_SECS: a rebuild scans
+                // every source DB, and busy clients drain the queue constantly.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let rebuild_due = source_stats_cache
+                    .read()
+                    .map(|c| c.is_older_than(crate::stats_cache::POST_ARCHIVE_REBUILD_MIN_AGE_SECS, now))
+                    .unwrap_or(true);
+                if any_processed && rebuild_due {
                     let cache = Arc::clone(&source_stats_cache);
                     let cs2 = Arc::clone(&cs);
                     let dd = data_dir.clone();

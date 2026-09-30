@@ -53,12 +53,29 @@ pub fn open_write(data_dir: &Path) -> Result<Connection> {
 
 /// Check whether any chunk exists for `key`.
 pub fn blob_exists(conn: &Connection, key: &str) -> Result<bool> {
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM blobs WHERE key = ?1 LIMIT 1",
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM blobs WHERE key = ?1)",
         rusqlite::params![key],
         |r| r.get(0),
     )?;
-    Ok(n > 0)
+    Ok(exists)
+}
+
+/// Return the keys in `keys` that have no chunk in `blobs`.
+///
+/// Probes in sorted key order with one prepared statement so the
+/// `(key, start_line)` index is walked sequentially rather than randomly.
+pub fn missing_keys<'a>(conn: &Connection, keys: &[&'a str]) -> Result<Vec<&'a str>> {
+    let mut sorted: Vec<&str> = keys.to_vec();
+    sorted.sort_unstable();
+    let mut stmt = conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM blobs WHERE key = ?1)")?;
+    let mut missing = Vec::new();
+    for k in sorted {
+        if !stmt.query_row(rusqlite::params![k], |r| r.get::<_, bool>(0))? {
+            missing.push(k);
+        }
+    }
+    Ok(missing)
 }
 
 /// Insert a single chunk row. Ignores conflicts (idempotent).

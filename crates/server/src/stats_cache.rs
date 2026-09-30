@@ -29,6 +29,23 @@ pub struct CachedSourceStats {
     pub files_pending_content: usize,
 }
 
+/// Minimum age of the cache before an archive-queue drain may trigger another
+/// full rebuild.  A rebuild scans every source DB, so client pushes (which
+/// drain the queue constantly) must not each cause one; the daily rebuild and
+/// `?refresh=true` still refresh on their own schedule.
+pub const POST_ARCHIVE_REBUILD_MIN_AGE_SECS: i64 = 3600;
+
+impl SourceStatsCache {
+    /// True if the cache was never built or was last rebuilt at least
+    /// `min_age_secs` before `now` (unix seconds).
+    pub fn is_older_than(&self, min_age_secs: i64, now: i64) -> bool {
+        match self.rebuilt_at {
+            Some(at) => now - at >= min_age_secs,
+            None => true,
+        }
+    }
+}
+
 /// Run all expensive queries for every source DB and store results in `cache`.
 /// Called at startup, daily, and on `?refresh=true`.
 pub fn full_rebuild(
@@ -106,5 +123,22 @@ impl SourceStatsCache {
             e.count = (e.count as i64 + count_d).max(0) as usize;
             e.size  = (e.size  + size_d).max(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn never_built_cache_is_always_due() {
+        assert!(SourceStatsCache::default().is_older_than(3600, 1_000));
+    }
+
+    #[test]
+    fn rebuild_throttled_until_min_age_elapses() {
+        let c = SourceStatsCache { rebuilt_at: Some(1_000), ..Default::default() };
+        assert!(!c.is_older_than(3600, 1_000 + 3599));
+        assert!(c.is_older_than(3600, 1_000 + 3600));
     }
 }

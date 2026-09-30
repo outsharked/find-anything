@@ -100,19 +100,26 @@ pub fn append_scan_history(conn: &Connection, scanned_at: i64) -> Result<()> {
 /// DB-level view of archive backlog, independent of how many `.gz` files
 /// remain in the `to-archive/` queue.
 pub fn get_files_pending_content(conn: &Connection, content_store: &dyn ContentStore) -> Result<usize> {
-    let hashes: Vec<String> = conn
-        .prepare(
-            "SELECT DISTINCT file_hash FROM files WHERE file_hash IS NOT NULL",
-        )?
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    // ORDER BY file_hash is satisfied by the partial `files_file_hash` index
+    // (no table scan, no sort), and hashes are streamed in bounded batches so
+    // the content store can probe its own index in key order.
+    const BATCH: usize = 10_000;
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT file_hash FROM files WHERE file_hash IS NOT NULL ORDER BY file_hash",
+    )?;
+    let mut rows = stmt.query([])?;
 
     let mut pending = 0usize;
-    for hash in hashes {
-        let key = ContentKey::new(hash.as_str());
-        if !content_store.contains(&key).unwrap_or(true) {
-            pending += 1;
+    let mut batch: Vec<ContentKey> = Vec::with_capacity(BATCH);
+    while let Some(row) = rows.next()? {
+        batch.push(ContentKey::new(row.get::<_, String>(0)?));
+        if batch.len() == BATCH {
+            pending += content_store.missing_keys(&batch)?.len();
+            batch.clear();
         }
+    }
+    if !batch.is_empty() {
+        pending += content_store.missing_keys(&batch)?.len();
     }
     Ok(pending)
 }
@@ -294,8 +301,11 @@ pub fn get_indexing_error_count(conn: &Connection) -> Result<usize> {
 /// Return the total number of rows in the FTS5 index.
 /// Includes stale entries from re-indexed files; useful for diagnosing
 /// whether the index is being populated at all.
+///
+/// Counts the FTS5 `_docsize` shadow table (one small row per indexed line)
+/// instead of `COUNT(*)` on `lines_fts`, which walks the whole trigram index.
 pub fn get_fts_row_count(conn: &Connection) -> Result<i64> {
-    conn.query_row("SELECT COUNT(*) FROM lines_fts", [], |r| r.get(0))
+    conn.query_row("SELECT COUNT(*) FROM lines_fts_docsize", [], |r| r.get(0))
         .map_err(Into::into)
 }
 
@@ -397,6 +407,36 @@ mod tests {
         ).unwrap();
         let pending2 = get_files_pending_content(&conn, &store).unwrap();
         assert_eq!(pending2, 1, "file without file_hash should not be counted as pending");
+    }
+
+    #[test]
+    fn test_get_fts_row_count_matches_full_count() {
+        let conn = test_conn();
+        assert_eq!(get_fts_row_count(&conn).unwrap(), 0);
+        for i in 0..7i64 {
+            conn.execute(
+                "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
+                params![i, format!("hello line {i}")],
+            ).unwrap();
+        }
+        let full: i64 = conn.query_row("SELECT COUNT(*) FROM lines_fts", [], |r| r.get(0)).unwrap();
+        assert_eq!(get_fts_row_count(&conn).unwrap(), full);
+        assert_eq!(full, 7);
+    }
+
+    /// More distinct hashes than one batch, to exercise the batch boundary.
+    #[test]
+    fn test_get_files_pending_content_spans_batches() {
+        let conn = test_conn();
+        conn.execute_batch("BEGIN").unwrap();
+        for i in 0..10_005 {
+            conn.execute(
+                "INSERT INTO files (path, mtime, kind, file_hash) VALUES (?1, 1000, 'text', ?2)",
+                params![format!("f{i}.txt"), format!("{i:064x}")],
+            ).unwrap();
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(get_files_pending_content(&conn, &EmptyStore).unwrap(), 10_005);
     }
 
     #[test]

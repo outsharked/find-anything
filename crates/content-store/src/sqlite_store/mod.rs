@@ -321,6 +321,15 @@ impl ContentStore for SqliteContentStore {
         db::blob_exists(&conn, key.as_str())
     }
 
+    fn missing_keys(&self, keys: &[ContentKey]) -> Result<Vec<ContentKey>> {
+        let conn = self.read_pool.acquire()?;
+        let strs: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
+        Ok(db::missing_keys(&conn, &strs)?
+            .into_iter()
+            .map(ContentKey::new)
+            .collect())
+    }
+
     fn compact(&self, live_keys: &HashSet<ContentKey>, dry_run: bool) -> Result<CompactResult> {
         let conn = self.write_conn.lock().map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
         let live: Vec<&str> = live_keys.iter().map(|k| k.as_str()).collect();
@@ -370,6 +379,24 @@ impl ContentStore for SqliteContentStore {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// `missing_keys` must agree with `contains`, including for multi-chunk blobs.
+    #[test]
+    fn missing_keys_matches_contains() {
+        let dir = TempDir::new().unwrap();
+        let store = SqliteContentStore::open(dir.path(), Some(0), None, None).unwrap();
+        let present = ContentKey::new("a".repeat(64));
+        let absent = ContentKey::new("b".repeat(64));
+        let lines: Vec<String> = (0..5).map(|i| format!("line {i}")).collect();
+        store.put(&present, &lines.join("\n")).unwrap(); // chunk size 0 => 5 chunks
+
+        assert!(store.contains(&present).unwrap());
+        assert!(!store.contains(&absent).unwrap());
+
+        let missing = store.missing_keys(&[absent.clone(), present.clone()]).unwrap();
+        assert_eq!(missing, vec![absent]);
+        assert!(store.missing_keys(&[]).unwrap().is_empty());
+    }
 
     /// Verify that chunk_size_kb=0 forces every line into its own chunk,
     /// and that get_lines still reconstructs a sub-range correctly.

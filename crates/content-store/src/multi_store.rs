@@ -55,6 +55,17 @@ impl ContentStore for MultiContentStore {
         Ok(false)
     }
 
+    fn missing_keys(&self, keys: &[ContentKey]) -> Result<Vec<ContentKey>> {
+        let mut missing = keys.to_vec();
+        for s in &self.stores {
+            if missing.is_empty() {
+                break;
+            }
+            missing = s.missing_keys(&missing)?;
+        }
+        Ok(missing)
+    }
+
     fn compact(&self, live_keys: &HashSet<ContentKey>, dry_run: bool) -> Result<CompactResult> {
         let mut total = CompactResult {
             units_scanned: 0,
