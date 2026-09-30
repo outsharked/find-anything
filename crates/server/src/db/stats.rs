@@ -100,26 +100,37 @@ pub fn append_scan_history(conn: &Connection, scanned_at: i64) -> Result<()> {
 /// DB-level view of archive backlog, independent of how many `.gz` files
 /// remain in the `to-archive/` queue.
 pub fn get_files_pending_content(conn: &Connection, content_store: &dyn ContentStore) -> Result<usize> {
-    // ORDER BY file_hash is satisfied by the partial `files_file_hash` index
-    // (no table scan, no sort), and hashes are streamed in bounded batches so
-    // the content store can probe its own index in key order.
-    const BATCH: usize = 10_000;
+    // Keyset pagination over the partial `files_file_hash` index: each page is
+    // a short-lived query (no read transaction held open while the content
+    // store is probed, so WAL checkpoints are not pinned), memory is bounded
+    // to one batch, and the content store sees keys in sorted order.
+    const BATCH: i64 = 10_000;
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT file_hash FROM files WHERE file_hash IS NOT NULL ORDER BY file_hash",
+        "SELECT DISTINCT file_hash FROM files
+         WHERE file_hash > ?1
+         ORDER BY file_hash
+         LIMIT ?2",
     )?;
-    let mut rows = stmt.query([])?;
 
     let mut pending = 0usize;
-    let mut batch: Vec<ContentKey> = Vec::with_capacity(BATCH);
-    while let Some(row) = rows.next()? {
-        batch.push(ContentKey::new(row.get::<_, String>(0)?));
-        if batch.len() == BATCH {
-            pending += content_store.missing_keys(&batch)?.len();
-            batch.clear();
+    let mut after = String::new(); // every hash sorts after the empty string
+    loop {
+        let batch: Vec<String> = stmt
+            .query_map(params![after, BATCH], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let Some(last) = batch.last() else { break };
+        after = last.clone();
+        let full_page = batch.len() as i64 == BATCH;
+
+        let keys: Vec<ContentKey> = batch.into_iter().map(ContentKey::new).collect();
+        // A failed probe counts as "not pending" for that batch (as the former
+        // per-key `contains(..).unwrap_or(true)` did), rather than failing the
+        // whole stats rebuild.
+        match content_store.missing_keys(&keys) {
+            Ok(missing) => pending += missing.len(),
+            Err(e) => tracing::warn!("files_pending_content: content store probe failed: {e:#}"),
         }
-    }
-    if !batch.is_empty() {
-        pending += content_store.missing_keys(&batch)?.len();
+        if !full_page { break }
     }
     Ok(pending)
 }
@@ -301,11 +312,8 @@ pub fn get_indexing_error_count(conn: &Connection) -> Result<usize> {
 /// Return the total number of rows in the FTS5 index.
 /// Includes stale entries from re-indexed files; useful for diagnosing
 /// whether the index is being populated at all.
-///
-/// Counts the FTS5 `_docsize` shadow table (one small row per indexed line)
-/// instead of `COUNT(*)` on `lines_fts`, which walks the whole trigram index.
 pub fn get_fts_row_count(conn: &Connection) -> Result<i64> {
-    conn.query_row("SELECT COUNT(*) FROM lines_fts_docsize", [], |r| r.get(0))
+    conn.query_row("SELECT COUNT(*) FROM lines_fts", [], |r| r.get(0))
         .map_err(Into::into)
 }
 
@@ -409,34 +417,40 @@ mod tests {
         assert_eq!(pending2, 1, "file without file_hash should not be counted as pending");
     }
 
-    #[test]
-    fn test_get_fts_row_count_matches_full_count() {
-        let conn = test_conn();
-        assert_eq!(get_fts_row_count(&conn).unwrap(), 0);
-        for i in 0..7i64 {
-            conn.execute(
-                "INSERT INTO lines_fts(rowid, content) VALUES (?1, ?2)",
-                params![i, format!("hello line {i}")],
-            ).unwrap();
+    /// Present for hashes whose last hex digit is even.
+    struct EvenStore;
+
+    impl find_content_store::ContentStore for EvenStore {
+        fn put(&self, _: &ContentKey, _: &str) -> anyhow::Result<bool> { Ok(false) }
+        fn delete(&self, _: &ContentKey) -> anyhow::Result<()> { Ok(()) }
+        fn get_lines(&self, _: &ContentKey, _: usize, _: usize) -> anyhow::Result<Option<Vec<(usize, String)>>> { Ok(None) }
+        fn contains(&self, k: &ContentKey) -> anyhow::Result<bool> {
+            Ok(u8::from_str_radix(&k.as_str()[63..], 16).unwrap().is_multiple_of(2))
         }
-        let full: i64 = conn.query_row("SELECT COUNT(*) FROM lines_fts", [], |r| r.get(0)).unwrap();
-        assert_eq!(get_fts_row_count(&conn).unwrap(), full);
-        assert_eq!(full, 7);
+        fn compact(&self, _: &HashSet<ContentKey>, _: bool) -> anyhow::Result<CompactResult> {
+            Ok(CompactResult { units_scanned: 0, units_rewritten: 0, units_deleted: 0, chunks_removed: 0, bytes_freed: 0 })
+        }
     }
 
-    /// More distinct hashes than one batch, to exercise the batch boundary.
+    /// More distinct hashes than one batch (and not a multiple of the batch
+    /// size), with a mix of present and missing keys, plus duplicate hashes.
     #[test]
     fn test_get_files_pending_content_spans_batches() {
         let conn = test_conn();
         conn.execute_batch("BEGIN").unwrap();
-        for i in 0..10_005 {
-            conn.execute(
-                "INSERT INTO files (path, mtime, kind, file_hash) VALUES (?1, 1000, 'text', ?2)",
-                params![format!("f{i}.txt"), format!("{i:064x}")],
-            ).unwrap();
+        for i in 0..25_003u32 {
+            // Two files share each hash: DISTINCT must collapse them.
+            for dup in 0..2 {
+                conn.execute(
+                    "INSERT INTO files (path, mtime, kind, file_hash) VALUES (?1, 1000, 'text', ?2)",
+                    params![format!("f{i}_{dup}.txt"), format!("{i:064x}")],
+                ).unwrap();
+            }
         }
         conn.execute_batch("COMMIT").unwrap();
-        assert_eq!(get_files_pending_content(&conn, &EmptyStore).unwrap(), 10_005);
+        let expected_missing = (0..25_003u32).filter(|i| i % 2 == 1).count();
+        assert_eq!(get_files_pending_content(&conn, &EvenStore).unwrap(), expected_missing);
+        assert_eq!(get_files_pending_content(&conn, &EmptyStore).unwrap(), 25_003);
     }
 
     #[test]

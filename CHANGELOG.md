@@ -11,9 +11,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
-- **Sustained disk I/O and CPU on large indexes.** The stats cache did a full rebuild over every source DB each time the archive queue drained, so busy clients kept the server re-scanning tens of GB (about 1 TB/day of reads on a 51 GB index). Post-archive rebuilds are now limited to once per hour (the daily rebuild and `?refresh=true` are unchanged).
-- The FTS row count now reads the FTS5 `_docsize` shadow table instead of `COUNT(*)` over the trigram index.
-- `files_pending_content` streams hashes in index order and checks the content store in batches (new `ContentStore::missing_keys`). `blob_exists` now uses `EXISTS` rather than counting every chunk of a blob.
+- **Sustained disk I/O and CPU on large indexes.** The stats cache did a full rebuild over every source DB each time the archive queue drained, so busy clients kept the server re-scanning tens of GB (about 1 TB/day of reads on a 51 GB index). Post-archive rebuilds are now limited to once per hour; a rebuild skipped by the throttle runs as a trailing rebuild once the window passes, and a rebuild that is still running (or bailed out early) also counts toward the throttle. The daily rebuild and `?refresh=true` are unchanged.
+- `files_pending_content` pages through file hashes in index order (no long-lived read transaction on the source DB) and checks the content store in batches (new `ContentStore::missing_keys`). `blob_exists` now uses `EXISTS` rather than counting every chunk of a blob.
 
 ---
 

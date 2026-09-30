@@ -100,3 +100,34 @@ impl ContentStore for MultiContentStore {
         if any { Some((total_count, total_bytes)) } else { None }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sqlite_store::SqliteContentStore;
+    use tempfile::TempDir;
+
+    /// A key is missing only if *every* inner store lacks it.
+    #[test]
+    fn missing_keys_is_intersection_of_inner_misses() {
+        let (d1, d2) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let s1 = Arc::new(SqliteContentStore::open(d1.path(), None, None, None).unwrap());
+        let s2 = Arc::new(SqliteContentStore::open(d2.path(), None, None, None).unwrap());
+        let (a, b, c) = (
+            ContentKey::new("a".repeat(64)),
+            ContentKey::new("b".repeat(64)),
+            ContentKey::new("c".repeat(64)),
+        );
+        s1.put(&a, "one").unwrap(); // only in store 1
+        s2.put(&b, "two").unwrap(); // only in store 2
+        let multi = MultiContentStore { stores: vec![s1, s2] };
+
+        let mut missing = multi.missing_keys(&[a.clone(), b.clone(), c.clone()]).unwrap();
+        missing.sort();
+        assert_eq!(missing, vec![c.clone()]);
+        for k in [&a, &b, &c] {
+            assert_eq!(multi.contains(k).unwrap(), !multi.missing_keys(&[k.clone()]).unwrap().contains(k));
+        }
+        assert!(multi.missing_keys(&[]).unwrap().is_empty());
+    }
+}

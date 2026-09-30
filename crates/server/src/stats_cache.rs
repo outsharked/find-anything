@@ -11,8 +11,12 @@ use find_content_store::ContentStore;
 #[derive(Default, Clone)]
 pub struct SourceStatsCache {
     pub sources: Vec<CachedSourceStats>,
-    /// Unix timestamp of the last full rebuild.
+    /// Unix timestamp of the last completed full rebuild.
     pub rebuilt_at: Option<i64>,
+    /// Unix timestamp of the most recent full rebuild *start* (set even if it
+    /// is still running or bailed out early), so the post-archive throttle
+    /// also covers in-flight and failed rebuilds.
+    pub rebuild_started_at: Option<i64>,
 }
 
 #[derive(Clone, Default)]
@@ -36,13 +40,29 @@ pub struct CachedSourceStats {
 pub const POST_ARCHIVE_REBUILD_MIN_AGE_SECS: i64 = 3600;
 
 impl SourceStatsCache {
-    /// True if the cache was never built or was last rebuilt at least
+    /// True if no rebuild has started or completed within the last
     /// `min_age_secs` before `now` (unix seconds).
     pub fn is_older_than(&self, min_age_secs: i64, now: i64) -> bool {
-        match self.rebuilt_at {
+        match self.rebuilt_at.max(self.rebuild_started_at) {
             Some(at) => now - at >= min_age_secs,
             None => true,
         }
+    }
+}
+
+/// Decide whether the archive worker should run a rebuild this tick.
+///
+/// `pending` is the worker's "stats are stale" flag: set whenever a batch was
+/// archived, cleared only when a rebuild actually runs — so a rebuild skipped
+/// by the throttle is made up on a later tick rather than waiting for the
+/// daily rebuild.
+pub fn post_archive_rebuild_step(pending: &mut bool, any_processed: bool, due: bool) -> bool {
+    *pending |= any_processed;
+    if *pending && due {
+        *pending = false;
+        true
+    } else {
+        false
     }
 }
 
@@ -53,6 +73,14 @@ pub fn full_rebuild(
     cache: &std::sync::RwLock<SourceStatsCache>,
     content_store: &Arc<dyn ContentStore>,
 ) {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if let Ok(mut guard) = cache.write() {
+        guard.rebuild_started_at = Some(started);
+    }
+
     let sources_dir = data_dir.join("sources");
     let mut sources: Vec<CachedSourceStats> = Vec::new();
 
@@ -129,10 +157,58 @@ impl SourceStatsCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use find_content_store::{CompactResult, ContentKey};
+    use std::collections::HashSet;
+
+    struct NoStore;
+    impl ContentStore for NoStore {
+        fn put(&self, _: &ContentKey, _: &str) -> anyhow::Result<bool> { Ok(false) }
+        fn delete(&self, _: &ContentKey) -> anyhow::Result<()> { Ok(()) }
+        fn get_lines(&self, _: &ContentKey, _: usize, _: usize) -> anyhow::Result<Option<Vec<(usize, String)>>> { Ok(None) }
+        fn contains(&self, _: &ContentKey) -> anyhow::Result<bool> { Ok(false) }
+        fn compact(&self, _: &HashSet<ContentKey>, _: bool) -> anyhow::Result<CompactResult> {
+            Ok(CompactResult { units_scanned: 0, units_rewritten: 0, units_deleted: 0, chunks_removed: 0, bytes_freed: 0 })
+        }
+    }
 
     #[test]
     fn never_built_cache_is_always_due() {
         assert!(SourceStatsCache::default().is_older_than(3600, 1_000));
+    }
+
+    #[test]
+    fn in_flight_or_failed_rebuild_also_throttles() {
+        // Started 10s ago, never completed (still running, or bailed early).
+        let c = SourceStatsCache { rebuild_started_at: Some(1_000), ..Default::default() };
+        assert!(!c.is_older_than(3600, 1_010));
+        assert!(c.is_older_than(3600, 1_000 + 3600));
+    }
+
+    #[test]
+    fn full_rebuild_records_start_even_when_sources_dir_missing() {
+        use std::sync::RwLock;
+        let cache = RwLock::new(SourceStatsCache::default());
+        let dir = std::env::temp_dir().join("find-anything-no-such-dir-xyz");
+        let store: Arc<dyn ContentStore> = Arc::new(NoStore);
+        full_rebuild(&dir, &cache, &store);
+        let g = cache.read().unwrap();
+        assert!(g.rebuild_started_at.is_some());
+        assert!(g.rebuilt_at.is_none(), "early bail-out must not count as completed");
+    }
+
+    #[test]
+    fn skipped_rebuild_is_made_up_later() {
+        let mut pending = false;
+        // Batch archived but throttled: no rebuild, flag stays set.
+        assert!(!post_archive_rebuild_step(&mut pending, true, false));
+        assert!(pending);
+        // Idle tick, still throttled.
+        assert!(!post_archive_rebuild_step(&mut pending, false, false));
+        // Idle tick once the throttle window has passed: trailing rebuild runs.
+        assert!(post_archive_rebuild_step(&mut pending, false, true));
+        assert!(!pending);
+        // Nothing new archived: no further rebuild.
+        assert!(!post_archive_rebuild_step(&mut pending, false, true));
     }
 
     #[test]
