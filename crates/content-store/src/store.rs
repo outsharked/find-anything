@@ -49,6 +49,21 @@ pub trait ContentStore: Send + Sync {
     /// Return `true` if a complete blob is stored for `key`.
     fn contains(&self, key: &ContentKey) -> anyhow::Result<bool>;
 
+    /// Return the subset of `keys` for which no blob is stored.
+    ///
+    /// Batch form of [`contains`](Self::contains) so backends can avoid
+    /// per-key overhead (connection checkout, random-order index probes).
+    /// Order of the result is unspecified.
+    fn missing_keys(&self, keys: &[ContentKey]) -> anyhow::Result<Vec<ContentKey>> {
+        let mut missing = Vec::new();
+        for k in keys {
+            if !self.contains(k)? {
+                missing.push(k.clone());
+            }
+        }
+        Ok(missing)
+    }
+
     /// Remove blobs not in `live_keys` and compact ZIP archives.
     fn compact(
         &self,
