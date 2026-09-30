@@ -1604,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "find-client"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "find-common"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "find-extract-types",
@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "find-content-store"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "find-common",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-archive"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "bzip2",
@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-dicom"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "dicom-dictionary-std",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-dispatch"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "find-extract-dicom",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-epub"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "find-extract-types",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-html"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "find-extract-types",
@@ -1751,7 +1751,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-media"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "find-extract-types",
@@ -1766,7 +1766,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-office"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "calamine",
@@ -1779,7 +1779,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-pdf"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "find-extract-types",
@@ -1790,7 +1790,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-pe"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "find-extract-types",
@@ -1803,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-text"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "content_inspector",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "find-extract-types"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "find-handler"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "url",
 ]
@@ -1840,7 +1840,7 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "find-preview-dicom"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "dicom-object",
@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "find-server"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "axum",

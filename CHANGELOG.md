@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.9.1] - 2026-09-29
+
 ### Changed
 
 - **Audio metadata** now uses `symphonia` 0.6 (a rewrite of its probe/metadata/codec API). Extracted tags and stream info are unchanged for MP3, FLAC, OGG and M4A. ID3v1/ID3v2 support is now enabled explicitly (it is opt-in in 0.6), and tags are merged across metadata revisions with the newest winning, so the truncated ID3v1 copy never overrides ID3v2.
