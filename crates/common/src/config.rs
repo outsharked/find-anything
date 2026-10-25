@@ -180,6 +180,12 @@ pub struct ScanConfig {
     #[serde(default)]
     pub include_hidden: bool,
 
+    /// When true, skip files and directories matched by `.gitignore` files
+    /// (including nested ones and `.git/info/exclude`) inside git repositories.
+    /// Directories outside a git repo are unaffected.  Default: false.
+    #[serde(default)]
+    pub respect_gitignore: bool,
+
     #[serde(default)]
     pub archives: ArchiveConfig,
 
@@ -260,6 +266,7 @@ impl Default for ScanConfig {
             follow_symlinks: false,
             cross_filesystems: false,
             include_hidden: false,
+            respect_gitignore: false,
             archives: ArchiveConfig::default(),
             noindex_file: default_noindex_file(),
             index_file: default_index_file(),
@@ -309,6 +316,9 @@ impl ScanConfig {
         if let Some(v) = ov.follow_symlinks {
             result.follow_symlinks = v;
         }
+        if let Some(v) = ov.respect_gitignore {
+            result.respect_gitignore = v;
+        }
         if let Some(arch_ov) = &ov.archives {
             if let Some(v) = arch_ov.enabled {
                 result.archives.enabled = v;
@@ -340,6 +350,7 @@ pub struct ScanOverride {
     pub max_content_size_mb: Option<u64>,
     pub include_hidden: Option<bool>,
     pub follow_symlinks: Option<bool>,
+    pub respect_gitignore: Option<bool>,
     pub archives: Option<ArchiveOverride>,
 }
 

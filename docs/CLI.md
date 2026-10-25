@@ -352,6 +352,7 @@ exclude = [
 max_content_size_mb = 10  # Skip files larger than this (does not apply to archives)
 follow_symlinks  = false  # Follow symbolic links during filesystem walk
 include_hidden   = false  # Include dot-files and dot-directories
+respect_gitignore = false # Skip paths matched by .gitignore inside git repos
 
 [scan.archives]
 enabled               = true   # Extract content from ZIP, TAR, 7z, etc.

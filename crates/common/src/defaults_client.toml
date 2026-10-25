@@ -16,6 +16,7 @@ max_content_size_mb     = 10
 follow_symlinks         = false
 cross_filesystems       = false
 include_hidden          = false
+respect_gitignore       = false
 noindex_file            = ".noindex"
 index_file              = ".index"
 subprocess_timeout_secs = 300

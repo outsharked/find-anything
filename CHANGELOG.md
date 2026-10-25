@@ -9,6 +9,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **`respect_gitignore` scan option** — `[scan] respect_gitignore = true` (default `false`) makes the walker skip files and directories matched by `.gitignore` files (nested ones, `.git/info/exclude`, negation patterns) inside git repositories, so build output, databases and other untracked data stay out of the index without per-project excludes. Applies only within a repo (a stray `.gitignore` elsewhere is ignored); nested repos and submodules use their own rules; scanning a subdirectory still honours the enclosing repo's ignore files. Can also be set per directory in `.index`. Both `find-scan` and `find-watch` share the walker; the global `core.excludesFile` is not read.
+
 ---
 
 ## [0.9.1] - 2026-09-29

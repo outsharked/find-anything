@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use globset::GlobSet;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use walkdir::WalkDir;
 
 use find_common::config::{load_dir_override, ScanConfig};
@@ -29,6 +30,92 @@ pub(crate) enum WalkItem {
         /// File name component (UTF-8 decoded, empty on decode failure).
         name: String,
     },
+}
+
+/// Build a matcher for the ignore rules that apply to the contents of `dir`:
+/// `.git/info/exclude` (only when `dir` is a repo root) then `.gitignore`.
+/// Later sources take precedence.  `None` when neither contributes any rule.
+fn load_gitignore(dir: &Path, repo_root: bool) -> Option<Gitignore> {
+    let mut b = GitignoreBuilder::new(dir);
+    let mut any = false;
+    if repo_root {
+        let exclude = dir.join(".git").join("info").join("exclude");
+        if exclude.is_file() {
+            any |= b.add(exclude).is_none();
+        }
+    }
+    let gi = dir.join(".gitignore");
+    if gi.is_file() {
+        any |= b.add(gi).is_none();
+    }
+    if any { b.build().ok() } else { None }
+}
+
+/// Ignore matchers for `walk_root` and its ancestors up to the enclosing git
+/// repo root, outermost first.  Empty when `walk_root` is not inside a repo.
+fn enclosing_gitignores(walk_root: &Path) -> Vec<Gitignore> {
+    let mut chain = Vec::new();
+    for dir in walk_root.ancestors() {
+        let repo_root = dir.join(".git").exists();
+        chain.push((dir, repo_root));
+        if repo_root {
+            return chain
+                .into_iter()
+                .rev()
+                .filter_map(|(d, root)| load_gitignore(d, root))
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// True if the innermost matching rule in `stack` ignores `path`.
+fn gitignored(stack: &[(usize, Gitignore)], path: &Path, is_dir: bool) -> bool {
+    for (_, gi) in stack.iter().rev() {
+        let m = gi.matched(path, is_dir);
+        if m.is_ignore() {
+            return true;
+        }
+        if m.is_whitelist() {
+            return false;
+        }
+    }
+    false
+}
+
+/// Whether `path` is ignored by the `.gitignore` rules of the git repo that
+/// contains it (nearest enclosing `.git`).  False outside a repo.  Used by
+/// `find-watch` for single-path events, where there is no walk to carry the
+/// ignore stack; it re-reads the ignore files, so it is only called per event.
+// Only find-watch calls this; find-scan shares the module.
+#[allow(dead_code)]
+pub(crate) fn path_gitignored(path: &Path, is_dir: bool) -> bool {
+    let Some(parent) = path.parent() else { return false };
+    let mut chain: Vec<(&Path, bool)> = Vec::new();
+    let mut in_repo = false;
+    for dir in parent.ancestors() {
+        let repo_root = dir.join(".git").exists();
+        chain.push((dir, repo_root));
+        if repo_root {
+            in_repo = true;
+            break;
+        }
+    }
+    if !in_repo {
+        return false;
+    }
+    // Innermost matcher first; the first non-None verdict wins.
+    for (dir, repo_root) in &chain {
+        let Some(gi) = load_gitignore(dir, *repo_root) else { continue };
+        let m = gi.matched_path_or_any_parents(path, is_dir);
+        if m.is_ignore() {
+            return true;
+        }
+        if m.is_whitelist() {
+            return false;
+        }
+    }
+    false
 }
 
 /// Walk `walk_root` applying the filtering rules shared by `find-scan` and
@@ -74,6 +161,15 @@ pub(crate) fn walk_source_tree(
     // before we descend into it.
     let mut override_stack: Vec<(usize, HashSet<String>)> = Vec::new();
 
+    // Stack of (depth, matcher) for `.gitignore` files of the git repo being
+    // walked, outermost first.  Frames from the walk root's ancestors sit at
+    // depth 0 and are never popped.  Only populated when `respect_gitignore`.
+    let mut git_stack: Vec<(usize, Gitignore)> = if scan.respect_gitignore {
+        enclosing_gitignores(walk_root).into_iter().map(|g| (0, g)).collect()
+    } else {
+        Vec::new()
+    };
+
     // Device ID of the walk root, captured once for filesystem-boundary checks.
     // None when cross_filesystems = true (check disabled). Unix-only — the
     // filesystem-boundary check that reads this is #[cfg(unix)] below, so on
@@ -93,6 +189,13 @@ pub(crate) fn walk_source_tree(
             if e.depth() == 0 {
                 return true;
             }
+            if scan.respect_gitignore {
+                // Entries at depth >= this one belong to finished subtrees.
+                git_stack.retain(|(d, _)| *d < e.depth());
+                if gitignored(&git_stack, e.path(), e.file_type().is_dir()) {
+                    return false;
+                }
+            }
             if e.file_type().is_dir() {
                 let depth = e.depth();
 
@@ -109,6 +212,20 @@ pub(crate) fn walk_source_tree(
                     let name = e.file_name().to_str().unwrap_or("");
                     if name.starts_with('.') {
                         return false;
+                    }
+                }
+                // Track .gitignore files.  A nested repo root (or submodule)
+                // starts a fresh stack: the parent repo's rules have already
+                // been applied to the directory itself above.
+                if scan.respect_gitignore {
+                    let repo_root = e.path().join(".git").exists();
+                    if repo_root {
+                        git_stack.clear();
+                    }
+                    if repo_root || !git_stack.is_empty() {
+                        if let Some(gi) = load_gitignore(e.path(), repo_root) {
+                            git_stack.push((depth, gi));
+                        }
                     }
                 }
                 // Don't descend into directories containing a .noindex marker.
@@ -697,5 +814,103 @@ mod tests {
         let t = terms(&["src"]);
         let files = walk_files(tmp.path(), &bare_scan(), &empty_gs(), Some(&t));
         assert_eq!(files, vec!["src/main.rs", "src/sub/helper.rs"]);
+    }
+    // ── respect_gitignore ────────────────────────────────────────────────────
+
+    /// `walk_files` minus the `.gitignore` files themselves (hidden files are
+    /// yielded by the walker; the callers filter them).
+    fn git_files(
+        root: &Path,
+        scan: &ScanConfig,
+    ) -> Vec<String> {
+        let mut v = walk_files(root, scan, &empty_gs(), None);
+        v.retain(|f| !f.ends_with(".gitignore"));
+        v
+    }
+
+    fn git_scan() -> ScanConfig {
+        ScanConfig { respect_gitignore: true, ..bare_scan() }
+    }
+
+    #[test]
+    fn gitignore_ignored_by_default() {
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &[".gitignore", "a.rs", "data/x.db"]);
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "data/\n").unwrap();
+        let files = git_files(tmp.path(), &bare_scan());
+        assert!(files.contains(&"data/x.db".to_string()));
+    }
+
+    #[test]
+    fn gitignore_skips_dirs_and_files_in_repo() {
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &["a.rs", "data/x.db", "m.sqlite", "src/b.rs", "src/c.sqlite"]);
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "data/\n*.sqlite\n").unwrap();
+        let files = git_files(tmp.path(), &git_scan());
+        assert_eq!(files, vec!["a.rs", "src/b.rs"]);
+    }
+
+    #[test]
+    fn gitignore_not_applied_outside_a_repo() {
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &["a.rs", "data/x.db"]);
+        std::fs::write(tmp.path().join(".gitignore"), "data/\n").unwrap();
+        let files = git_files(tmp.path(), &git_scan());
+        assert_eq!(files, vec!["a.rs", "data/x.db"]);
+    }
+
+    #[test]
+    fn gitignore_nested_rules_and_negation() {
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &["a.log", "keep.log", "sub/b.tmp", "sub/c.rs", "other/d.tmp"]);
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "*.log\n!keep.log\n").unwrap();
+        std::fs::write(tmp.path().join("sub/.gitignore"), "*.tmp\n").unwrap();
+        let files = git_files(tmp.path(), &git_scan());
+        // sub's rules must not leak into siblings visited afterwards.
+        assert_eq!(files, vec!["keep.log", "other/d.tmp", "sub/c.rs"]);
+    }
+
+    #[test]
+    fn gitignore_walk_root_inside_repo_uses_ancestor_rules() {
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &["pkg/a.rs", "pkg/gen/x.rs", "pkg/y.sqlite"]);
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "*.sqlite\n").unwrap();
+        std::fs::write(tmp.path().join("pkg/.gitignore"), "gen/\n").unwrap();
+        let sub = tmp.path().join("pkg");
+        let files = git_files(&sub, &git_scan());
+        assert_eq!(files, vec!["a.rs"]);
+    }
+
+    #[test]
+    fn gitignore_nested_repo_starts_fresh() {
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &["inner/a.sqlite", "inner/b.rs"]);
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir(tmp.path().join("inner/.git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "*.sqlite\n").unwrap();
+        let files = git_files(tmp.path(), &git_scan());
+        assert_eq!(files, vec!["inner/a.sqlite", "inner/b.rs"]);
+    }
+
+    #[test]
+    fn path_gitignored_checks_file_and_parent_dirs() {
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &["data/x.db", "src/a.rs"]);
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "data/\n").unwrap();
+        assert!(path_gitignored(&tmp.path().join("data/x.db"), false));
+        assert!(!path_gitignored(&tmp.path().join("src/a.rs"), false));
+    }
+
+    #[test]
+    fn path_gitignored_false_outside_repo() {
+        let tmp = TempDir::new().unwrap();
+        mktree(tmp.path(), &["data/x.db"]);
+        std::fs::write(tmp.path().join(".gitignore"), "data/\n").unwrap();
+        assert!(!path_gitignored(&tmp.path().join("data/x.db"), false));
     }
 }
