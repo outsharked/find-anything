@@ -6,6 +6,94 @@ use find_content_store::{ContentKey, ContentStore};
 
 use find_common::api::{ExtStat, FileKind, IndexingError, IndexingFailure, KindStats, ScanHistoryPoint};
 
+// ── Hot files ─────────────────────────────────────────────────────────────────
+
+/// How long hourly per-file change buckets are kept.
+pub const FILE_CHANGE_RETENTION_HOURS: i64 = 7 * 24;
+
+/// DDL for `file_change_buckets`; identical to the statement in `schema_v4.sql`
+/// and run by `open()` so databases created before the table existed get it.
+pub const FILE_CHANGE_BUCKETS_DDL: &str = "CREATE TABLE IF NOT EXISTS file_change_buckets (
+    bucket  INTEGER NOT NULL,
+    path    TEXT    NOT NULL,
+    changes INTEGER NOT NULL,
+    PRIMARY KEY (bucket, path)
+) WITHOUT ROWID;";
+
+/// A file that changed repeatedly within a window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotFileRow {
+    pub path:    String,
+    pub changes: i64,
+}
+
+/// Add one change per occurrence of each path to the hour bucket containing
+/// `now`.  Duplicate paths within a call are coalesced first so a batch costs
+/// one upsert per distinct path.  Composite (`::`) paths are ignored.  Also
+/// prunes buckets past the retention window.
+pub fn record_file_changes(conn: &Connection, now: i64, paths: &[&str]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut counts: HashMap<&str, i64> = HashMap::new();
+    for p in paths {
+        if !find_common::path::is_composite(p) {
+            *counts.entry(p).or_insert(0) += 1;
+        }
+    }
+    let bucket = now.div_euclid(3600);
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO file_change_buckets (bucket, path, changes) VALUES (?1, ?2, ?3)
+         ON CONFLICT(bucket, path) DO UPDATE SET changes = changes + excluded.changes",
+    )?;
+    for (path, n) in counts {
+        stmt.execute(params![bucket, path, n])?;
+    }
+    conn.prepare_cached("DELETE FROM file_change_buckets WHERE bucket < ?1")?
+        .execute(params![bucket - FILE_CHANGE_RETENTION_HOURS])?;
+    Ok(())
+}
+
+/// Files with at least `min_changes` changes in the buckets overlapping the
+/// last `window_secs` (hour granularity), most-changed first.
+pub fn hot_files(
+    conn: &Connection,
+    now: i64,
+    window_secs: i64,
+    min_changes: i64,
+    limit: usize,
+) -> Result<Vec<HotFileRow>> {
+    let first_bucket = (now - window_secs).div_euclid(3600);
+    let mut stmt = conn.prepare(
+        "SELECT path, SUM(changes) AS n FROM file_change_buckets
+         WHERE bucket >= ?1 GROUP BY path HAVING n >= ?2
+         ORDER BY n DESC, path LIMIT ?3",
+    )?;
+    let rows = stmt
+        .query_map(params![first_bucket, min_changes, limit as i64], |r| {
+            Ok(HotFileRow { path: r.get(0)?, changes: r.get(1)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Number of files with at least `min_changes` changes in the window.
+pub fn count_hot_files(
+    conn: &Connection,
+    now: i64,
+    window_secs: i64,
+    min_changes: i64,
+) -> Result<usize> {
+    let first_bucket = (now - window_secs).div_euclid(3600);
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (SELECT path FROM file_change_buckets
+         WHERE bucket >= ?1 GROUP BY path HAVING SUM(changes) >= ?2)",
+        params![first_bucket, min_changes],
+        |r| r.get(0),
+    )?;
+    Ok(n as usize)
+}
+
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
 /// Returns (total_files, total_size, by_kind) aggregated from the files table.
@@ -326,6 +414,46 @@ mod tests {
         conn.execute_batch(include_str!("../schema_v4.sql")).unwrap();
         crate::db::register_scalar_functions(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn hot_files_coalesces_filters_and_ranks() {
+        let conn = test_conn();
+        let now = 1_000_000 * 3600; // an exact hour boundary
+        record_file_changes(&conn, now, &["a.log", "a.log", "a.log", "b.rs"]).unwrap();
+        record_file_changes(&conn, now + 10, &["a.log", "c.db::member"]).unwrap(); // composite ignored
+        let rows = hot_files(&conn, now + 20, 3600, 2, 10).unwrap();
+        assert_eq!(rows, vec![HotFileRow { path: "a.log".into(), changes: 4 }]);
+        // min=1 includes the single-change file, ranked after.
+        let rows = hot_files(&conn, now + 20, 3600, 1, 10).unwrap();
+        assert_eq!(rows.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(), ["a.log", "b.rs"]);
+        // limit applies.
+        assert_eq!(hot_files(&conn, now + 20, 3600, 1, 1).unwrap().len(), 1);
+        assert_eq!(count_hot_files(&conn, now + 20, 3600, 2).unwrap(), 1);
+    }
+
+    #[test]
+    fn hot_files_window_sums_buckets_and_excludes_old_ones() {
+        let conn = test_conn();
+        let now = 1_000_000 * 3600;
+        record_file_changes(&conn, now - 5 * 3600, &["old.txt", "old.txt", "old.txt"]).unwrap();
+        record_file_changes(&conn, now - 3600, &["x.txt", "x.txt"]).unwrap();
+        record_file_changes(&conn, now, &["x.txt", "x.txt"]).unwrap();
+        // 2h window sees both x.txt buckets (4), not old.txt.
+        let rows = hot_files(&conn, now, 2 * 3600, 2, 10).unwrap();
+        assert_eq!(rows, vec![HotFileRow { path: "x.txt".into(), changes: 4 }]);
+        // 6h window also sees old.txt.
+        assert_eq!(hot_files(&conn, now, 6 * 3600, 2, 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn record_file_changes_prunes_past_retention() {
+        let conn = test_conn();
+        let now = 1_000_000 * 3600;
+        record_file_changes(&conn, now - (FILE_CHANGE_RETENTION_HOURS + 2) * 3600, &["ancient"]).unwrap();
+        record_file_changes(&conn, now, &["fresh"]).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM file_change_buckets", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 
     /// A ContentStore stub that always reports no key is present.

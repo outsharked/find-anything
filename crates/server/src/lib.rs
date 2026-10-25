@@ -285,6 +285,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/context-batch",  post(routes::context_batch))
         .route("/api/v1/settings",       get(routes::get_settings))
         .route("/api/v1/metrics",        get(routes::get_metrics))
+        .route("/api/v1/metrics/prometheus", get(routes::get_prometheus_metrics))
+        .route("/api/v1/hot-files",      get(routes::get_hot_files))
         .route("/api/v1/stats",          get(routes::get_stats))
         .route("/api/v1/stats/stream",   get(routes::stream_stats))
         .route("/api/v1/errors",         get(routes::get_errors))

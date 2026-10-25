@@ -11,8 +11,19 @@ use find_content_store::ContentStore;
 #[derive(Default, Clone)]
 pub struct SourceStatsCache {
     pub sources: Vec<CachedSourceStats>,
+    /// Cumulative outer-file changes applied since server start, by source.
+    /// Not touched by `full_rebuild`; backs `find_anything_files_changed_total`.
+    pub changes: HashMap<String, ChangeCounts>,
     /// Unix timestamp of the last full rebuild.
     pub rebuilt_at: Option<i64>,
+}
+
+/// Counts of outer-file changes (composite archive members excluded).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct ChangeCounts {
+    pub added:    u64,
+    pub modified: u64,
+    pub deleted:  u64,
 }
 
 #[derive(Clone, Default)]
@@ -85,10 +96,16 @@ pub struct SourceStatsDelta {
     pub size_delta:  i64,
     /// Positive = added, negative = removed.
     pub kind_deltas: HashMap<FileKind, (i64, i64)>, // kind → (count_delta, size_delta)
+    pub changes: ChangeCounts,
 }
 
 impl SourceStatsCache {
     pub fn apply_delta(&mut self, delta: &SourceStatsDelta) {
+        let c = self.changes.entry(delta.source.clone()).or_default();
+        c.added    += delta.changes.added;
+        c.modified += delta.changes.modified;
+        c.deleted  += delta.changes.deleted;
+
         // Find the source entry, creating one on first use so new sources become
         // visible immediately rather than waiting for the next full rebuild.
         if !self.sources.iter().any(|s| s.name == delta.source) {

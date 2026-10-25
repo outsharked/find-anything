@@ -150,6 +150,30 @@ find-scan /path/to/problematic-file.pdf
 
 This re-extracts and re-indexes that specific file, clearing the error if extraction now succeeds.
 
+### Prometheus metrics
+
+`GET /api/v1/metrics/prometheus` serves Prometheus text format and needs a token with read scope (Prometheus: `authorization: { type: Bearer, credentials: ... }`).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `find_anything_files_changed_total` | counter | `source`, `op` (`add`/`modify`/`delete`) | Outer files changed since the server started (resets on restart; use `rate()`/`increase()`) |
+| `find_anything_files` | gauge | `source` | Files currently indexed |
+| `find_anything_indexed_bytes` | gauge | `source` | Total size of the files indexed |
+| `find_anything_db_size_bytes` | gauge | `source` | On-disk size of the source database |
+| `find_anything_last_scan_timestamp_seconds` | gauge | `source` | Last completed scan (absent if never scanned) |
+| `find_anything_indexing_errors` | gauge | `source` | Files currently failing to index |
+| `find_anything_hot_files` | gauge | `source` | Files changed ≥ 5 times in the last 24 h |
+| `find_anything_inbox_queue_depth`, `find_anything_failed_requests`, `find_anything_content_store_bytes` | gauge | – | Server-wide queue and storage |
+
+File paths are never metric labels. To see *which* files are changing, use:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" \
+  'http://server:8765/api/v1/hot-files?window=24h&min=5&limit=20&source=docs'
+```
+
+`window` accepts `90m`, `24h`, `7d` (max 7 days, hour granularity), `min` is the minimum number of changes (default 5) and `limit` defaults to 20. Only modifications and deletions are counted — a file that is rewritten or repeatedly deleted and recreated stands out, while the one-time adds of an initial index do not. Counts are kept per source for 7 days.
+
 ---
 
 ## Database management

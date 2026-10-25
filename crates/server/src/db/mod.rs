@@ -28,6 +28,7 @@ pub use search::{
     fetch_duplicates_for_file_ids, fts_candidates, DateFilter,
 };
 pub use stats::{
+    count_hot_files, hot_files, record_file_changes,
     do_cleanup_writes, get_files_pending_content, get_fts_row_count, get_indexing_error,
     get_indexing_error_count, get_indexing_errors, get_scan_history, get_stats, get_stats_by_ext,
 };
@@ -87,6 +88,10 @@ pub fn open(db_path: &Path) -> Result<Connection> {
             db_path.display()
         );
     }
+
+    // Added after v14 without a version bump (additive, IF NOT EXISTS).
+    conn.execute_batch(stats::FILE_CHANGE_BUCKETS_DDL)
+        .context("creating file_change_buckets")?;
 
     Ok(conn)
 }
