@@ -313,7 +313,10 @@ where
                     continue;
                 }
             };
-            if is_excluded(&abs_path, source_map, &eff_excludes) {
+            if is_excluded(&abs_path, source_map, &eff_excludes)
+                || (eff_scan.respect_gitignore
+                    && crate::walk::path_gitignored(&abs_path, abs_path.is_dir()))
+            {
                 continue;
             }
 
@@ -939,8 +942,11 @@ async fn process_renames(
             Ok(gs) => gs,
             Err(_) => continue,
         };
-        if is_excluded(new_path, source_map, &eff_excludes) {
-            continue; // excluded by per-dir glob — fall back to plain delete
+        if is_excluded(new_path, source_map, &eff_excludes)
+            || (eff_scan.respect_gitignore
+                && crate::walk::path_gitignored(new_path, new_path.is_dir()))
+        {
+            continue; // excluded by per-dir glob or .gitignore — fall back to plain delete
         }
 
         // If the old path was first seen as a Create in this window, it was never
@@ -1030,7 +1036,11 @@ async fn handle_dir_rename(
         let (new_eff_scan, new_skip) = resolve_watch_config(new_abs, source_root, global_scan);
         let new_eff_excludes = build_globset(&new_eff_scan.exclude).unwrap_or_default();
         let new_included =
-            new_source_included && !new_skip && !new_eff_excludes.is_match(&*new_rel);
+            new_source_included
+                && !new_skip
+                && !new_eff_excludes.is_match(&*new_rel)
+                && !(new_eff_scan.respect_gitignore
+                    && crate::walk::path_gitignored(new_abs, false));
 
         // Evaluate source-level inclusion for the old path (old dir is gone; only
         // source-glob check is possible — .noindex/.index files move with the rename).

@@ -69,6 +69,7 @@ exclude          = ["**/.git/**", "**/node_modules/**", "**/target/**"]
 max_content_size_mb = 10
 follow_symlinks     = false
 include_hidden      = false
+respect_gitignore   = false   # skip paths matched by .gitignore inside git repos
 
 [scan.archives]
 enabled               = true
