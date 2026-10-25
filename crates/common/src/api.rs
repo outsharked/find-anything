@@ -560,6 +560,24 @@ pub enum WorkerStatus {
 }
 
 
+/// One file that changed repeatedly within the query window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HotFile {
+    pub source:  String,
+    pub path:    String,
+    /// Modifications plus deletions of this file within the window.
+    pub changes: i64,
+}
+
+/// `GET /api/v1/hot-files` response: files re-indexed unusually often.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotFilesResponse {
+    pub window_secs: i64,
+    pub min_changes: i64,
+    /// Most-changed first, across all requested sources.
+    pub files: Vec<HotFile>,
+}
+
 /// `GET /api/v1/stats` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsResponse {

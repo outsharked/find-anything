@@ -505,6 +505,7 @@ The server's HTTP handlers live in `crates/server/src/routes/`, split by concern
 | File | Endpoints |
 |------|-----------|
 | `routes/mod.rs` | Shared helpers (`source_db_path`, `compact_lines`); `GET /api/v1/metrics` |
+| `routes/prometheus.rs` | `GET /api/v1/metrics/prometheus` (Prometheus text), `GET /api/v1/hot-files` |
 | `routes/auth.rs` | `check_scope`/`resolve_token`, `POST /api/v1/auth/redeem`, `GET/POST /api/v1/admin/invites`, `DELETE /api/v1/admin/invites/{id}`, `GET /api/v1/admin/tokens`, `DELETE /api/v1/admin/tokens/{name}` |
 | `routes/search.rs` | `GET /api/v1/search` — fuzzy / exact / regex modes, multi-source parallel query |
 | `routes/context.rs` | `GET /api/v1/context`, `POST /api/v1/context-batch` |

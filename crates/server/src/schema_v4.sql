@@ -83,3 +83,14 @@ CREATE TABLE IF NOT EXISTS activity_log (
 );
 CREATE INDEX IF NOT EXISTS idx_activity_log_occurred_at
     ON activity_log(occurred_at DESC);
+
+-- Hourly per-file change counters (modifications and deletions of outer
+-- files), pruned after FILE_CHANGE_RETENTION_HOURS.  Backs GET /api/v1/hot-files
+-- and the find_anything_hot_files metric.  Also created by `open()` for
+-- databases that predate it, so no schema-version bump is needed.
+CREATE TABLE IF NOT EXISTS file_change_buckets (
+    bucket  INTEGER NOT NULL,  -- unix_time / 3600
+    path    TEXT    NOT NULL,
+    changes INTEGER NOT NULL,
+    PRIMARY KEY (bucket, path)
+) WITHOUT ROWID;

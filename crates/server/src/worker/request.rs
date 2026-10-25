@@ -266,6 +266,16 @@ pub(super) fn process_one_request(
             .filter(|r| !is_composite(&r.old_path) && !is_composite(&r.new_path))
             .map(|r| (r.old_path.clone(), r.new_path.clone()))
             .collect();
+        let outer = |v: &[String]| v.iter().filter(|p| !is_composite(p)).count() as u64;
+        delta.changes = crate::stats_cache::ChangeCounts {
+            added:    outer(&activity_added),
+            modified: outer(&activity_modified),
+            deleted:  deleted.len() as u64,
+        };
+        let hot: Vec<&str> = activity_modified.iter().chain(deleted.iter()).map(String::as_str).collect();
+        if let Err(e) = db::record_file_changes(&session.conn, now, &hot) {
+            tracing::warn!("Failed to record file changes: {e:#}");
+        }
         if let Err(e) = db::log_activity(&session.conn, now, &activity_added, &activity_modified, &deleted, &renamed, h.cfg.activity_log_max_entries) {
             tracing::warn!("Failed to write activity log: {e:#}");
         } else {

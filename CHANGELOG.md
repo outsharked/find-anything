@@ -11,6 +11,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **Prometheus metrics** — `GET /api/v1/metrics/prometheus` (read-scope token) exposes `find_anything_files_changed_total{source,op}`, per-source file count, indexed bytes, database size, last-scan time, indexing errors and hot-file count, plus inbox depth, failed requests and content-store size. See the Monitoring section of the administration manual.
+- **`GET /api/v1/hot-files`** — files modified or deleted repeatedly within a window (`window`, `min`, `limit`, `source`), backed by hourly per-file counters (7-day retention) in each source DB. Paths are never exposed as metric labels. The table is created on open for existing databases, so no schema-version bump or rebuild is needed.
+
 - **`respect_gitignore` scan option** — `[scan] respect_gitignore = true` (default `false`) makes the walker skip files and directories matched by `.gitignore` files (nested ones, `.git/info/exclude`, negation patterns) inside git repositories, so build output, databases and other untracked data stay out of the index without per-project excludes. Applies only within a repo (a stray `.gitignore` elsewhere is ignored); nested repos and submodules use their own rules; scanning a subdirectory still honours the enclosing repo's ignore files. Can also be set per directory in `.index`. Both `find-scan` and `find-watch` share the walker; the global `core.excludesFile` is not read.
 
 ---
